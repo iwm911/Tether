@@ -2,6 +2,8 @@ package app.tether
 
 import android.app.Application
 import androidx.compose.runtime.staticCompositionLocalOf
+import app.tether.analytics.Analytics
+import app.tether.analytics.TrackedAgentHub
 import app.tether.core.AgentHub
 import app.tether.core.ClaudeRemote
 import app.tether.core.ConnectionRepository
@@ -37,8 +39,9 @@ class AppContainer(val app: Application) {
     val hostKeyPrompts: HostKeyPromptBus = DefaultHostKeyPromptBus()
     val ssh: SshManager = SshjManager(app, connections, keys, secrets, knownHosts, hostKeyPrompts, scope)
     val remote: ClaudeRemote = HelperClaudeRemote(app, ssh, connections, scope)
-    val agents: AgentHub = DefaultAgentHub(remote, ssh, connections, settings, scope)
-    val updates = UpdateManager(app, connections, ssh, scope)
+    val analytics = Analytics(settings, scope)
+    val agents: AgentHub = TrackedAgentHub(DefaultAgentHub(remote, ssh, connections, settings, scope), analytics)
+    val updates = UpdateManager(app, scope)
 }
 
 val LocalAppContainer = staticCompositionLocalOf<AppContainer> { error("AppContainer not provided") }

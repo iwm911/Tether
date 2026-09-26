@@ -199,6 +199,9 @@ fun HomeScreen(
                 item(key = "update", contentType = "update") {
                     app.tether.ui.update.UpdateBanner()
                 }
+                item(key = "analytics", contentType = "analytics") {
+                    AnalyticsNoticeCard()
+                }
                 item(key = "keepalive", contentType = "keepalive") {
                     KeepAliveCard(hasMachines = state.connections.isNotEmpty())
                 }

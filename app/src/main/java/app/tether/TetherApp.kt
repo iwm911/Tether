@@ -1,6 +1,7 @@
 package app.tether
 
 import android.app.Application
+import app.tether.analytics.Analytics
 import app.tether.data.DebugSeeder
 import app.tether.service.ServiceController
 import app.tether.ssh.SshjManager
@@ -16,5 +17,6 @@ class TetherApp : Application() {
         if (BuildConfig.DEBUG) DebugSeeder.run(this, container)
         ServiceController.install(this, container)
         app.tether.ssh.LinkGuardian.install(this, container.ssh, container.scope)
+        Analytics.install(this, container)
     }
 }

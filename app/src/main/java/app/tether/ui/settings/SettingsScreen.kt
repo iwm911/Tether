@@ -44,11 +44,13 @@ import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Dns
 import androidx.compose.material.icons.rounded.DoneAll
 import androidx.compose.material.icons.rounded.Fingerprint
+import androidx.compose.material.icons.rounded.Insights
 import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.NotificationsOff
 import androidx.compose.material.icons.rounded.Palette
+import androidx.compose.material.icons.rounded.Policy
 import androidx.compose.material.icons.rounded.Psychology
 import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Shield
@@ -79,6 +81,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -372,6 +375,28 @@ fun SettingsScreen(onBack: () -> Unit, onOpenKeys: () -> Unit, onOpenMachines: (
                     Column(Modifier.padding(bottom = Space.sm)) {
                         hosts.forEach { h -> KnownHostRow(h, onRemove = { forgetting = h }) }
                     }
+                }
+            }
+
+            // ───────── Privacy ─────────
+            if (container.analytics.available) {
+                SettingsGroup("Privacy") {
+                    ToggleRow(
+                        title = "Share anonymous usage stats",
+                        subtitle = "Counts like app opens and agents started. Never machines, prompts or code.",
+                        icon = Icons.Rounded.Insights,
+                        checked = s.analyticsEnabled,
+                        onCheckedChange = { on -> vm.update { it.copy(analyticsEnabled = on, analyticsNoticeSeen = true) } },
+                    )
+                    RowDivider()
+                    val uri = LocalUriHandler.current
+                    ListRow(
+                        title = "What's shared",
+                        subtitle = "Exactly what Tether sends, and what it never does",
+                        icon = Icons.Rounded.Policy,
+                        showChevron = true,
+                        onClick = { uri.openUri(app.tether.ui.home.PrivacyUrl) },
+                    )
                 }
             }
 

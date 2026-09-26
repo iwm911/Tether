@@ -474,6 +474,10 @@ data class AppSettings(
     val onboardingDone: Boolean = false,
     /** Collapse tool calls to one line by default. */
     val compactTools: Boolean = true,
+    /** Anonymous usage analytics (see app.tether.analytics.Analytics); on unless turned off. */
+    val analyticsEnabled: Boolean = true,
+    /** The one-time analytics notice on Home was acknowledged; nothing is sent before that. */
+    val analyticsNoticeSeen: Boolean = false,
 )
 
 /** Accent colours (ARGB) a machine can be tagged with. */

@@ -82,7 +82,7 @@ fun UpdateCard(state: UpdateState, modifier: Modifier = Modifier) {
                     }
                     Text(title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
                     val sub = when (state) {
-                        is UpdateState.Available -> state.info.notes.ifBlank { "From ${state.machineName}" }
+                        is UpdateState.Available -> state.info.notes.ifBlank { "From GitHub Releases" }
                         is UpdateState.Downloading -> if (state.total > 0) "${mb(state.done)} of ${mb(state.total)}" else mb(state.done)
                         is UpdateState.Installing -> "Confirm in the Android dialog"
                         is UpdateState.NeedsPermission -> "Allow Tether to install updates in Android settings"
@@ -123,14 +123,14 @@ fun UpdateSettingsRow(currentVersion: String) {
             Column(Modifier.weight(1f)) {
                 Text("Updates", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
                 val status = when (val s = state) {
-                    is UpdateState.Checking -> "Checking your machines…"
+                    is UpdateState.Checking -> "Checking for updates…"
                     is UpdateState.UpToDate -> "Tether $currentVersion is up to date"
-                    is UpdateState.Available -> "Version ${s.info.versionName} is available on ${s.machineName}"
+                    is UpdateState.Available -> "Version ${s.info.versionName} is available"
                     is UpdateState.Downloading -> "Downloading…"
                     is UpdateState.Installing -> "Installing…"
                     is UpdateState.NeedsPermission -> "Needs permission to install"
                     is UpdateState.Failed -> s.message
-                    UpdateState.Idle -> "Version $currentVersion · served from your own machines"
+                    UpdateState.Idle -> "Version $currentVersion · updates from GitHub Releases"
                 }
                 Text(status, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }

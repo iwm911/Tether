@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tether: Claude Code in your pocket</title>
+  <meta name="description" content="An open-source Android app that connects to your own machines over SSH, so you can start, watch, steer and approve Claude Code agents from your phone.">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#FAF9F5" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#262624" media="(prefers-color-scheme: dark)">
+  <meta property="og:title" content="Tether: Claude Code in your pocket">
+  <meta property="og:description" content="Start, watch, steer and approve Claude Code agents on your own machines, from your Android phone, over SSH.">
+  <meta property="og:type" content="website">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="fonts/source_serif_regular.ttf" as="font" type="font/ttf" crossorigin>
+  <link rel="preload" href="fonts/inter_regular.ttf" as="font" type="font/ttf" crossorigin>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <!-- The Tether spark, the app's launcher mark (ic_launcher_foreground.xml). -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+    <symbol id="spark" viewBox="25 25 58 58">
+      <g fill="#D97757">
+        <path d="M52.2,54 L53,29 Q54,26.8 55,29 L55.8,54 Z"/>
+        <path d="M52.2,54 L53,35 Q54,32.8 55,35 L55.8,54 Z" transform="rotate(36 54 54)"/>
+        <path d="M52.2,54 L53,29 Q54,26.8 55,29 L55.8,54 Z" transform="rotate(72 54 54)"/>
+        <path d="M52.2,54 L53,35 Q54,32.8 55,35 L55.8,54 Z" transform="rotate(108 54 54)"/>
+        <path d="M52.2,54 L53,29 Q54,26.8 55,29 L55.8,54 Z" transform="rotate(144 54 54)"/>
+        <path d="M52.2,54 L53,35 Q54,32.8 55,35 L55.8,54 Z" transform="rotate(180 54 54)"/>
+        <path d="M52.2,54 L53,29 Q54,26.8 55,29 L55.8,54 Z" transform="rotate(216 54 54)"/>
+        <path d="M52.2,54 L53,35 Q54,32.8 55,35 L55.8,54 Z" transform="rotate(252 54 54)"/>
+        <path d="M52.2,54 L53,29 Q54,26.8 55,29 L55.8,54 Z" transform="rotate(288 54 54)"/>
+        <path d="M52.2,54 L53,35 Q54,32.8 55,35 L55.8,54 Z" transform="rotate(324 54 54)"/>
+        <circle cx="54" cy="54" r="4.2"/>
+      </g>
+    </symbol>
+  </svg>
+
+  <header class="wrap bar">
+    <a class="brand" href="#top" aria-label="Tether home">
+      <svg aria-hidden="true"><use href="#spark"/></svg>
+      Tether
+    </a>
+    <nav aria-label="Primary">
+      <ul>
+        <li class="opt"><a href="#features">Features</a></li>
+        <li class="opt"><a href="#how">How it works</a></li>
+        <li><a href="#security">Security</a></li>
+        <li><a href="https://github.com/iwm911/Tether">GitHub</a></li>
+      </ul>
+    </nav>
+  </header>
+
+  <main id="main">
+    <div class="wrap hero" id="top">
+      <div>
+        <h1>Claude Code, in your pocket.</h1>
+        <p class="lede">Start, watch, steer and approve Claude Code agents on your own machines from your Android phone, over SSH. Agents keep running when your phone sleeps. There are no servers and no accounts.</p>
+        <div class="actions">
+          <a class="btn btn-primary" href="https://github.com/iwm911/Tether/releases/latest">
+            <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 19.5h14"/></svg>
+            Download the APK
+          </a>
+          <a class="btn btn-quiet" href="https://github.com/iwm911/Tether">View source on GitHub</a>
+        </div>
+        <p class="fine">For Android 8.0 and newer. Free and open source under Apache 2.0.</p>
+      </div>
+
+      <div class="stage" role="img" aria-label="Tether on a phone, tethered to a workstation. The workstation runs Claude Code. On the phone, Claude has explained a fix, edited two files, and is asking permission to run npm test, with Deny, Allow once and Always allow buttons.">
+        <svg class="tether" viewBox="0 0 560 660" preserveAspectRatio="none" aria-hidden="true">
+          <path class="rope" d="M123.2,224.4 C123.2,382.8 11.2,396 50.4,501.6 S 168,580.8 224,528"/>
+          <path class="pulse" pathLength="100" d="M123.2,224.4 C123.2,382.8 11.2,396 50.4,501.6 S 168,580.8 224,528"/>
+        </svg>
+
+        <div class="machine" aria-hidden="true">
+          <div class="mhead"><span class="dot"></span>workstation</div>
+<pre>$ tail -f in.jsonl |
+    claude -p …
+<b>✻ Pondering… 42s</b>
+can_use_tool: Bash
+  npm test -- login</pre>
+        </div>
+
+        <div class="phone" aria-hidden="true">
+          <div class="screen">
+            <div class="status"><span>9:41</span><span class="cam"></span><span class="sig"><i></i></span></div>
+            <div class="topbar">
+              <span class="back"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M15 5l-7 7 7 7"/></svg></span>
+              <div>
+                <div class="t1">shop-api</div>
+                <div class="t2"><span class="dot"></span>workstation, Opus</div>
+              </div>
+              <span class="ctx">38%</span>
+            </div>
+            <div class="todo">
+              <div class="row"><span>Plan</span><span>2/4</span></div>
+              <div class="bar2"><i></i></div>
+            </div>
+            <div class="chat">
+              <div class="u">The login test is flaky on CI. Find out why and fix it.</div>
+              <p class="a">The test asserts before the session cookie is written. I’ll wait for the redirect first, then check the cookie.</p>
+              <ul class="tools">
+                <li><span class="ok">✓</span><b>Read</b><code>src/auth/session.ts</code></li>
+                <li><span class="ok">✓</span><b>Edit</b><code>tests/login.spec.ts</code><span class="plus">+4 −1</span></li>
+              </ul>
+              <p class="a">Now I’ll run the login suite to confirm.</p>
+            </div>
+            <div class="ask">
+              <div class="who"><i></i>Claude wants to run a command</div>
+              <pre>npm test -- login</pre>
+              <div class="choices">
+                <span>Deny</span>
+                <span class="yes">Allow once</span>
+                <span class="always">Always allow Bash(npm test:*)</span>
+              </div>
+            </div>
+            <div class="composer">
+              <div class="ph">Reply to Claude…</div>
+              <div class="row">
+                <span class="chip">Ask</span>
+                <span class="chip">Opus</span>
+                <span class="chip">+</span>
+                <span class="send"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5m0 0-6 6m6-6 6 6"/></svg></span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <section id="features" aria-labelledby="features-h">
+      <div class="wrap">
+        <div class="sec-head">
+          <h2 id="features-h">Your agents keep working after you leave the desk.</h2>
+          <p>Long runs tend to stop and ask a question just after you’ve walked away. Tether sends that question to your phone, so you can answer it and the run carries on.</p>
+        </div>
+
+        <dl class="features">
+          <div class="lead">
+            <dt>Approve from anywhere.</dt>
+            <dd>Choose <em>Allow once</em>, <em>Always allow</em> a rule, or <em>Deny</em> and tell Claude what to do instead. You can do it from the chat, from the home screen without opening the agent, or straight from the notification.</dd>
+          </div>
+          <div>
+            <dt>A conversation, not a terminal</dt>
+            <dd>Replies render as Markdown. Tool calls are quiet one-line rows that expand into diffs, command output and file previews.</dd>
+          </div>
+          <div>
+            <dt>Survives the phone</dt>
+            <dd>Agents run detached on your machine. If the phone sleeps, loses signal or closes the app, Tether re-attaches where it left off.</dd>
+          </div>
+          <div>
+            <dt>Steer while it runs</dt>
+            <dd>Stop a turn, cycle permission modes (Ask, Accept edits, Plan, Auto) and switch models mid-run. Messages sent while Claude is busy are queued.</dd>
+          </div>
+          <div>
+            <dt>Plans and questions</dt>
+            <dd>Claude’s todo list becomes a pinned checklist with progress. When Claude asks a question, you answer by tapping a choice.</dd>
+          </div>
+          <div>
+            <dt>Every session, on every machine</dt>
+            <dd>Browse past Claude Code sessions, including ones started at the desk, and continue any of them from the phone.</dd>
+          </div>
+          <div>
+            <dt>Branch and retry</dt>
+            <dd>Edit an earlier message and branch from it. You see Claude Code’s file checkpoints first and choose whether to restore files.</dd>
+          </div>
+          <div>
+            <dt>Start agents anywhere</dt>
+            <dd>Pick a machine, browse to a folder, choose a model and mode, and write the prompt. You can dictate it or attach images, and <code>/</code> brings up slash commands.</dd>
+          </div>
+          <div>
+            <dt>Built for mobile networks</dt>
+            <dd>SSH keepalives and instant reconnects when the network changes. An optional background service keeps links open so approval requests still arrive.</dd>
+          </div>
+        </dl>
+
+        <div class="table-scroll">
+          <table class="kinds">
+            <caption>Two kinds of agents</caption>
+            <thead>
+              <tr><th scope="col"><span class="sr">Capability</span></th><th scope="col">Live (recommended)</th><th scope="col">Background</th></tr>
+            </thead>
+            <tbody>
+              <tr><th scope="row">Runs as</th><td><code>claude -p</code> stream-json, driven by Tether</td><td>native <code>claude --bg</code></td></tr>
+              <tr><th scope="row">Approve tool use from the phone</th><td class="y">Yes, in the chat and from notifications</td><td>No, approvals happen on the computer</td></tr>
+              <tr><th scope="row">Streaming, interrupt, mode and model switch</th><td class="y">Yes</td><td>Stop only</td></tr>
+              <tr><th scope="row">Listed in <code>claude agents</code></th><td>No</td><td class="y">Yes</td></tr>
+              <tr><th scope="row">Reply</th><td>Any time (queues while busy)</td><td>When it’s idle or done</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="how" aria-labelledby="how-h">
+      <div class="wrap">
+        <div class="sec-head">
+          <h2 id="how-h">How it works</h2>
+          <p>Your phone connects to your own machine over SSH, and a small helper script there starts Claude Code for you. Nothing runs anywhere else.</p>
+        </div>
+
+        <ol class="chain">
+          <li>
+            <h3>Connect over SSH</h3>
+            <p>Tether connects to your machine using an SSH key it generated, or one you imported.</p>
+            <code>user@workstation:22</code>
+          </li>
+          <li>
+            <h3>Install the helper</h3>
+            <p>It uploads a single Python script over SFTP. The script uses only the standard library.</p>
+            <code>~/.tether/bin/tether_helper.py</code>
+          </li>
+          <li>
+            <h3>Start Claude Code</h3>
+            <p>The helper starts Claude Code detached from SSH, so the run keeps going if the connection drops.</p>
+            <code>~/.tether/runs/&lt;id&gt;/out.jsonl</code>
+          </li>
+          <li>
+            <h3>Follow on the phone</h3>
+            <p>The app follows the output from where it left off, and sends your replies and approvals back.</p>
+            <code>in.jsonl</code>
+          </li>
+        </ol>
+
+        <div class="reqs">
+          <h3>What each machine needs</h3>
+          <dl>
+          <dt>SSH</dt><dd>An SSH server your phone can reach, such as on your LAN or over Tailscale or WireGuard.</dd>
+          <dt>Claude Code</dt><dd>Installed and logged in, so <code>claude --version</code> works for that user.</dd>
+          <dt>Python 3.6+</dt><dd><code>python3</code> on Linux or macOS. There’s nothing to <code>pip install</code>.</dd>
+          </dl>
+        </div>
+      </div>
+    </section>
+
+    <section id="security" aria-labelledby="security-h">
+      <div class="wrap">
+        <div class="sec-head">
+          <h2 id="security-h">Your machines, your keys</h2>
+          <p>Tether has no backend. Your code, prompts and conversations stay on your machines and your phone.</p>
+        </div>
+
+        <div class="split">
+          <ul class="checks">
+            <li><strong>Secrets encrypted at rest</strong>Private keys, passphrases and passwords are encrypted with an AES-256-GCM key that never leaves the Android Keystore.</li>
+            <li><strong>Host keys pinned</strong>The first connection asks you to trust the fingerprint. If the key changes later, you get a red warning, and trusting the new key takes a deliberate press-and-hold.</li>
+            <li><strong>Optional app lock</strong>Lock with a fingerprint, face or device PIN. It applies on launch and after a minute in the background.</li>
+            <li><strong>No cloud backups</strong>App data is excluded from Android backup and device-to-device transfer.</li>
+            <li><strong>Verified updates</strong>Updates come from GitHub Releases. The APK’s SHA-256 must match the release manifest, and Android asks you to confirm the install.</li>
+          </ul>
+
+          <div class="privacy">
+            <h3>Privacy</h3>
+            <p class="never">Tether never collects device IDs, hostnames, IPs, usernames, paths, prompts, code or session content.</p>
+            <p>It sends anonymous, coarse usage events (such as app opened or agent started) through <a href="https://aptabase.com">Aptabase</a>, an open-source analytics service. The events include the app version, OS version, locale and a random session id that rotates. Nothing is sent until you acknowledge a notice on Home, and one tap in Settings → Privacy turns it off. Builds without an analytics key, such as forks, send nothing.</p>
+            <p><a href="https://github.com/iwm911/Tether/blob/main/PRIVACY.md">Read the privacy policy</a></p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="build" aria-labelledby="build-h">
+      <div class="wrap">
+        <div class="sec-head">
+          <h2 id="build-h">Build it yourself</h2>
+          <p>Tether is written in Kotlin with Jetpack Compose. You need JDK 17 and the Android SDK.</p>
+        </div>
+<pre class="term"><code><span class="p">$ </span>git clone https://github.com/iwm911/Tether.git &amp;&amp; cd Tether
+<span class="p">$ </span>export ANDROID_HOME=~/Android/Sdk
+<span class="p">$ </span>./gradlew :app:testDebugUnitTest :app:assembleRelease
+<span class="c"># → app/build/outputs/apk/release/</span></code></pre>
+        <div class="prose">
+          <p>Release builds are signed with your own key via <code>keystore.properties</code>. If you run a fork, point the in-app updater at your own releases with <code>-PtetherUpdateRepo=owner/name</code>.</p>
+          <p>The architecture and the Claude Code protocol notes are in <a href="https://github.com/iwm911/Tether/blob/main/docs/SPEC.md">docs/SPEC.md</a>. To contribute, see <a href="https://github.com/iwm911/Tether/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a>.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <a class="brand" href="#top" aria-label="Back to top">
+        <svg aria-hidden="true"><use href="#spark"/></svg>
+        Tether
+      </a>
+      <ul>
+        <li><a href="https://github.com/iwm911/Tether">GitHub</a></li>
+        <li><a href="https://github.com/iwm911/Tether/releases">Releases</a></li>
+        <li><a href="https://github.com/iwm911/Tether/blob/main/PRIVACY.md">Privacy</a></li>
+        <li><a href="https://github.com/iwm911/Tether/blob/main/LICENSE">Apache-2.0</a></li>
+      </ul>
+      <p>An independent client for Claude Code. Not affiliated with Anthropic.</p>
+    </div>
+  </footer>
+</body>
+</html>

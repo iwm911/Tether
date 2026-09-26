@@ -20,10 +20,16 @@ android {
         applicationId = "app.tether"
         minSdk = 26
         targetSdk = 35
-        // Bump for every release; tools/publish_update.sh stages the result for in-app updates.
+        // Bump for every release; tools/publish_update.sh publishes the result as a GitHub release.
         versionCode = (project.findProperty("tetherVersionCode") as String?)?.toInt() ?: 4
         versionName = (project.findProperty("tetherVersionName") as String?) ?: "1.3.0"
         vectorDrawables { useSupportLibrary = true }
+        // GitHub repo (owner/name) whose releases the in-app updater follows; override for forks.
+        val updateRepo = (project.findProperty("tetherUpdateRepo") as String?) ?: "iwm911/Tether"
+        buildConfigField("String", "UPDATE_REPO", "\"$updateRepo\"")
+        // Aptabase app key (A-EU-… / A-US-…) for anonymous usage analytics; unset = analytics off.
+        val aptabaseKey = (project.findProperty("tetherAptabaseKey") as String?) ?: keystoreProps.getProperty("aptabaseKey") ?: ""
+        buildConfigField("String", "APTABASE_KEY", "\"$aptabaseKey\"")
     }
 
     signingConfigs {
