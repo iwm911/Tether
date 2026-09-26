@@ -113,7 +113,7 @@ object Notifications {
         links: Map<String, app.tether.core.LinkState> = emptyMap(),
         machines: List<app.tether.core.Connection> = emptyList(),
     ): Notification {
-        val live = agents.filter { it.run.status in LIVE }
+        val live = agents.filter { it.run.displayStatus in LIVE }
         val needs = live.count { it.run.status == RunStatus.AWAITING_PERMISSION }
         val working = live.size - needs
         val summary = watchSummary(working, needs)
@@ -161,14 +161,14 @@ object Notifications {
         if (live.size > 1) {
             val inbox = NotificationCompat.InboxStyle().setBigContentTitle(summary)
             live.sortedByDescending { it.run.status == RunStatus.AWAITING_PERMISSION }.take(6).forEach { a ->
-                inbox.addLine("${agentTitle(a)} — ${statusLabel(a.run.status)} · ${a.connection.name}")
+                inbox.addLine("${agentTitle(a)} — ${statusLabel(a.run.displayStatus)} · ${a.connection.name}")
             }
             if (live.size > 6) inbox.setSummaryText("+${live.size - 6} more")
             builder.setStyle(inbox)
         } else if (single != null) {
             val detail = single.run.pending?.let { "Wants to use ${it.toolName}: ${it.summary}" }
                 ?: single.run.lastText?.takeIf { it.isNotBlank() }
-                ?: "${statusLabel(single.run.status)} on ${single.connection.name}"
+                ?: "${statusLabel(single.run.displayStatus)} on ${single.connection.name}"
             builder.setContentText("${agentTitle(single)} · ${single.connection.name}")
             builder.setStyle(NotificationCompat.BigTextStyle().bigText("${agentTitle(single)} · ${single.connection.name}\n$detail"))
         }

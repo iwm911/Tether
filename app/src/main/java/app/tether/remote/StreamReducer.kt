@@ -1,5 +1,6 @@
 package app.tether.remote
 
+import app.tether.core.BackgroundTask
 import app.tether.core.ChatItem
 import app.tether.core.ConversationState
 import app.tether.core.ModelOption
@@ -56,6 +57,10 @@ import kotlinx.serialization.json.JsonPrimitive
  *   system/init                           → sessionId, model, cwd, mode; Notice SESSION_START (first only)
  *   system/status permissionMode change   → Notice MODE_CHANGE
  *   system/thinking_tokens                → thinkingTokens
+ *   system/task_started … task_notification → backgroundTasks (running only; ambient ones skipped).
+ *                                            task_progress → last tool / tokens; task_updated patch.status
+ *                                            terminal → removed. They outlive `result`: the UI shows them
+ *                                            as background work while the session is IDLE.
  *   result                                → TurnSummary, totalCostUsd (cumulative), status IDLE
  *   rate_limit_event                      → rateLimit
  * Status: STARTING → (init response) IDLE; WORKING from a user echo / model activity until `result`;
@@ -124,6 +129,9 @@ class StreamReducer(private val clock: () -> Long = { System.currentTimeMillis()
     private val tasks = LinkedHashMap<String, TodoItem>()
     private val taskCreates = HashMap<String, TodoItem>()
     private var todosFromTasks = false
+
+    // ── background tasks (task_started … task_notification) ──
+    private val bgTasks = LinkedHashMap<String, BackgroundTask>()
 
     // ── scalar state ──
     private var status = RunStatus.STARTING
@@ -275,6 +283,7 @@ class StreamReducer(private val clock: () -> Long = { System.currentTimeMillis()
             planName = planName,
             workingSince = if (effective == RunStatus.WORKING || effective == RunStatus.AWAITING_PERMISSION) workingSince else null,
             thinkingTokens = if (effective == RunStatus.WORKING) thinkingTokens else null,
+            backgroundTasks = bgTasks.values.toList(),
         )
     }
 
@@ -702,7 +711,43 @@ class StreamReducer(private val clock: () -> Long = { System.currentTimeMillis()
                 addNotice(if (!m.isNullOrBlank()) "$tool blocked · $m" else "$tool was blocked", NoticeKind.WARNING)
                 version++
             }
+            "task_started" -> {
+                val id = o.str("task_id") ?: return
+                if (o.bool("ambient") == true) return
+                bgTasks[id] = BackgroundTask(
+                    id = id,
+                    description = o.str("description")?.takeIf { it.isNotBlank() } ?: "Background task",
+                    type = o.str("task_type"),
+                    subagentType = o.str("subagent_type"),
+                )
+                version++
+            }
+            "task_progress" -> {
+                val id = o.str("task_id") ?: return
+                val cur = bgTasks[id] ?: return
+                val usage = o.obj("usage")
+                bgTasks[id] = cur.copy(
+                    description = o.str("description")?.takeIf { it.isNotBlank() } ?: cur.description,
+                    lastToolName = o.str("last_tool_name") ?: cur.lastToolName,
+                    summary = o.str("summary")?.takeIf { it.isNotBlank() } ?: cur.summary,
+                    totalTokens = usage?.long("total_tokens") ?: cur.totalTokens,
+                    toolUses = usage?.int("tool_uses") ?: cur.toolUses,
+                )
+                version++
+            }
+            "task_updated" -> {
+                val id = o.str("task_id") ?: return
+                val patch = o.obj("patch") ?: return
+                val st = patch.str("status")
+                if (st != null && st != "running" && st != "pending") {
+                    if (bgTasks.remove(id) != null) version++
+                } else {
+                    val d = patch.str("description")?.takeIf { it.isNotBlank() } ?: return
+                    bgTasks[id]?.let { bgTasks[id] = it.copy(description = d); version++ }
+                }
+            }
             "task_notification" -> {
+                o.str("task_id")?.let { if (bgTasks.remove(it) != null) version++ }
                 o.str("summary")?.takeIf { it.isNotBlank() }?.let {
                     addNotice(if (it.length > 200) it.take(199) + "…" else it, NoticeKind.INFO)
                     version++

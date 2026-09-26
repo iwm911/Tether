@@ -415,4 +415,34 @@ class StreamReducerTest {
         assertTrue(tool.result!!.text.length < 70_000)
         assertFalse(tool.result!!.structuredJson!!.contains("originalFile"))
     }
+
+    // ───────────────────────────── background tasks (task_* system events) ─────────────────────────────
+    // Shapes from CLI 2.1.283's SDK emitters (task_started / task_progress / task_updated / task_notification).
+
+    @Test
+    fun backgroundTasksOutliveTheTurnUntilNotified() {
+        val r = live(fixture("stream_multiturn_partial_interrupt.jsonl"))
+        val shell = """{"type":"system","subtype":"task_started","task_id":"b1","tool_use_id":"toolu_1","description":"npm test","task_type":"local_bash","session_id":"s","uuid":"u1"}"""
+        val agent = """{"type":"system","subtype":"task_started","task_id":"a1","tool_use_id":"toolu_2","description":"Audit auth module","subagent_type":"Explore","is_backgrounded":true,"task_type":"local_agent","session_id":"s","uuid":"u2"}"""
+        val ambient = """{"type":"system","subtype":"task_started","task_id":"m1","description":"monitor","task_type":"monitor_ws","ambient":true,"session_id":"s","uuid":"u3"}"""
+        listOf(shell, agent, ambient).forEach { r.accept(it) }
+        var s = r.snapshot()
+        assertEquals(RunStatus.IDLE, s.status)
+        assertEquals(listOf("b1", "a1"), s.backgroundTasks.map { it.id })
+        assertFalse(s.backgroundTasks[0].isAgent)
+        assertTrue(s.backgroundTasks[1].isAgent)
+
+        r.accept("""{"type":"system","subtype":"task_progress","task_id":"a1","description":"Audit auth module","subagent_type":"Explore","usage":{"total_tokens":12345,"tool_uses":7,"duration_ms":9000},"last_tool_name":"Grep","session_id":"s","uuid":"u4"}""")
+        s = r.snapshot()
+        val a = s.backgroundTasks.single { it.id == "a1" }
+        assertEquals("Grep", a.lastToolName)
+        assertEquals(12345L, a.totalTokens)
+        assertEquals(7, a.toolUses)
+        assertEquals(RunStatus.IDLE, s.status)
+
+        r.accept("""{"type":"system","subtype":"task_updated","task_id":"b1","patch":{"status":"completed","end_time":5},"session_id":"s","uuid":"u5"}""")
+        assertEquals(listOf("a1"), r.snapshot().backgroundTasks.map { it.id })
+        r.accept("""{"type":"system","subtype":"task_notification","task_id":"a1","tool_use_id":"toolu_2","status":"completed","output_file":"","summary":"Agent finished","session_id":"s","uuid":"u6"}""")
+        assertTrue(r.snapshot().backgroundTasks.isEmpty())
+    }
 }

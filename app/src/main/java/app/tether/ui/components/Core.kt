@@ -130,6 +130,9 @@ val RunStatus.label: String
 
 val RunStatus.isLive: Boolean get() = this == RunStatus.STARTING || this == RunStatus.WORKING || this == RunStatus.AWAITING_PERMISSION
 
+/** "Running 2 background tasks" — the session's turn is over but its shells / subagents are not. */
+fun backgroundLabel(count: Int): String = if (count == 1) "Running 1 background task" else "Running $count background tasks"
+
 /** A dot that breathes while [pulsing]. */
 @Composable
 fun StatusDot(color: Color, pulsing: Boolean = false, size: Dp = 8.dp, modifier: Modifier = Modifier) {

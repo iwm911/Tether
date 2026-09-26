@@ -82,8 +82,8 @@ class AgentWatchService : Service() {
             c.agents.agents
                 // Only redraw when something visible changes (not on every streamed token).
                 .distinctUntilChangedBy { list ->
-                    list.filter { it.run.status in LIVE }.map { Triple(it.ref, it.run.status, it.run.title ?: it.run.cwd) } to
-                        list.firstOrNull { it.run.status in LIVE }?.let { it.run.pending?.requestId ?: it.run.lastText?.take(80) }
+                    list.filter { it.run.displayStatus in LIVE }.map { Triple(it.ref, it.run.displayStatus, it.run.title ?: it.run.cwd) } to
+                        list.firstOrNull { it.run.displayStatus in LIVE }?.let { it.run.pending?.requestId ?: it.run.lastText?.take(80) }
                 }
                 .collect { redraw(c) }
         }
