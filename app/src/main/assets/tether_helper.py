@@ -28,6 +28,7 @@ Commands
     input <runId>                in.jsonl lines (image payloads stripped)
     stop <runId> | delete <runId>
     ls [path]                    DirListing
+    commands [--cwd P]           {commands: [{name, description, argumentHint}]} from claude's initialize reply
   Claude Code's own background agents (`claude --bg`, listed by `claude agents`):
     native-list                  [NativeAgent]  (agents --json --all merged with ~/.claude/jobs/<id>/state.json)
     native-start                 stdin {cwd, prompt, model?, permissionMode?, trust} -> NativeAgent | {error:"untrusted"}
@@ -62,7 +63,7 @@ import subprocess
 import sys
 import time
 
-HELPER_VERSION = "1.7.1"
+HELPER_VERSION = "1.8.0"
 
 HOME = os.path.expanduser("~")
 TETHER_DIR = os.path.join(HOME, ".tether")
@@ -3068,6 +3069,68 @@ def cmd_native_follow(opts, agent_id, sid=None):
 VISIBLE_DOTS = (".github", ".config", ".claude", ".vscode", ".devcontainer")
 
 
+COMMANDS_TTL = 10 * 60 * 1000
+
+
+def cmd_commands(opts):
+    """Slash commands Claude Code offers in a folder, from its own initialize reply (built-ins, user and
+    project commands, skills, plugins, MCP prompts). Cached per folder for a few minutes."""
+    cwd = os.path.abspath(os.path.expanduser(opts.get("cwd") or HOME))
+    if not os.path.isdir(cwd):
+        cwd = HOME
+    key = re.sub(r"[^A-Za-z0-9]", "-", cwd)[-120:]
+    cache_path = os.path.join(CACHE_DIR, "commands-%s.json" % key)
+    cached = read_json(cache_path)
+    if isinstance(cached, dict) and cached.get("cwd") == cwd and now_ms() - (cached.get("at") or 0) < COMMANDS_TTL:
+        return emit({"commands": cached.get("commands") or []})
+    claude, login_path = resolve_claude(opts.get("claude"))
+    if not claude:
+        raise HelperError("Claude Code was not found on this machine.")
+    p = subprocess.Popen([claude, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"],
+                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                         cwd=cwd, env=claude_env(claude, login_path), start_new_session=True)
+    try:
+        init = {"type": "control_request", "request_id": "init_cmds", "request": {"subtype": "initialize"}}
+        p.stdin.write((json.dumps(init) + "\n").encode())
+        p.stdin.flush()
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            r, _w, _x = select.select([p.stdout], [], [], 0.5)
+            if not r:
+                if p.poll() is not None:
+                    break
+                continue
+            raw = p.stdout.readline()
+            if not raw:
+                break
+            o = parse_line(raw)
+            resp = (o or {}).get("response") or {}
+            if (o or {}).get("type") != "control_response" or resp.get("request_id") != "init_cmds":
+                continue
+            body = resp.get("response") or {}
+            cmds = []
+            for c in body.get("commands") or []:
+                if isinstance(c, dict) and isinstance(c.get("name"), str):
+                    cmds.append({"name": c["name"], "description": c.get("description") or "",
+                                 "argumentHint": c.get("argumentHint") or ""})
+            try:
+                ensure_dir(CACHE_DIR)
+                write_json_atomic(cache_path, {"cwd": cwd, "at": now_ms(), "commands": cmds})
+            except OSError:
+                pass
+            return emit({"commands": cmds})
+        raise HelperError("Claude Code didn't list its commands.")
+    finally:
+        try:
+            p.stdin.close()
+        except (OSError, IOError):
+            pass
+        try:
+            os.killpg(p.pid, signal.SIGTERM)
+        except OSError:
+            pass
+
+
 def cmd_ls(opts, path=None):
     p = os.path.abspath(os.path.expanduser(path)) if path else HOME
     if not os.path.isdir(p):
@@ -3157,6 +3220,8 @@ def main(argv):
         cmd_delete(opts, need())
     elif cmd == "ls":
         cmd_ls(opts, arg)
+    elif cmd == "commands":
+        cmd_commands(opts)
     elif cmd == "rewind":
         cmd_rewind(opts)
     elif cmd == "native-list":

@@ -14,6 +14,7 @@ import app.tether.core.PermissionDecision
 import app.tether.core.PermissionMode
 import app.tether.core.RunRef
 import app.tether.core.NativeTimelineEntry
+import app.tether.core.SlashCommand
 import app.tether.core.isNative
 import app.tether.core.RunStatus
 import app.tether.core.StartRunRequest
@@ -182,6 +183,12 @@ class ChatViewModel(private val container: AppContainer, initialRef: RunRef) : V
 
     /** The composer draft lives here so it survives rotation and a failed send can be restored. */
     val composer = ComposerState()
+
+    /** Background agents have no initialize reply to read commands from: ask the machine. */
+    val nativeCommands: StateFlow<List<SlashCommand>> = viewModelScope.slashCommandsFor(
+        container.agents,
+        combine(refFlow, conv) { r, c -> c.cwd?.takeIf { r.isNative }?.let { r.connectionId to it } },
+    )
 
     private val _messages = Channel<String>(Channel.BUFFERED)
     /** One-shot human messages for the snackbar. */
@@ -592,6 +599,11 @@ class SessionViewModel(
     val state: StateFlow<SessionUiState> = _state.asStateFlow()
 
     val composer = ComposerState()
+
+    val commands: StateFlow<List<SlashCommand>> = viewModelScope.slashCommandsFor(
+        container.agents,
+        _state.map { s -> s.conversation?.cwd?.let { connectionId to it } },
+    )
 
     private val _messages = Channel<String>(Channel.BUFFERED)
     val messages: Flow<String> = _messages.receiveAsFlow()

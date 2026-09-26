@@ -362,6 +362,10 @@ sealed interface ChatItem {
         val uuid: String? = null,
         /** uuid of the last assistant message before this one: where a branch that edits/retries it forks. */
         val forkPointUuid: String? = null,
+        /** A slash command ("/compact keep tests"), not a prompt. */
+        val command: Boolean = false,
+        /** What a local command (/context, /cost…) printed. Claude never sees it. */
+        val commandOutput: String? = null,
     ) : ChatItem
 
     data class AssistantText(

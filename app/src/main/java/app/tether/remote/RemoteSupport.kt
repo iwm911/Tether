@@ -1,6 +1,7 @@
 package app.tether.remote
 
 import app.tether.core.RunRef
+import app.tether.core.SlashCommand
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -115,6 +116,13 @@ internal fun utf8Length(s: String): Int {
     }
     return n
 }
+
+/** The `commands` array of Claude Code's initialize reply (also what the helper's `commands` returns). */
+internal fun parseSlashCommands(arr: JsonArray?): List<SlashCommand> = arr?.mapNotNull { c ->
+    val co = c as? JsonObject ?: return@mapNotNull null
+    val name = co.str("name") ?: return@mapNotNull null
+    SlashCommand(name = name, description = co.str("description").orEmpty(), argumentHint = co.str("argumentHint").orEmpty())
+}.orEmpty()
 
 internal fun projectNameOf(path: String): String = path.trimEnd('/').substringAfterLast('/').ifEmpty { "/" }
 

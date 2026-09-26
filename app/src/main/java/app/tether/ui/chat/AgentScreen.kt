@@ -165,6 +165,7 @@ fun AgentScreen(ref: RunRef, onBack: () -> Unit, onOpenMachine: (String) -> Unit
     LaunchedEffect(vm) { vm.closed.collect { onBack() } }
     LaunchedEffect(vm) { vm.branched.collect { onOpenAgent(it) } }
     val branching by vm.branching.collectAsStateWithLifecycle()
+    val nativeCommands by vm.nativeCommands.collectAsStateWithLifecycle()
     var sheetFor by remember { mutableStateOf<ChatItem.User?>(null) }
     var editFor by remember { mutableStateOf<Pair<ChatItem.User, Boolean>?>(null) }
     val messageActions = remember(vm) {
@@ -393,6 +394,7 @@ fun AgentScreen(ref: RunRef, onBack: () -> Unit, onOpenMachine: (String) -> Unit
                             !alive -> "Resumes this background agent"
                             else -> "Sends to this background agent"
                         },
+                        commands = nativeCommands,
                         allowAttachments = false,
                         onError = { msg -> scope.launch { snackbar.showSnackbar(msg) } },
                     )
