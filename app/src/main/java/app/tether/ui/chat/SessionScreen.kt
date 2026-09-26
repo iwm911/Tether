@@ -71,6 +71,7 @@ fun SessionScreen(connectionId: String, sessionId: String, onBack: () -> Unit, o
     val container = LocalAppContainer.current
     val vm: SessionViewModel = viewModel(key = "session/$connectionId/$sessionId") { SessionViewModel(container, connectionId, sessionId) }
     val state by vm.state.collectAsStateWithLifecycle()
+    KeepScreenOnIfEnabled()
     val machines by app.tether.LocalAppContainer.current.connections.connections.collectAsStateWithLifecycle()
     val plan = machines.firstOrNull { it.id == connectionId }?.lastPlan
     val branching by vm.branching.collectAsStateWithLifecycle()

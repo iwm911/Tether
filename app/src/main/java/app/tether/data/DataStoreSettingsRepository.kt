@@ -88,6 +88,7 @@ class DataStoreSettingsRepository(context: Context, scope: CoroutineScope) : Set
             codeFontScale = this[K.codeFontScale] ?: d.codeFontScale,
             onboardingDone = this[K.onboardingDone] ?: d.onboardingDone,
             compactTools = this[K.compactTools] ?: d.compactTools,
+            keepScreenOn = this[K.keepScreenOn] ?: d.keepScreenOn,
             analyticsEnabled = this[K.analyticsEnabled] ?: d.analyticsEnabled,
             analyticsNoticeSeen = this[K.analyticsNoticeSeen] ?: d.analyticsNoticeSeen,
         )
@@ -110,6 +111,7 @@ class DataStoreSettingsRepository(context: Context, scope: CoroutineScope) : Set
         this[K.codeFontScale] = s.codeFontScale
         this[K.onboardingDone] = s.onboardingDone
         this[K.compactTools] = s.compactTools
+        this[K.keepScreenOn] = s.keepScreenOn
         this[K.analyticsEnabled] = s.analyticsEnabled
         this[K.analyticsNoticeSeen] = s.analyticsNoticeSeen
     }
@@ -131,6 +133,7 @@ class DataStoreSettingsRepository(context: Context, scope: CoroutineScope) : Set
         val codeFontScale = floatPreferencesKey("code_font_scale")
         val onboardingDone = booleanPreferencesKey("onboarding_done")
         val compactTools = booleanPreferencesKey("compact_tools")
+        val keepScreenOn = booleanPreferencesKey("keep_screen_on")
         val analyticsEnabled = booleanPreferencesKey("analytics_enabled")
         val analyticsNoticeSeen = booleanPreferencesKey("analytics_notice_seen")
     }

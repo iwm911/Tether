@@ -41,6 +41,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.ui.platform.LocalWindowInfo
+import android.view.WindowManager
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
@@ -80,9 +84,13 @@ fun AppLockGate(content: @Composable () -> Unit) {
     val lockEnabled = settings.biometricLock
     val locked = lockEnabled && !unlocked
 
-    // Keep the Recents thumbnail from showing agents when the lock is on.
+    // With the lock on: no Recents thumbnail, screenshots or screen recording of agents (FLAG_SECURE
+    // covers every Android version; Compose dialogs inherit it).
     LaunchedEffect(lockEnabled, activity) {
-        if (Build.VERSION.SDK_INT >= 33) activity?.setRecentsScreenshotEnabled(!lockEnabled)
+        val window = activity?.window ?: return@LaunchedEffect
+        if (lockEnabled) window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        else window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        if (Build.VERSION.SDK_INT >= 33) activity.setRecentsScreenshotEnabled(!lockEnabled)
     }
 
     var error by remember { mutableStateOf<String?>(null) }
@@ -134,7 +142,12 @@ fun AppLockGate(content: @Composable () -> Unit) {
         // windows too, so an in-window overlay could end up *under* one left open before a re-lock.
         val visibility = remember { MutableTransitionState(false) }
         visibility.targetState = locked
-        if (visibility.currentState || visibility.targetState) {
+        // Windows opened after the lock (e.g. a dialog triggered by a late network result) stack above
+        // it. When the lock loses focus to one, re-create it so it's on top again.
+        var raise by remember { mutableIntStateOf(0) }
+        // One raise per focus loss: the notification shade or a system dialog also take focus.
+        var awaitingFocus by remember { mutableStateOf(false) }
+        if (visibility.currentState || visibility.targetState) key(raise) {
             Dialog(
                 onDismissRequest = { activity?.moveTaskToBack(true) },
                 properties = DialogProperties(
@@ -147,6 +160,17 @@ fun AppLockGate(content: @Composable () -> Unit) {
                 // No platform dim: the lock screen paints its own calm, full-bleed surface.
                 val dialogWindow = (androidx.compose.ui.platform.LocalView.current.parent as? androidx.compose.ui.window.DialogWindowProvider)?.window
                 androidx.compose.runtime.SideEffect { dialogWindow?.setDimAmount(0f) }
+                val focused = LocalWindowInfo.current.isWindowFocused
+                LaunchedEffect(focused, prompting, locked) {
+                    if (focused) { awaitingFocus = false; return@LaunchedEffect }
+                    if (prompting || !locked || awaitingFocus) return@LaunchedEffect
+                    delay(250)
+                    val resumed = activity?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.RESUMED) == true
+                    if (resumed && !prompting && !AppLock.unlocked.value) {
+                        awaitingFocus = true
+                        raise++
+                    }
+                }
                 AnimatedVisibility(visibleState = visibility, enter = fadeIn(tween(200)), exit = fadeOut(tween(320))) {
                     LockScreen(
                         error = error,

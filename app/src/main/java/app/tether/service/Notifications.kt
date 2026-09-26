@@ -85,9 +85,12 @@ object Notifications {
     fun appLockOn(context: Context): Boolean =
         (context.applicationContext as? TetherApp)?.container?.settings?.settings?.value?.biometricLock == true
 
-    /** With app lock on, the lock screen only shows [publicTitle], never commands, paths or replies. */
-    private fun NotificationCompat.Builder.guard(context: Context, channel: String, publicTitle: String): NotificationCompat.Builder {
-        if (!appLockOn(context)) return this
+    /**
+     * The lock screen only shows [publicTitle], never commands, paths or replies. Approvals are always
+     * guarded ([always]); other notifications only while app lock is on.
+     */
+    private fun NotificationCompat.Builder.guard(context: Context, channel: String, publicTitle: String, always: Boolean = false): NotificationCompat.Builder {
+        if (!always && !appLockOn(context)) return this
         val public = NotificationCompat.Builder(context, channel)
             .setSmallIcon(R.drawable.ic_notification)
             .setColor(ACCENT)
@@ -203,12 +206,13 @@ object Notifications {
             return PendingIntent.getBroadcast(context, id + code, intent, mutability or PendingIntent.FLAG_UPDATE_CURRENT)
         }
 
-        // App lock on: answering needs the device unlocked (Android 12+); older versions get no inline
-        // actions at all, so the only way in is the app, behind its own lock.
-        val locked = appLockOn(context)
-        val inlineActions = !locked || Build.VERSION.SDK_INT >= 31
+        // An answer can make Claude run commands on the user's machine, so it always needs the phone
+        // unlocked: Android 12+ enforces that on the buttons, and the receiver refuses answers from the
+        // keyguard on every version. With app lock on, older versions get no inline actions at all, so
+        // the only way in is the app, behind its own lock.
+        val inlineActions = !appLockOn(context) || Build.VERSION.SDK_INT >= 31
         fun button(label: String, intent: PendingIntent) =
-            NotificationCompat.Action.Builder(0, label, intent).setAuthenticationRequired(locked)
+            NotificationCompat.Action.Builder(0, label, intent).setAuthenticationRequired(true)
         val reply = button("Tell Claude", action(ACTION_REPLY, 3))
             .addRemoteInput(RemoteInput.Builder(KEY_REPLY_TEXT).setLabel("What should Claude do instead?").build())
             .setAllowGeneratedReplies(false)
@@ -227,7 +231,7 @@ object Notifications {
             .setAutoCancel(true)
             .setGroup(GROUP_APPROVALS)
             .setContentIntent(openApp(context, event.ref, id))
-            .guard(context, CHANNEL_APPROVALS, if (question) "An agent has a question" else "An agent needs your approval")
+            .guard(context, CHANNEL_APPROVALS, if (question) "An agent has a question" else "An agent needs your approval", always = true)
         // A question needs the picker: tapping opens it; Allow/Deny would answer nothing.
         if (question) builder.addAction(0, "Answer", openApp(context, event.ref, id))
         else if (inlineActions) {

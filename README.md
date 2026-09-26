@@ -15,7 +15,7 @@ Start Claude Code agents on your own computers, watch them work, and approve wha
 **[⬇️ Download the APK](https://github.com/iwm911/Tether/releases/latest)** &nbsp;·&nbsp; [🌐 Website](https://iwm911.github.io/Tether/) &nbsp;·&nbsp; [🔒 Privacy](PRIVACY.md)
 
 <br>
-<img src="docs/assets/hero.png" width="900" alt="Illustration of Tether: the Home screen with an agent waiting for approval, a conversation showing a code diff and the approval panel, and a lock-screen notification with Allow, Deny and Tell Claude buttons">
+<img src="docs/assets/hero.png" width="900" alt="Illustration of Tether: the Home screen with an agent waiting for approval, a conversation showing a code diff and the approval panel, and the notification shade with Allow, Deny and Tell Claude buttons">
 <br><sub>Illustration of the app's screens</sub>
 
 </div>
@@ -37,7 +37,7 @@ with your files, your tools and your setup.
 
 ### 📲 Approve from anywhere
 Permission requests show up as notifications with **Allow · Deny · Reply** buttons. No need to open
-the app.
+the app. The command stays hidden on the lock screen, and answering needs your phone unlocked.
 
 </td>
 <td width="33%" valign="top">
@@ -108,7 +108,7 @@ over SSH.
 
 <p align="center"><img src="docs/assets/how-it-works.png" width="820" alt="Tether on your phone connects over SSH to a small helper on your computer, which starts Claude Code detached in your repo"></p>
 
-1. Tether connects to your computer over **SSH**. Your key lives in the phone's secure hardware.
+1. Tether connects to your computer over **SSH**. Your SSH key is encrypted with a key held in the phone's secure hardware.
 2. It installs a tiny helper script (`~/.tether/bin`, Python standard library only).
 3. The helper starts Claude Code **in the background**, so it doesn't depend on the phone staying
    connected.
@@ -132,6 +132,10 @@ Tether updates itself from GitHub Releases, and every update is verified before 
 ## 🔒 Security & privacy
 
 - 🔑 **Keys never leave the phone.** They're encrypted with a key held in the Android Keystore.
+- 📵 **Nothing to approve from the lock screen.** Approval notifications hide the command until you
+  unlock, and Allow / Deny / Reply only work on an unlocked phone.
+- 🔗 **Links from Claude's output are filtered.** Only web and email links open, after showing you
+  the real address.
 - 🛡️ **Host keys are pinned.** If a server's key changes, you get a loud warning before connecting.
 - 👆 **Optional app lock** with fingerprint, face or screen lock.
 - ✋ **Claude Code's permission rules still apply.** Tether passes your approvals through; it never

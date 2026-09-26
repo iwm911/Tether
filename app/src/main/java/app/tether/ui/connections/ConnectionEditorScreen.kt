@@ -601,7 +601,7 @@ private fun SaveBar(ui: EditorUi, onSave: () -> Unit) {
 
 @Composable
 private fun InstallKeyDialog(s: EditorUi, key: SshKey, onInstall: (String) -> Unit, onDismiss: () -> Unit) {
-    var pw by rememberSaveable { mutableStateOf(s.password) }
+    var pw by remember { mutableStateOf(s.password) } // never in saved instance state
     var visible by rememberSaveable { mutableStateOf(false) }
     val colors = TetherTheme.colors
     TetherDialog(

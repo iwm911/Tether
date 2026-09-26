@@ -45,16 +45,20 @@ class NotificationActionReceiver : BroadcastReceiver() {
             else -> return
         }
 
-        // App lock on and the phone is locked: never act (covers notifications posted before the lock
-        // was turned on, and launchers that ignore setAuthenticationRequired). Tapping opens the app.
-        if (Notifications.appLockOn(context) &&
-            context.getSystemService(KeyguardManager::class.java)?.isKeyguardLocked != false
-        ) {
-            Log.i(TAG, "Ignored $action for $requestId: app lock is on and the device is locked")
+        val app = context.applicationContext as? TetherApp ?: return
+        // Never act from the lock screen: an answer can make Claude run commands. Android 12+ already
+        // asks for unlock on these buttons; this covers older versions and launchers that ignore it.
+        if (context.getSystemService(KeyguardManager::class.java)?.isDeviceLocked != false) {
+            Log.i(TAG, "Ignored $action for $requestId: device is locked")
+            Notifications.showPermission(
+                context.applicationContext,
+                pendingEvent(intent, ref, requestId),
+                app.container.connections.get(connectionId)?.name,
+                reason = "Unlock your phone to answer.",
+            )
             return
         }
 
-        val app = context.applicationContext as? TetherApp ?: return
         val container = app.container
         Notifications.cancel(context, notificationId)
         ServiceController.forgetPermission(notificationId)
@@ -67,16 +71,9 @@ class NotificationActionReceiver : BroadcastReceiver() {
                 throw e
             } catch (e: Exception) {
                 Log.w(TAG, "Couldn't deliver decision for $requestId", e)
-                val event = AgentEvent.PermissionRequested(
-                    ref = ref,
-                    title = intent.getStringExtra(Notifications.EXTRA_TITLE) ?: "Agent",
-                    requestId = requestId,
-                    toolName = intent.getStringExtra(Notifications.EXTRA_TOOL) ?: "Tool",
-                    summary = intent.getStringExtra(Notifications.EXTRA_SUMMARY) ?: "",
-                )
                 Notifications.showPermission(
                     context.applicationContext,
-                    event,
+                    pendingEvent(intent, ref, requestId),
                     container.connections.get(connectionId)?.name,
                     reason = "Couldn't reach the machine to send your answer — try again or open Tether.",
                 )
@@ -92,6 +89,15 @@ class NotificationActionReceiver : BroadcastReceiver() {
             }
         }
     }
+
+    /** The request as carried by the notification's intent, for re-posting it. */
+    private fun pendingEvent(intent: Intent, ref: RunRef, requestId: String) = AgentEvent.PermissionRequested(
+        ref = ref,
+        title = intent.getStringExtra(Notifications.EXTRA_TITLE) ?: "Agent",
+        requestId = requestId,
+        toolName = intent.getStringExtra(Notifications.EXTRA_TOOL) ?: "Tool",
+        summary = intent.getStringExtra(Notifications.EXTRA_SUMMARY) ?: "",
+    )
 
     private companion object {
         const val TAG = "TetherNotifAction"

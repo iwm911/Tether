@@ -95,7 +95,7 @@ object ServiceController {
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    Log.w(TAG, "Couldn't post notification for $event", e)
+                    Log.w(TAG, "Couldn't post notification for ${event::class.simpleName} on ${event.ref.runId}", e)
                 }
             }
         }

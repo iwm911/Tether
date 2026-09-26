@@ -70,6 +70,12 @@ h1{font-family:Serif;font-weight:400;font-size:30px;letter-spacing:-.3px;margin:
 .nx{font-size:13.5px;color:#46444c;margin-top:3px;font-family:Mono;font-size:12.5px}
 .na{display:flex;gap:18px;margin-top:14px;font-size:14px;font-weight:600;color:#9a4a30}
 .n2{margin:0 12px 14px;background:rgba(245,242,250,.8);color:#1b1b1f;border-radius:22px;padding:13px 16px;font-size:13px}
+.shade{background:linear-gradient(180deg,#232226 0%,#1b1a1e 100%)}
+.qs{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:14px 16px 0}
+.tile{background:#34333a;border-radius:22px;padding:16px 14px;font-size:13.5px;font-weight:600;color:#e4e1ea}
+.tile.on{background:#e8c2b2;color:#3a1d12}
+.bright{margin:14px 16px 20px;height:34px;border-radius:17px;background:#34333a;overflow:hidden}.bright i{display:block;width:62%;height:100%;background:#cfc9d8;border-radius:17px}
+.shade .n{margin:0 12px 12px}
 .hint{text-align:center;color:#cfcbd8;font-size:12px;margin-bottom:20px}
 </style></head><body>
 
@@ -126,10 +132,13 @@ h1{font-family:Serif;font-weight:400;font-size:30px;letter-spacing:-.3px;margin:
  </div>
 </div></div>
 
-<!-- 3 · Lock-screen notification -->
-<div class="phone"><div class="scr lock"><div class="cam"></div>
- <div class="sb"><span></span><span><i></i><i></i><i style="width:22px"></i></span></div>
- <div class="clock">9:41</div><div class="date">Friday, 26 September</div>
+<!-- 3 · Notification shade (unlocked phone) -->
+<div class="phone"><div class="scr shade"><div class="cam"></div>
+ <div class="sb"><span>9:41</span><span><i></i><i></i><i style="width:22px"></i></span></div>
+ <div class="qs">
+  <div class="tile on">Wi-Fi</div><div class="tile on">Bluetooth</div><div class="tile">Flashlight</div><div class="tile">Do not disturb</div>
+ </div>
+ <div class="bright"><i></i></div>
  <div class="n">
   <div class="nh"><span class="ni"><svg width="13" height="13" viewBox="0 0 24 24"><path fill="#fff" d="M12 1.5l1.6 7.1 6.3-3.7-3.7 6.3 7.1 1.6-7.1 1.6 3.7 6.3-6.3-3.7L12 24l-1.6-7.1-6.3 3.7 3.7-6.3L.7 12.8l7.1-1.6L4.1 4.9l6.3 3.7z"/></svg></span>Tether · Workstation · now</div>
   <div class="nt">Add --celsius flag needs approval</div>
@@ -137,7 +146,7 @@ h1{font-family:Serif;font-weight:400;font-size:30px;letter-spacing:-.3px;margin:
   <div class="na"><span>Allow</span><span>Deny</span><span>Tell Claude</span></div>
  </div>
  <div class="n2"><b>✓ Fix flaky login test</b><br><span style="color:#55535b">Finished — your turn</span></div>
- <div class="hint">Swipe up to unlock</div>
+ <div class="hint">Answer right from the shade</div>
 </div></div>
 
 </body></html>

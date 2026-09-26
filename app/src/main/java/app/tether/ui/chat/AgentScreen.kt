@@ -75,6 +75,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -96,6 +97,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
@@ -133,6 +135,18 @@ import kotlin.math.roundToInt
 
 private const val ContextWindowTokens = 200_000L
 
+/** Holds the screen awake while the calling screen is shown, if the user turned that on in Settings. */
+@Composable
+internal fun KeepScreenOnIfEnabled() {
+    val settings by LocalAppContainer.current.settings.settings.collectAsStateWithLifecycle()
+    if (!settings.keepScreenOn) return
+    val view = LocalView.current
+    DisposableEffect(view) {
+        view.keepScreenOn = true
+        onDispose { view.keepScreenOn = false }
+    }
+}
+
 /** The heart of the app: one live Claude Code agent as a conversation. */
 @Composable
 fun AgentScreen(ref: RunRef, onBack: () -> Unit, onOpenMachine: (String) -> Unit, onOpenAgent: (RunRef) -> Unit = {}) {
@@ -142,6 +156,8 @@ fun AgentScreen(ref: RunRef, onBack: () -> Unit, onOpenMachine: (String) -> Unit
     val conv = state.conversation
     val machines by app.tether.LocalAppContainer.current.connections.connections.collectAsStateWithLifecycle()
     val plan = conv.planName ?: machines.firstOrNull { it.id == state.ref.connectionId }?.lastPlan
+
+    KeepScreenOnIfEnabled()
 
     val snackbar = remember { SnackbarHostState() }
     LaunchedEffect(vm) { vm.messages.collect { snackbar.showSnackbar(it) } }

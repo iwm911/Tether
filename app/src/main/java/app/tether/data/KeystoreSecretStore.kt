@@ -6,9 +6,11 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Log
 import app.tether.core.SecretStore
+import android.security.keystore.KeyPermanentlyInvalidatedException
 import java.security.InvalidKeyException
 import java.security.KeyStore
 import java.util.Base64
+import javax.crypto.AEADBadTagException
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -49,13 +51,26 @@ class KeystoreSecretStore(context: Context) : SecretStore {
                 if (blob.size <= IV_BYTES) return null
                 val cipher = initCipher(Cipher.DECRYPT_MODE, GCMParameterSpec(TAG_BITS, blob, 0, IV_BYTES))
                 String(cipher.doFinal(blob, IV_BYTES, blob.size - IV_BYTES), Charsets.UTF_8)
+            } catch (e: AEADBadTagException) {
+                drop(key, e) // encrypted with a key that no longer exists, or tampered with
+            } catch (e: KeyPermanentlyInvalidatedException) {
+                drop(key, e)
+            } catch (e: IllegalArgumentException) {
+                drop(key, e) // not valid base64: corrupted on disk
             } catch (e: Exception) {
-                // Key invalidated (e.g. keystore reset) or corrupted entry: the value is unrecoverable.
-                Log.w(TAG, "Dropping unreadable secret '$key'", e)
-                prefs.edit().remove(key).commit()
+                // Keystore hiccups happen (daemon restart, right after an OTA). Never destroy a secret
+                // over one: report it as unavailable this time and try again on the next read.
+                Log.w(TAG, "Secret '$key' temporarily unreadable", e)
                 null
             }
         }
+    }
+
+    /** Only for values that can never be decrypted again. */
+    private fun drop(key: String, e: Exception): String? {
+        Log.w(TAG, "Dropping unrecoverable secret '$key'", e)
+        prefs.edit().remove(key).commit()
+        return null
     }
 
     override fun remove(key: String) {
@@ -81,14 +96,11 @@ class KeystoreSecretStore(context: Context) : SecretStore {
     private fun secretKey(): SecretKey {
         cachedKey?.let { return it }
         val ks = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-        val existing = try {
-            (ks.getEntry(ALIAS, null) as? KeyStore.SecretKeyEntry)?.secretKey
-        } catch (e: Exception) {
-            Log.w(TAG, "Keystore entry unreadable, regenerating", e)
-            runCatching { ks.deleteEntry(ALIAS) }
-            null
-        }
-        val key = existing ?: generateKey()
+        // Generate only when there is no key at all. A key that exists but can't be read right now
+        // is left alone (the exception propagates): deleting it would orphan every stored secret.
+        val key = if (!ks.containsAlias(ALIAS)) generateKey()
+        else (ks.getEntry(ALIAS, null) as? KeyStore.SecretKeyEntry)?.secretKey
+            ?: throw IllegalStateException("Keystore entry '$ALIAS' isn't a secret key")
         cachedKey = key
         return key
     }

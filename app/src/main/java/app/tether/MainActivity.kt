@@ -13,6 +13,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.tether.core.RunRef
 import app.tether.ui.components.LocalHapticsEnabled
 import app.tether.ui.connections.HostKeyPromptHost
+import app.tether.ui.components.SafeLinks
 import app.tether.ui.lock.AppLock
 import app.tether.ui.lock.AppLockGate
 import app.tether.ui.nav.TetherNavHost
@@ -49,8 +50,10 @@ class MainActivity : FragmentActivity() {
             ) {
                 TetherTheme(themeMode = settings.theme, dynamicColor = settings.dynamicColor) {
                     AppLockGate {
-                        TetherNavHost(pendingAgent = pendingAgent)
-                        HostKeyPromptHost()
+                        SafeLinks {
+                            TetherNavHost(pendingAgent = pendingAgent)
+                            HostKeyPromptHost()
+                        }
                     }
                 }
             }

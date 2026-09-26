@@ -62,6 +62,9 @@ class HelperClaudeRemote internal constructor(
     private val helperVersion: String by lazy {
         VERSION_RE.find(String(helperBytes, Charsets.UTF_8))?.groupValues?.get(1) ?: "0"
     }
+    private val helperSha256: String by lazy {
+        java.security.MessageDigest.getInstance("SHA-256").digest(helperBytes).joinToString("") { "%02x".format(it) }
+    }
 
     // ═══════════════════════════════════════ helper install ═══════════════════════════════════════
 
@@ -79,10 +82,10 @@ class HelperClaudeRemote internal constructor(
             if (lines.any { it.trim() == "NOPY" }) {
                 throw RemoteException("Python 3 is needed on this machine for Tether's helper. Install python3 and try again.")
             }
-            val installed = lines.firstNotNullOfOrNull { l ->
-                RemoteJson.parseObject(l)?.str("version")
-            }
-            if (installed != helperVersion) {
+            // Compare content, not the version string: a helper someone else modified (but kept the
+            // version of) must be replaced before it's ever run again.
+            val installed = lines.firstOrNull { it.startsWith("SHA=") }?.removePrefix("SHA=")?.trim()
+            if (installed != helperSha256) {
                 ssh.upload(connectionId, "$home/$HELPER_REL", helperBytes, "755".toInt(8))
                 val verify = ssh.exec(connectionId, helperCommand(home, listOf("version")), timeoutMs = 30_000)
                 val v = lastJsonLine(verify.stdout)?.let { RemoteJson.parseObject(it)?.str("version") }
@@ -489,10 +492,15 @@ class HelperClaudeRemote internal constructor(
         const val WATCH_STALL_MS = 40_000L
         const val NATIVE_HOLD_MS = 2_500L
         val VERSION_RE = Regex("""HELPER_VERSION\s*=\s*"([^"]+)"""")
+        /** Home dir, owner-only ~/.tether, and the installed helper's SHA-256, without running it. */
         val CHECK_SCRIPT = """
+            umask 077
             printf 'HOME=%s\n' "${'$'}HOME"
+            mkdir -p "${'$'}HOME/.tether/bin" && chmod 700 "${'$'}HOME/.tether" "${'$'}HOME/.tether/bin"
             PY=${'$'}(command -v python3 2>/dev/null || echo /usr/bin/python3)
-            if [ -x "${'$'}PY" ]; then "${'$'}PY" "${'$'}HOME/$HELPER_REL" version 2>/dev/null || echo NOHELPER; else echo NOPY; fi
+            if [ -x "${'$'}PY" ]; then "${'$'}PY" -c 'import hashlib, sys
+            try: print("SHA=" + hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())
+            except OSError: print("NOHELPER")' "${'$'}HOME/$HELPER_REL"; else echo NOPY; fi
         """.trimIndent()
     }
 }

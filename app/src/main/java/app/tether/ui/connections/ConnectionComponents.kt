@@ -856,8 +856,8 @@ internal fun ImportKeySheet(
     val scope = rememberCoroutineScope()
     val colors = TetherTheme.colors
     var name by rememberSaveable { mutableStateOf("") }
-    var text by rememberSaveable { mutableStateOf("") }
-    var passphrase by rememberSaveable { mutableStateOf("") }
+    var text by remember { mutableStateOf("") }
+    var passphrase by remember { mutableStateOf("") } // key + passphrase stay out of saved instance state
     var showPass by rememberSaveable { mutableStateOf(false) }
     var localError by remember { mutableStateOf<String?>(null) }
     var fileLabel by rememberSaveable { mutableStateOf<String?>(null) }
