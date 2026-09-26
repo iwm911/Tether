@@ -649,6 +649,13 @@ class DefaultAgentHub(
         if (info.status == RunStatus.FAILED) {
             throw RemoteException(info.error ?: "Claude Code exited right after starting.")
         }
+        // Local commands (/cost…) are never echoed back, so a slash prompt would otherwise not show at all.
+        val slashPrompt = request.prompt?.trim()?.takeIf { !withImages && it.startsWith("/") }
+        if (slashPrompt != null) {
+            val s = sessionFor(ref)
+            synchronized(s.lock) { s.reducer.addOptimisticUser(slashPrompt, 0, queued = false) }
+            s.bump()
+        }
         if (withImages) send(ref, request.prompt.orEmpty(), images)
         scope.launch {
             delay(1_500)
