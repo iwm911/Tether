@@ -44,9 +44,12 @@ import kotlinx.serialization.json.JsonPrimitive
  *   user tool_result (+ tool_use_result | toolUseResult) → ToolCall.result/status
  *                                            (is_error → ERROR; our deny / "doesn't want to proceed" →
  *                                            DENIED; cancelled prompt or interrupted → INTERRUPTED)
- *   user text (isReplay echo / transcript) → ChatItem.User (meta skipped; <command-name> → "/cmd args";
- *                                            "[Request interrupted…" → Notice INTERRUPTED;
- *                                            <local-command-stdout> → Notice)
+ *   user text (isReplay echo / transcript) → ChatItem.User (meta skipped; <command-name> → "/cmd args",
+ *                                            command = true; "[Request interrupted…" → Notice INTERRUPTED;
+ *                                            <local-command-stdout> → the command's commandOutput, else Notice)
+ *   system/local_command (transcript)     → the command's commandOutput (like <local-command-stdout>)
+ *   live <synthetic> assistant text        → output of a local command (/context, /cost…): never echoed,
+ *                                            so it settles the oldest queued command instead
  *   parent_tool_use_id ≠ null             → nested under that ToolCall.children (Task / Agent subagents)
  *   TodoWrite input / TaskCreate+TaskUpdate → state.todos. The ToolCall rows are KEPT in items; the UI
  *                                            hides TodoWrite rows (TaskCreate/TaskUpdate rows are shown).
@@ -221,7 +224,8 @@ class StreamReducer(private val clock: () -> Long = { System.currentTimeMillis()
     /** Shows a just-sent message immediately; reconciled when claude echoes it. Returns its key. */
     fun addOptimisticUser(text: String, imageCount: Int, queued: Boolean): String {
         val key = "local:${localSeq++}"
-        append(root, ChatItem.User(key = key, text = text, imageCount = imageCount, timestamp = clock(), queued = queued))
+        append(root, ChatItem.User(key = key, text = text, imageCount = imageCount, timestamp = clock(), queued = queued,
+            command = isKnownCommand(text)))
         optimistic.add(key)
         version++
         return key
@@ -448,6 +452,10 @@ class StreamReducer(private val clock: () -> Long = { System.currentTimeMillis()
         val ts = isoToEpochMs(o.str("timestamp"))
         val lineUuid = o.str("uuid")
         if (parent == null && lineUuid != null && o.bool("isSidechain") != true) lastAssistantUuid = lineUuid
+        if (live && parent == null && msg.str("model") == "<synthetic>") {
+            val text = (msg["content"] as? JsonArray)?.mapNotNull { (it as? JsonObject)?.takeIf { b -> b.str("type") == "text" }?.str("text") }?.joinToString("\n")
+            if (text != null && onLocalCommandReply(text)) return
+        }
         val container = containerFor(parent)
         if (parent == null) {
             msg.obj("usage")?.let { u -> usageTokens(u)?.let { contextTokens = it } }
@@ -569,21 +577,12 @@ class StreamReducer(private val clock: () -> Long = { System.currentTimeMillis()
             return
         }
         if (text.startsWith("<local-command-stdout>") || text.startsWith("<local-command-stderr>")) {
-            val body = stripAnsi(text.replace(Regex("</?local-command-(stdout|stderr)>"), "")).trim()
-            if (body.isEmpty()) return
-            if (body.startsWith("Set model to")) {
-                Regex("`([^`]+)`").find(body)?.groupValues?.get(1)?.let { m ->
-                    model = Regex("\\(([^)]+)\\)").find(m)?.groupValues?.get(1) ?: m
-                }
-                addNotice(body.replace("`", "").replaceFirst("Set model to", "Model set to"), NoticeKind.MODEL_CHANGE)
-            } else {
-                addNotice(if (body.length > 300) body.take(299) + "…" else body, if (text.contains("stderr")) NoticeKind.WARNING else NoticeKind.INFO)
-            }
-            version++
+            onLocalCommandOutput(text)
             return
         }
+        val isCommand = text.contains("<command-name>")
         val display: String = when {
-            text.contains("<command-name>") -> {
+            isCommand -> {
                 val name = Regex("<command-name>\\s*(/?[^<\\s]+)\\s*</command-name>").find(text)?.groupValues?.get(1) ?: return
                 val args = Regex("<command-args>(.*?)</command-args>", RegexOption.DOT_MATCHES_ALL).find(text)?.groupValues?.get(1)?.trim().orEmpty()
                 ((if (name.startsWith("/")) name else "/$name") + " " + args).trim()
@@ -598,12 +597,63 @@ class StreamReducer(private val clock: () -> Long = { System.currentTimeMillis()
         val key = reconciled ?: (o.str("uuid")?.let { "u:$it" } ?: "u:#${userSeq++}")
         if (reconciled != null) remove(reconciled)
         append(root, ChatItem.User(key = key, text = display, imageCount = images, timestamp = ts ?: clock(), queued = false,
-            uuid = o.str("uuid"), forkPointUuid = lastAssistantUuid))
+            uuid = o.str("uuid"), forkPointUuid = lastAssistantUuid, command = isCommand || isKnownCommand(display)))
         if (live) {
             status = RunStatus.WORKING
             if (workingSince == null) workingSince = ts ?: clock()
         }
         version++
+    }
+
+    /**
+     * `<local-command-stdout>` (a user line, or a transcript's `system`/`local_command` line): a model
+     * switch becomes its notice; anything else is folded into the command that printed it.
+     */
+    private fun onLocalCommandOutput(text: String) {
+        val body = stripAnsi(text.replace(Regex("</?local-command-(stdout|stderr)>"), "")).trim()
+        if (body.isEmpty()) return
+        if (body.startsWith("Set model to")) {
+            Regex("`([^`]+)`").find(body)?.groupValues?.get(1)?.let { m ->
+                model = Regex("\\(([^)]+)\\)").find(m)?.groupValues?.get(1) ?: m
+            }
+            addNotice(body.replace("`", "").replaceFirst("Set model to", "Model set to"), NoticeKind.MODEL_CHANGE)
+        } else if (!attachCommandOutput(body)) {
+            addNotice(if (body.length > 300) body.take(299) + "…" else body, if (text.contains("stderr")) NoticeKind.WARNING else NoticeKind.INFO)
+        }
+        version++
+    }
+
+    /** Sets [output] on the newest top-level item when it is a command still without output. */
+    private fun attachCommandOutput(output: String): Boolean {
+        val slot = root.slots.lastOrNull() ?: return false
+        val cur = slot.item as? ChatItem.User ?: return false
+        if (!cur.command || cur.commandOutput != null) return false
+        slot.item = cur.copy(commandOutput = capCommandOutput(output))
+        touch(root)
+        return true
+    }
+
+    /**
+     * Live, a local command (/context, /cost…) is never echoed back as a user message: its output
+     * arrives as a `<synthetic>` assistant message. That output is what settles the queued command.
+     */
+    private fun onLocalCommandReply(text: String): Boolean {
+        val key = optimistic.firstOrNull { (find(it)?.item as? ChatItem.User)?.command == true } ?: return false
+        val slot = find(key) ?: return false
+        val cur = slot.item as? ChatItem.User ?: return false
+        optimistic.remove(key)
+        slot.item = cur.copy(queued = false, commandOutput = text.trim().takeIf { it.isNotEmpty() }?.let(::capCommandOutput))
+        home[key]?.let(::touch)
+        version++
+        return true
+    }
+
+    private fun capCommandOutput(s: String): String = if (s.length > COMMAND_OUTPUT_CAP) s.take(COMMAND_OUTPUT_CAP - 1) + "…" else s
+
+    /** [text] starts with `/name` where name is one of the commands Claude reported. */
+    private fun isKnownCommand(text: String): Boolean {
+        val name = SLASH_NAME.find(text)?.groupValues?.get(1) ?: return false
+        return commands.any { it.name.removePrefix("/") == name }
     }
 
     private fun onToolResult(block: JsonObject, structured: JsonElement?, ts: Long?) {
@@ -660,6 +710,7 @@ class StreamReducer(private val clock: () -> Long = { System.currentTimeMillis()
 
     private fun onSystem(o: JsonObject, live: Boolean) {
         when (o.str("subtype")) {
+            "local_command" -> o.str("content")?.let(::onLocalCommandOutput)
             "init" -> {
                 o.str("session_id")?.let { sessionId = it }
                 o.str("model")?.takeIf { it.isNotBlank() && !it.startsWith("<") }?.let { model = it }
@@ -896,11 +947,7 @@ class StreamReducer(private val clock: () -> Long = { System.currentTimeMillis()
             return
         }
         if (body != null && body.containsKey("commands")) {
-            commands = body.arr("commands")?.mapNotNull { c ->
-                val co = c as? JsonObject ?: return@mapNotNull null
-                val name = co.str("name") ?: return@mapNotNull null
-                SlashCommand(name = name, description = co.str("description").orEmpty(), argumentHint = co.str("argumentHint").orEmpty())
-            }.orEmpty()
+            commands = parseSlashCommands(body.arr("commands"))
             models = body.arr("models")?.mapNotNull { m ->
                 val mo = m as? JsonObject ?: return@mapNotNull null
                 val value = mo.str("value") ?: return@mapNotNull null
@@ -1271,3 +1318,5 @@ internal const val INITIAL_MODE_REQUEST = "mode_init"
 /** Per-tool-result caps (chars) for what the reducer keeps in memory. */
 private const val RESULT_TEXT_CAP = 64 * 1024
 private const val STRUCTURED_CAP = 512 * 1024
+private const val COMMAND_OUTPUT_CAP = 64 * 1024
+private val SLASH_NAME = Regex("^/([\\w:.\\-]+)(?:\\s|$)")

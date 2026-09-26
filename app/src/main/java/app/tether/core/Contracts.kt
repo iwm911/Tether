@@ -144,6 +144,8 @@ interface ClaudeRemote {
     suspend fun stopRun(ref: RunRef)
     suspend fun deleteRun(ref: RunRef)
     suspend fun listDir(connectionId: String, path: String?): DirListing
+    /** Slash commands Claude Code offers in [cwd] (built-ins, custom commands, skills, plugins, MCP prompts). */
+    suspend fun listCommands(connectionId: String, cwd: String): List<SlashCommand> = emptyList()
 
     // ── Claude Code's own background agents (`claude --bg`). [listRuns] and [watch] include them
     //    as RunInfo(kind = NATIVE, runId = "native-<id>"). ──
@@ -240,6 +242,9 @@ interface AgentHub {
 
     /** Tool input JSON of a background agent's pending question (read from its screen when needed). */
     suspend fun nativeQuestion(ref: RunRef): String = throw UnsupportedOperationException()
+
+    /** Slash commands for a composer that has no live stream-json run to ask (empty when unavailable). */
+    suspend fun slashCommands(connectionId: String, cwd: String): List<SlashCommand> = emptyList()
 
     /** Stops every machine watch stream until un-paused (the notification's "Disconnect"). */
     fun setPaused(paused: Boolean) {}

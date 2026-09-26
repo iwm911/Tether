@@ -11,6 +11,7 @@ import app.tether.core.isNative
 import app.tether.core.nativeId
 import app.tether.core.nativeRunRef
 import app.tether.core.ProbeResult
+import app.tether.core.SlashCommand
 import app.tether.core.ProjectSummary
 import app.tether.core.RunInfo
 import app.tether.core.RunRef
@@ -467,6 +468,11 @@ class HelperClaudeRemote internal constructor(
         val args = if (path.isNullOrBlank()) listOf("ls") else listOf("ls", path)
         val out = helper(connectionId, args, timeoutMs = 30_000)
         return decode(out, "folder listing") { json.decodeFromString(DirListing.serializer(), it) }
+    }
+
+    override suspend fun listCommands(connectionId: String, cwd: String): List<SlashCommand> {
+        val out = helper(connectionId, claudeArgs(connectionId) + listOf("commands", "--cwd", cwd), timeoutMs = 45_000)
+        return decode(out, "command list") { parseSlashCommands(RemoteJson.parseObject(it)?.arr("commands")) }
     }
 
     /** Forgets verified-helper state (e.g. after the user edits the machine). */

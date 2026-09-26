@@ -19,6 +19,7 @@ import app.tether.core.RunInfo
 import app.tether.core.RunRef
 import app.tether.core.RunStatus
 import app.tether.core.SettingsRepository
+import app.tether.core.SlashCommand
 import app.tether.core.SshManager
 import app.tether.core.StartRunRequest
 import kotlinx.coroutines.CancellationException
@@ -692,6 +693,15 @@ class DefaultAgentHub(
             title = title?.let { "\u21b3 " + it.removePrefix("\u21b3 ").take(80) },
         )
         return start(connectionId, req)
+    }
+
+    /** Per machine + folder; the helper caches too, this only saves the SSH round trip. */
+    private val commandCache = ConcurrentHashMap<Pair<String, String>, List<SlashCommand>>()
+
+    override suspend fun slashCommands(connectionId: String, cwd: String): List<SlashCommand> {
+        val key = connectionId to cwd
+        commandCache[key]?.let { return it }
+        return remote.listCommands(connectionId, cwd).also { if (it.isNotEmpty()) commandCache[key] = it }
     }
 
     override suspend fun previewRewind(connectionId: String, sessionId: String, messageId: String, cwd: String, sourceRunId: String?): app.tether.core.RewindResult =

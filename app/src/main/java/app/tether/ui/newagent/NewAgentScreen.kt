@@ -113,6 +113,8 @@ import app.tether.core.ModelOption
 import app.tether.core.PermissionMode
 import app.tether.core.ProjectSummary
 import app.tether.core.RunRef
+import app.tether.ui.chat.SlashPopup
+import app.tether.ui.chat.matchSlashCommands
 import app.tether.ui.components.Hairline
 import app.tether.ui.components.MachineAvatar
 import app.tether.ui.components.PrimaryButton
@@ -821,7 +823,12 @@ private fun PromptStep(
     val borderColor by animateColorAsState(if (focused) c.clay.copy(alpha = 0.55f) else c.composerBorder, label = "promptBorder")
     val shape = RoundedCornerShape(28.dp)
     val prompt = vm.prompt
+    val commands by vm.commands.collectAsStateWithLifecycle()
+    val slashMatches = remember(prompt.text, commands) { matchSlashCommands(prompt.text, commands) }
     Column {
+        AnimatedVisibility(visible = slashMatches.isNotEmpty(), enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
+            SlashPopup(matches = slashMatches, onPick = { vm.insertCommand(it.name) }, modifier = Modifier.padding(bottom = Space.sm))
+        }
         Column(
             Modifier
                 .fillMaxWidth()

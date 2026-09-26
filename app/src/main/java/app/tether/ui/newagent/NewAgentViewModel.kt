@@ -19,7 +19,9 @@ import app.tether.core.ProjectSummary
 import app.tether.core.RunRef
 import app.tether.core.NativeStartResult
 import app.tether.core.SessionSummary
+import app.tether.core.SlashCommand
 import app.tether.core.StartRunRequest
+import app.tether.ui.chat.slashCommandsFor
 import app.tether.ui.home.Loadable
 import app.tether.ui.home.attempt
 import app.tether.ui.home.humanMessage
@@ -30,6 +32,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
@@ -130,6 +133,11 @@ class NewAgentViewModel(
             trustPrompt = f.trustPrompt,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), NewAgentUiState(connections = container.connections.connections.value))
+
+    val commands: StateFlow<List<SlashCommand>> = viewModelScope.slashCommandsFor(
+        container.agents,
+        form.map { f -> f.cwd?.let { cwd -> f.connectionId?.let { it to cwd } } },
+    )
 
     init {
         val settings = container.settings.settings.value
@@ -284,6 +292,11 @@ class NewAgentViewModel(
     fun onPromptChange(v: TextFieldValue) {
         prompt = v
         if (form.value.error != null) form.update { it.copy(error = null) }
+    }
+
+    fun insertCommand(name: String) {
+        val t = "/${name.removePrefix("/")} "
+        prompt = TextFieldValue(t, TextRange(t.length))
     }
 
     fun applySuggestion(text: String) {

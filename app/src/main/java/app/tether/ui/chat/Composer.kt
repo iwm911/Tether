@@ -47,7 +47,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -337,20 +336,8 @@ fun Composer(
         }
     }
 
-    val slashQuery by remember(state) {
-        derivedStateOf<String?> {
-            val t = state.value.text
-            if (t.startsWith("/") && t.none { it.isWhitespace() }) t.drop(1) else null
-        }
-    }
     val slashMatches by remember(state, commands) {
-        derivedStateOf<List<SlashCommand>> {
-            val q = slashQuery ?: return@derivedStateOf emptyList()
-            val norm = commands.map { it.copy(name = it.name.removePrefix("/")) }
-            val starts = norm.filter { it.name.startsWith(q, ignoreCase = true) }
-            val contains = norm.filter { !it.name.startsWith(q, ignoreCase = true) && it.name.contains(q, ignoreCase = true) }
-            (starts.sortedBy { it.name.length } + contains).take(40)
-        }
+        derivedStateOf { matchSlashCommands(state.value.text, commands) }
     }
 
     val action = when {
@@ -707,49 +694,6 @@ private fun AttachmentRow(state: ComposerState, onRemove: (ComposerAttachment) -
                     contentAlignment = Alignment.Center,
                 ) {
                     CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = TetherTheme.colors.clay)
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SlashPopup(matches: List<SlashCommand>, onPick: (SlashCommand) -> Unit, modifier: Modifier = Modifier) {
-    Surface(
-        shape = RoundedCornerShape(20.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        border = BorderStroke(1.dp, TetherTheme.colors.hairline),
-        modifier = modifier.fillMaxWidth(),
-    ) {
-        LazyColumn(Modifier.heightIn(max = 264.dp), contentPadding = PaddingValues(vertical = 6.dp)) {
-            items(matches, key = { it.name }) { cmd ->
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .clickable(role = Role.Button, onClickLabel = "Insert /${cmd.name}") { onPick(cmd) }
-                        .padding(horizontal = 16.dp, vertical = 9.dp),
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            "/${cmd.name}",
-                            style = TetherTheme.type.mono.copy(fontWeight = FontWeight.Medium),
-                            color = TetherTheme.colors.clay,
-                            maxLines = 1,
-                        )
-                        if (cmd.argumentHint.isNotBlank()) {
-                            Spacer(Modifier.width(8.dp))
-                            Text(cmd.argumentHint, style = TetherTheme.type.monoSmall, color = TetherTheme.colors.faint, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        }
-                    }
-                    if (cmd.description.isNotBlank()) {
-                        Text(
-                            cmd.description,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
                 }
             }
         }
