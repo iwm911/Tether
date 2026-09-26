@@ -132,6 +132,7 @@ Tether updates itself from GitHub Releases, and every update is verified before 
 ## 🔒 Security & privacy
 
 - 🔑 **Keys never leave the phone.** They're encrypted with a key held in the Android Keystore.
+  Optionally, *Keys only while unlocked* makes them unreadable whenever the phone is locked.
 - 📵 **Nothing to approve from the lock screen.** Approval notifications hide the command until you
   unlock, and Allow / Deny / Reply only work on an unlocked phone.
 - 🔗 **Links from Claude's output are filtered.** Only web and email links open, after showing you

@@ -11,6 +11,14 @@ interface SecretStore {
     fun put(key: String, value: String)
     fun get(key: String): String?
     fun remove(key: String)
+
+    /** Secrets can only be decrypted while the phone is unlocked (Android 9+). */
+    val requireUnlock: Boolean get() = false
+    val requireUnlockSupported: Boolean get() = false
+    /** Re-encrypts every secret for the new mode; throws and changes nothing if that isn't possible now. */
+    fun setRequireUnlock(on: Boolean): Unit = throw UnsupportedOperationException()
+    /** The last [get] returned null only because [requireUnlock] is on and the phone is locked. */
+    fun readBlockedByDeviceLock(): Boolean = false
 }
 
 interface ConnectionRepository {

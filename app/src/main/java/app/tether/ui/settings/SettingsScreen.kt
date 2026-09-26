@@ -1,5 +1,9 @@
 package app.tether.ui.settings
 
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.os.Build
@@ -365,6 +369,31 @@ fun SettingsScreen(onBack: () -> Unit, onOpenKeys: () -> Unit, onOpenMachines: (
                         icon = Icons.Rounded.Timer,
                         showChevron = true,
                         onClick = { lockAfterSheet = true },
+                    )
+                }
+                if (container.secrets.requireUnlockSupported) {
+                    RowDivider()
+                    var keysNeedUnlock by remember { mutableStateOf(container.secrets.requireUnlock) }
+                    var switching by remember { mutableStateOf(false) }
+                    val keyScope = rememberCoroutineScope()
+                    ToggleRow(
+                        title = "Keys only while unlocked",
+                        subtitle = if (keysNeedUnlock) "SSH keys and passwords can't be read while the phone is locked. Open connections stay up; new ones wait for unlock."
+                        else "Lock SSH keys and passwords whenever the phone is locked",
+                        icon = Icons.Rounded.Key,
+                        checked = keysNeedUnlock,
+                        onCheckedChange = { on ->
+                            if (switching) return@ToggleRow
+                            switching = true
+                            keyScope.launch {
+                                val result = withContext(Dispatchers.IO) { runCatching { container.secrets.setRequireUnlock(on) } }
+                                switching = false
+                                result.onSuccess {
+                                    keysNeedUnlock = on
+                                    vm.say(if (on) "Keys now lock with your phone" else "Keys no longer lock with your phone")
+                                }.onFailure { vm.say("Couldn't change that: ${it.message ?: "try again"}") }
+                            }
+                        },
                     )
                 }
                 RowDivider()

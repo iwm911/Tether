@@ -101,9 +101,7 @@ class SshjManager(
     private val epochFlow = MutableStateFlow<Map<String, Long>>(emptyMap())
     override val linkEpochs: StateFlow<Map<String, Long>> = epochFlow.asStateFlow()
 
-    private val config: DefaultConfig by lazy {
-        DefaultConfig().apply { keepAliveProvider = KeepAliveProvider.KEEP_ALIVE }
-    }
+    private val config: DefaultConfig by lazy { sshConfig() }
 
     init {
         // Machines deleted from the repository drop their pooled connection.
@@ -529,7 +527,9 @@ class SshjManager(
         when (val auth = conn.auth) {
             AuthMethod.Password -> {
                 val pw = passwordOverride ?: secrets.get(SecretKeys.password(conn.id))
-                    ?: throw SshFailure("No password saved for this machine")
+                    ?: throw SshFailure(
+                        if (secrets.readBlockedByDeviceLock()) UNLOCK_TO_CONNECT else "No password saved for this machine"
+                    )
                 try {
                     client.authPassword(conn.username, pw)
                 } catch (e: UserAuthException) {
@@ -546,7 +546,10 @@ class SshjManager(
             }
             is AuthMethod.Key -> {
                 val text = keys.privateKey(auth.keyId)
-                    ?: throw SshFailure("This machine's SSH key is missing — pick or import a key")
+                    ?: throw SshFailure(
+                        if (secrets.readBlockedByDeviceLock()) UNLOCK_TO_CONNECT
+                        else "This machine's SSH key is missing — pick or import a key"
+                    )
                 val provider = try {
                     client.loadKeys(text, null as String?, passwordFinder(keys.passphrase(auth.keyId)))
                 } catch (e: IOException) {
@@ -823,6 +826,34 @@ class SshjManager(
         """.trimIndent() + "\n"
 
         /** Replaces Android's stripped-down "BC" provider with the full BouncyCastle sshj needs. */
+        const val UNLOCK_TO_CONNECT = "Unlock your phone to connect — your keys stay locked while it is"
+
+        private val MODERN_KEX = setOf(
+            "curve25519-sha256", "curve25519-sha256@libssh.org",
+            "ecdh-sha2-nistp256", "ecdh-sha2-nistp384", "ecdh-sha2-nistp521",
+            "diffie-hellman-group-exchange-sha256",
+            "diffie-hellman-group14-sha256", "diffie-hellman-group16-sha512", "diffie-hellman-group18-sha512",
+            "ext-info-c",
+        )
+        private val MODERN_CIPHERS = setOf(
+            "chacha20-poly1305@openssh.com", "aes128-gcm@openssh.com", "aes256-gcm@openssh.com",
+            "aes128-ctr", "aes192-ctr", "aes256-ctr",
+        )
+        private val WEAK_SIGNATURES = setOf("ssh-dss", "ssh-dss-cert-v01@openssh.com", "ssh-rsa", "ssh-rsa-cert-v01@openssh.com")
+
+        /**
+         * Modern algorithms only, roughly OpenSSH 8.8+ defaults: no SHA-1 key exchange or MACs, no
+         * CBC/RC4/3DES/Blowfish ciphers, no DSA or SHA-1 RSA signatures (RSA keys still work via
+         * rsa-sha2-*). Keeps pace with what any maintained server offers.
+         */
+        internal fun sshConfig(): DefaultConfig = DefaultConfig().apply {
+            keepAliveProvider = KeepAliveProvider.KEEP_ALIVE
+            keyExchangeFactories = keyExchangeFactories.filter { it.name in MODERN_KEX || "mlkem" in it.name || "sntrup" in it.name }
+            cipherFactories = cipherFactories.filter { it.name in MODERN_CIPHERS }
+            macFactories = macFactories.filter { it.name.startsWith("hmac-sha2-") }
+            keyAlgorithms = keyAlgorithms.filter { it.name !in WEAK_SIGNATURES }
+        }
+
         fun installSecurityProvider() {
             Security.removeProvider("BC")
             Security.insertProviderAt(BouncyCastleProvider(), 1)

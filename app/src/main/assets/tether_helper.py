@@ -62,7 +62,7 @@ import subprocess
 import sys
 import time
 
-HELPER_VERSION = "1.7.0"
+HELPER_VERSION = "1.7.1"
 
 HOME = os.path.expanduser("~")
 TETHER_DIR = os.path.join(HOME, ".tether")
@@ -1592,7 +1592,7 @@ def strip_ansi(s):
 TERM_TOKEN_RE = re.compile(r"\x1b\[([0-9;?<=>]*)([ -/]*)([@-~])|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b([()][0-9A-Za-z]|[=>78DEHMc])|([\r\n\b\t])|([^\x1b\r\n\b\t]+)")
 
 
-def render_terminal(raw, max_rows=5000):
+def render_terminal(raw, max_rows=5000, max_cols=4096):
     """Replays a TUI byte stream (cursor moves, erases, redraws) onto a virtual screen and returns the
     final screen as plain text -- what the terminal would show, not every intermediate frame."""
     rows = {}
@@ -1610,6 +1610,8 @@ def render_terminal(raw, max_rows=5000):
         l = line(r)
         for ch in text:
             if ord(ch) < 32 or ch == "\x7f":
+                continue
+            if c >= max_cols:  # cursor moved absurdly far right (e.g. CSI 2147483647 C): drop, don't allocate
                 continue
             if c < len(l):
                 l[c] = ch

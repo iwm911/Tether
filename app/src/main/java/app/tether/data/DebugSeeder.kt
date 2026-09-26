@@ -30,6 +30,9 @@ import java.io.File
  * }
  * ```
  *
+ * Only runs when explicitly enabled from adb (`adb shell setprop debug.tether.seed 1`), so a debug
+ * build on someone's phone can't be fed machines and keys just by dropping a file into its storage.
+ *
  * Host keys are deliberately NOT seeded: the first connection still goes through the
  * trust-on-first-use dialog, which is part of what the E2E test exercises.
  */
@@ -39,6 +42,11 @@ object DebugSeeder {
     fun run(context: Context, container: AppContainer) {
         val file = File(context.getExternalFilesDir(null) ?: return, "seed.json")
         if (!file.exists()) return
+        if (!seedingEnabled()) {
+            Log.w(TAG, "Ignoring ${file.name}: run `adb shell setprop debug.tether.seed 1` to allow seeding")
+            file.delete()
+            return
+        }
         try {
             val root = TetherJson.parseToJsonElement(file.readText(Charsets.UTF_8)).jsonObject
             val keys = seedKeys(root["keys"], container)
@@ -50,6 +58,14 @@ object DebugSeeder {
         } finally {
             if (!file.delete()) Log.w(TAG, "Couldn't delete ${file.absolutePath}")
         }
+    }
+
+    /** `debug.*` properties can only be set by the shell user (adb) or root, not by other apps. */
+    private fun seedingEnabled(): Boolean = try {
+        val p = ProcessBuilder("getprop", "debug.tether.seed").redirectErrorStream(true).start()
+        p.inputStream.bufferedReader().use { it.readText() }.trim() == "1"
+    } catch (_: Exception) {
+        false
     }
 
     private fun seedKeys(element: JsonElement?, container: AppContainer): Int {
