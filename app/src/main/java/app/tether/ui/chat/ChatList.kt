@@ -108,22 +108,13 @@ private fun ChatItem.verticalGap(): Dp = when (this) {
     is ChatItem.Notice -> 8.dp
 }
 
-/** Jumps to the very end of the list (bottom of the last item), cheaply. */
-private suspend fun scrollToEnd(state: LazyListState) {
-    repeat(3) {
-        val info = state.layoutInfo
-        val total = info.totalItemsCount
-        if (total == 0 || !state.canScrollForward) return
-        val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: -1
-        // Only snap when the tail is off-screen; otherwise a relative scroll avoids any jump.
-        if (lastVisible < total - 1) state.scrollToItem(total - 1)
-        state.scrollBy(100_000f)
-    }
-}
-
 /**
  * The conversation list. Follows the bottom while the user is there (streaming text included),
  * stops following as soon as they drag up, and offers a "New activity" pill to jump back.
+ *
+ * Laid out bottom-up ([LazyColumn] `reverseLayout`, index 0 = newest) so a long transcript opens
+ * anchored at the latest message instead of rendering from the top and chasing the end as rows
+ * are measured. [items] stay chronological; note "older content above" is [LazyListState.canScrollForward].
  *
  * Every row gets the horizontal gutter and vertical rhythm here; [ChatItemView] draws no outer padding.
  */
@@ -155,8 +146,8 @@ internal fun ChatList(
 
     // Follow bookkeeping: reaching the end re-arms following; dragging away from it disarms.
     LaunchedEffect(listState) {
-        snapshotFlow { dragged to listState.canScrollForward }.collect { (isDragged, canForward) ->
-            if (!canForward) {
+        snapshotFlow { dragged to listState.canScrollBackward }.collect { (isDragged, awayFromEnd) ->
+            if (!awayFromEnd) {
                 follow = true
             } else if (isDragged && follow) {
                 follow = false
@@ -164,31 +155,44 @@ internal fun ChatList(
             }
         }
     }
-    // Auto-scroll whenever content grows below the fold while following.
+    // Bottom-anchored layout keeps growing rows pinned; only new rows can land below the fold.
     LaunchedEffect(listState) {
-        snapshotFlow { follow && !dragged && listState.canScrollForward }.collectLatest { should ->
-            if (should) scrollToEnd(listState)
+        snapshotFlow { follow && !dragged && listState.canScrollBackward }.collectLatest { should ->
+            if (should) listState.scrollToItem(0)
         }
     }
 
-    val showPill by remember { derivedStateOf { !follow && listState.canScrollForward } }
+    val showPill by remember { derivedStateOf { !follow && listState.canScrollBackward } }
     val hasNew = !follow && items.size > countAtUnfollow
 
     Box(modifier.fillMaxSize()) {
         LazyColumn(
             state = listState,
             contentPadding = contentPadding,
+            reverseLayout = true,
+            verticalArrangement = Arrangement.Top,
             modifier = Modifier.fillMaxSize(),
         ) {
-            if (header != null) {
-                item(key = "__header", contentType = 100) { Box(Modifier.animateItem()) { header() } }
-            }
-            if (loading && items.isEmpty()) {
-                item(key = "__skeleton", contentType = 101) {
-                    SkeletonTranscript(Modifier.animateItem(fadeInSpec = null, placementSpec = null))
+            // Emitted newest-first: index 0 sits at the bottom.
+            if (footer != null) {
+                item(key = "__footer", contentType = 104) {
+                    Box(Modifier.animateItem(placementSpec = null).fillMaxWidth().padding(horizontal = Space.gutter, vertical = 10.dp)) { footer() }
                 }
             }
-            items(items, key = { it.key }, contentType = { it.contentType() }) { item ->
+            if (!loading && items.isEmpty() && error == null && empty != null) {
+                item(key = "__empty", contentType = 103) { Box(Modifier.animateItem()) { empty() } }
+            }
+            if (error != null) {
+                item(key = "__error", contentType = 102) {
+                    ErrorCard(
+                        title = errorTitle,
+                        detail = error,
+                        onRetry = onRetry,
+                        modifier = Modifier.animateItem().padding(horizontal = Space.gutter, vertical = Space.md),
+                    )
+                }
+            }
+            items(items.asReversed(), key = { it.key }, contentType = { it.contentType() }) { item ->
                 val m = Modifier
                     .animateItem(
                         fadeInSpec = tween(Motion.Medium),
@@ -207,23 +211,13 @@ internal fun ChatList(
                     ChatItemView(item, m, showThinking = showThinking, compactTools = compactTools)
                 }
             }
-            if (error != null) {
-                item(key = "__error", contentType = 102) {
-                    ErrorCard(
-                        title = errorTitle,
-                        detail = error,
-                        onRetry = onRetry,
-                        modifier = Modifier.animateItem().padding(horizontal = Space.gutter, vertical = Space.md),
-                    )
+            if (loading && items.isEmpty()) {
+                item(key = "__skeleton", contentType = 101) {
+                    SkeletonTranscript(Modifier.animateItem(fadeInSpec = null, placementSpec = null))
                 }
             }
-            if (!loading && items.isEmpty() && error == null && empty != null) {
-                item(key = "__empty", contentType = 103) { Box(Modifier.animateItem()) { empty() } }
-            }
-            if (footer != null) {
-                item(key = "__footer", contentType = 104) {
-                    Box(Modifier.animateItem(placementSpec = null).fillMaxWidth().padding(horizontal = Space.gutter, vertical = 10.dp)) { footer() }
-                }
+            if (header != null) {
+                item(key = "__header", contentType = 100) { Box(Modifier.animateItem()) { header() } }
             }
         }
 
@@ -238,11 +232,8 @@ internal fun ChatList(
                 onClick = {
                     haptics.tick()
                     scope.launch {
-                        val last = listState.layoutInfo.totalItemsCount - 1
-                        if (last >= 0) {
-                            if (listState.firstVisibleItemIndex < last - 12) listState.scrollToItem((last - 6).coerceAtLeast(0))
-                            listState.animateScrollToItem(last)
-                        }
+                        if (listState.firstVisibleItemIndex > 12) listState.scrollToItem(6)
+                        listState.animateScrollToItem(0)
                         follow = true
                     }
                 },

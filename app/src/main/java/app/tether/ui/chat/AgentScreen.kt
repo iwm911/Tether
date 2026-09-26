@@ -228,7 +228,7 @@ fun AgentScreen(ref: RunRef, onBack: () -> Unit, onOpenMachine: (String) -> Unit
     ) {
         Column(Modifier.fillMaxSize()) {
             // ── Header ──
-            val scrolled by remember { derivedStateOf { listState.canScrollBackward } }
+            val scrolled by remember { derivedStateOf { listState.canScrollForward } }
             val headerLine by animateColorAsState(
                 if (scrolled) TetherTheme.colors.hairline else Color.Transparent, tween(Motion.Medium), label = "headerLine",
             )

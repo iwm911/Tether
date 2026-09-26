@@ -121,7 +121,7 @@ fun SessionScreen(connectionId: String, sessionId: String, onBack: () -> Unit, o
             .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal)),
     ) {
         Column(Modifier.fillMaxSize()) {
-            val scrolled by remember { derivedStateOf { listState.canScrollBackward } }
+            val scrolled by remember { derivedStateOf { listState.canScrollForward } }
             val headerLine by animateColorAsState(
                 if (scrolled) TetherTheme.colors.hairline else Color.Transparent, tween(Motion.Medium), label = "sessionHeaderLine",
             )
