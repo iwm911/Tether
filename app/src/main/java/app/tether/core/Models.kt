@@ -458,6 +458,8 @@ data class AppSettings(
     val theme: ThemeMode = ThemeMode.SYSTEM,
     val dynamicColor: Boolean = false,
     val biometricLock: Boolean = false,
+    /** Re-lock after this long away (seconds); 0 = as soon as the user leaves the app. */
+    val lockAfterSeconds: Int = 0,
     val defaultModel: String = "default",
     val defaultPermissionMode: String = PermissionMode.DEFAULT.cli,
     val showThinking: Boolean = true,

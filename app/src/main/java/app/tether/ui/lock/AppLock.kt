@@ -28,10 +28,23 @@ sealed interface AuthOutcome {
 
 /**
  * Process-wide app-lock session state. Survives activity recreation; a fresh process always
- * starts locked (when the setting is on). Re-locks after more than [RELOCK_AFTER_MS] in background.
+ * starts locked (when the setting is on). Tether's foreground service usually keeps the process
+ * alive, so re-locking on return is what actually protects the app: after the user's chosen
+ * delay ([lockAfterSeconds], 0 = as soon as they leave), or after [EXTERNAL_GRACE_MS] when Tether
+ * itself opened another screen (image picker, system settings, browser) and the user comes back.
  */
 object AppLock {
-    const val RELOCK_AFTER_MS = 60_000L
+    /** Choices offered in Settings, in seconds. */
+    val LOCK_AFTER_CHOICES = listOf(0, 60, 300)
+
+    /** A screen Tether opened itself (picker, settings page) doesn't count as leaving, up to this long. */
+    const val EXTERNAL_GRACE_MS = 5 * 60_000L
+
+    fun lockAfterLabel(seconds: Int): String = when (seconds) {
+        0 -> "Immediately"
+        60 -> "After 1 minute"
+        else -> "After ${seconds / 60} minutes"
+    }
 
     private val _unlocked = MutableStateFlow(false)
     val unlocked: StateFlow<Boolean> = _unlocked.asStateFlow()
@@ -42,25 +55,44 @@ object AppLock {
 
     private var backgroundedAt: Long? = null
     private var installed = false
+    private var lockAfterSeconds: () -> Int = { 0 }
+
+    /** Set by [launchingExternal] just before Tether starts another activity; consumed on the next stop. */
+    @Volatile private var externalLaunch = false
+    private var leftForExternal = false
 
     /** While a prompt that leaves the app (device credential on old Android) is up, don't count it as background time. */
     @Volatile private var authenticating = false
 
     /** Installs the process lifecycle observer once. Must be called on the main thread. */
-    fun install() {
+    fun install(lockAfterSeconds: () -> Int) {
         if (installed) return
         installed = true
+        this.lockAfterSeconds = lockAfterSeconds
         ProcessLifecycleOwner.get().lifecycle.addObserver(LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_STOP -> if (!authenticating) backgroundedAt = SystemClock.elapsedRealtime()
+                Lifecycle.Event.ON_STOP -> {
+                    if (!authenticating) {
+                        backgroundedAt = SystemClock.elapsedRealtime()
+                        leftForExternal = externalLaunch
+                    }
+                    externalLaunch = false
+                }
                 Lifecycle.Event.ON_START -> {
-                    val at = backgroundedAt
+                    val at = backgroundedAt ?: return@LifecycleEventObserver
                     backgroundedAt = null
-                    if (at != null && SystemClock.elapsedRealtime() - at > RELOCK_AFTER_MS) lock()
+                    val chosen = lockAfterSeconds() * 1000L
+                    val limit = if (leftForExternal) maxOf(chosen, EXTERNAL_GRACE_MS) else chosen
+                    if (SystemClock.elapsedRealtime() - at >= limit) lock()
                 }
                 else -> Unit
             }
         })
+    }
+
+    /** Tether is about to open another activity itself (picker, settings, browser): not the user leaving. */
+    fun launchingExternal() {
+        externalLaunch = true
     }
 
     fun markUnlocked() {

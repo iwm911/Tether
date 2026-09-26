@@ -18,5 +18,6 @@ class TetherApp : Application() {
         ServiceController.install(this, container)
         app.tether.ssh.LinkGuardian.install(this, container.ssh, container.scope)
         Analytics.install(this, container)
+        app.tether.ui.lock.AppLock.install { container.settings.settings.value.lockAfterSeconds }
     }
 }

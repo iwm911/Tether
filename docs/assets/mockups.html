@@ -1,0 +1,143 @@
+<!doctype html>
+<!-- Source for docs/assets/hero.png (illustration, not a screenshot). Re-render with tools/render_mockups.sh -->
+<html><head><meta charset="utf-8">
+<style>
+@font-face{font-family:Inter;src:url(../../site/fonts/inter_regular.ttf);font-weight:400}
+@font-face{font-family:Inter;src:url(../../site/fonts/inter_medium.ttf);font-weight:500}
+@font-face{font-family:Inter;src:url(../../site/fonts/inter_semibold.ttf);font-weight:600}
+@font-face{font-family:Inter;src:url(../../site/fonts/inter_bold.ttf);font-weight:700}
+@font-face{font-family:Serif;src:url(../../site/fonts/source_serif_regular.ttf);font-weight:400}
+@font-face{font-family:Serif;src:url(../../site/fonts/source_serif_semibold.ttf);font-weight:600}
+@font-face{font-family:Mono;src:url(../../site/fonts/jetbrains_mono_regular.ttf);font-weight:400}
+:root{--bg:#262624;--low:#2B2B29;--c:#30302E;--hi:#363633;--hst:#3E3E3A;--on:#FAF9F5;--mut:#C2C0B6;--faint:#8E8C84;--clay:#D97757;--clayd:#C0613F;--line:#3A3A36;--green:#8CC084;--red:#EE7A6F;--blue:#8FB0DA}
+*{box-sizing:border-box;margin:0;padding:0}
+body{width:1440px;height:960px;font-family:Inter,sans-serif;color:var(--on);
+ background:radial-gradient(1200px 700px at 50% 110%,#5a3326 0%,#2a1f1b 45%,#161514 100%);display:flex;align-items:center;justify-content:center;gap:56px;overflow:hidden}
+.phone{width:380px;height:800px;border-radius:52px;background:#0d0d0c;padding:11px;box-shadow:0 40px 90px rgba(0,0,0,.55),0 0 0 1.5px #4a4843 inset;position:relative}
+.phone.mid{transform:translateY(-28px)}
+.scr{width:100%;height:100%;border-radius:42px;background:var(--bg);overflow:hidden;position:relative;display:flex;flex-direction:column}
+.sb{height:40px;display:flex;align-items:center;justify-content:space-between;padding:6px 28px 0;font-size:14px;font-weight:600;flex:none}
+.sb i{display:inline-block;width:16px;height:10px;border-radius:2px;background:var(--on);margin-left:5px;opacity:.9}
+.cam{position:absolute;top:14px;left:50%;width:12px;height:12px;margin-left:-6px;border-radius:50%;background:#000}
+.pad{padding:0 20px}
+h1{font-family:Serif;font-weight:400;font-size:30px;letter-spacing:-.3px;margin:14px 0 4px}
+.sub{color:var(--mut);font-size:13.5px}
+.chips{display:flex;gap:8px;margin:18px 0 20px}
+.chip{background:var(--c);border-radius:999px;padding:8px 13px 8px 9px;font-size:13px;font-weight:500;display:flex;align-items:center;gap:8px}
+.av{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-size:11px;font-weight:700;color:#1f1e1d}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--green)}
+.sec{font-size:12px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:var(--faint);margin:6px 0 10px}
+.card{background:var(--c);border-radius:22px;padding:16px;margin-bottom:12px}
+.card.need{background:linear-gradient(180deg,#3b2a23,#33291f);box-shadow:0 0 0 1px #5a3a2c inset}
+.t{font-size:15.5px;font-weight:600}
+.m{font-size:12.5px;color:var(--mut);margin-top:3px}
+.q{margin-top:12px;background:rgba(0,0,0,.22);border-radius:12px;padding:10px 12px;font-family:Mono;font-size:12.5px;color:#f2e6df}
+.q b{font-family:Inter;font-weight:500;color:var(--mut);font-size:12px;display:block;margin-bottom:4px}
+.row{display:flex;gap:8px;margin-top:12px}
+.btn{flex:1;text-align:center;border-radius:999px;padding:10px 0;font-size:14px;font-weight:600}
+.pri{background:var(--clay);color:#fff}.sec2{background:var(--hst);color:var(--on)}
+.stat{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--mut);margin-top:8px}
+.pulse{width:8px;height:8px;border-radius:50%;background:var(--clay);box-shadow:0 0 0 4px rgba(217,119,87,.2)}
+.fab{position:absolute;right:20px;bottom:26px;background:var(--clay);color:#fff;border-radius:18px;padding:15px 20px;font-weight:600;font-size:15px;box-shadow:0 10px 24px rgba(0,0,0,.4)}
+/* conversation */
+.top{display:flex;align-items:center;gap:12px;padding:8px 18px 12px;border-bottom:1px solid var(--line)}
+.back{font-size:22px;color:var(--mut)}
+.tt{font-size:15.5px;font-weight:600}.ts{font-size:12px;color:var(--mut)}
+.mode{margin-left:auto;background:var(--hst);border-radius:999px;padding:6px 11px;font-size:12px;font-weight:600;color:var(--on)}
+.conv{padding:16px 18px;flex:1;overflow:hidden}
+.you{background:var(--hst);border-radius:20px 20px 6px 20px;padding:11px 14px;font-size:14px;line-height:1.45;margin-left:44px;margin-bottom:16px}
+.cl{font-family:Serif;font-size:16.5px;line-height:1.5;margin-bottom:12px}
+.tool{display:flex;gap:10px;align-items:center;font-size:13px;color:var(--mut);padding:6px 0}
+.tool b{color:var(--on);font-weight:600;font-size:12.5px;width:42px}
+.tool code{font-family:Mono;font-size:12.5px;color:var(--on)}
+.diff{background:#1f1f1d;border-radius:12px;padding:8px 0;margin:4px 0 12px;font-family:Mono;font-size:11.5px;line-height:1.7}
+.diff div{padding:0 12px;white-space:pre}
+.add{background:rgba(140,192,132,.13);color:#b9e0b2}.del{background:rgba(238,122,111,.12);color:#f3b0a8}.ctx{color:#9a988f}
+.todo{display:flex;align-items:center;gap:8px;background:var(--low);border-radius:14px;padding:9px 12px;font-size:12.5px;color:var(--mut);margin:0 18px 10px}
+.bar{flex:1;height:5px;border-radius:3px;background:var(--hst);overflow:hidden}.bar i{display:block;height:100%;width:66%;background:var(--clay)}
+.perm{background:var(--hi);border-radius:26px 26px 0 0;padding:18px 18px 22px;box-shadow:0 -12px 30px rgba(0,0,0,.35)}
+.perm .t{font-size:15px}.perm .q{background:#262624}
+.stack .btn{padding:12px 0;margin-top:8px;display:block}
+.ghost{background:transparent;color:var(--red);box-shadow:0 0 0 1px #55403c inset}
+/* lock screen */
+.lock{background:linear-gradient(170deg,#3a2c4a 0%,#2a2233 35%,#1a1a1f 100%)}
+.clock{text-align:center;font-size:84px;font-weight:300;letter-spacing:-2px;margin-top:40px;font-family:Inter}
+.date{text-align:center;color:#dcd8e6;font-size:15px;margin-top:2px}
+.n{margin:auto 12px 18px;background:rgba(245,242,250,.94);color:#1b1b1f;border-radius:26px;padding:16px}
+.nh{display:flex;align-items:center;gap:8px;font-size:12px;color:#5b5963}
+.ni{width:22px;height:22px;border-radius:50%;background:var(--clay);display:grid;place-items:center}
+.nt{font-size:15px;font-weight:600;margin-top:10px}
+.nx{font-size:13.5px;color:#46444c;margin-top:3px;font-family:Mono;font-size:12.5px}
+.na{display:flex;gap:18px;margin-top:14px;font-size:14px;font-weight:600;color:#9a4a30}
+.n2{margin:0 12px 14px;background:rgba(245,242,250,.8);color:#1b1b1f;border-radius:22px;padding:13px 16px;font-size:13px}
+.hint{text-align:center;color:#cfcbd8;font-size:12px;margin-bottom:20px}
+</style></head><body>
+
+<!-- 1 · Home -->
+<div class="phone"><div class="scr"><div class="cam"></div>
+ <div class="sb"><span>9:41</span><span><i></i><i></i><i style="width:22px"></i></span></div>
+ <div class="pad">
+  <h1>Good evening</h1><div class="sub">1 agent needs you · 1 working</div>
+  <div class="chips">
+   <div class="chip"><span class="av" style="background:#D97757">W</span>Workstation<span class="dot"></span></div>
+   <div class="chip"><span class="av" style="background:#7FA7D9">B</span>Build box<span class="dot"></span></div>
+  </div>
+  <div class="sec">Needs you</div>
+  <div class="card need">
+   <div class="t">Add --celsius flag</div><div class="m">weather-cli · Workstation · 3m</div>
+   <div class="q"><b>Wants to run</b>python -m pytest -q</div>
+   <div class="row"><div class="btn pri">Allow</div><div class="btn sec2">Deny</div></div>
+  </div>
+  <div class="sec" style="margin-top:18px">Working</div>
+  <div class="card">
+   <div class="t">Refactor auth middleware</div><div class="m">api-server · Build box · 12m · $0.84</div>
+   <div class="stat"><span class="pulse"></span>Editing src/auth/session.ts</div>
+  </div>
+  <div class="sec" style="margin-top:18px">Recent</div>
+  <div class="card" style="padding:13px 16px"><div class="t" style="font-size:14.5px">Fix flaky login test</div><div class="m">web-app · Workstation · done 1h ago</div></div>
+ </div>
+ <div class="fab">＋ New agent</div>
+</div></div>
+
+<!-- 2 · Conversation + approval -->
+<div class="phone mid"><div class="scr"><div class="cam"></div>
+ <div class="sb"><span>9:41</span><span><i></i><i></i><i style="width:22px"></i></span></div>
+ <div class="top"><span class="back">‹</span><div><div class="tt">Add --celsius flag</div><div class="ts">weather-cli · Workstation</div></div><span class="mode">Ask</span></div>
+ <div class="conv">
+  <div class="you">Add a --celsius flag to weather.py, update the tests, then run them.</div>
+  <div class="cl">I'll add the flag and convert the forecast when it's set.</div>
+  <div class="tool"><b>Edit</b><code>weather.py</code><span style="margin-left:auto;color:var(--green)">+4</span><span style="color:var(--red)">−1</span></div>
+  <div class="diff">
+   <div class="ctx">  parser = argparse.ArgumentParser()</div>
+   <div class="add">+ parser.add_argument("--celsius",</div>
+   <div class="add">+     action="store_true")</div>
+   <div class="ctx">  args = parser.parse_args()</div>
+   <div class="del">- print(f"{day}: {temp}°F")</div>
+   <div class="add">+ t = to_c(temp) if args.celsius else temp</div>
+   <div class="add">+ print(f"{day}: {t}°{unit}")</div>
+  </div>
+  <div class="tool"><b>Edit</b><code>test_weather.py</code><span style="margin-left:auto;color:var(--green)">+9</span></div>
+ </div>
+ <div class="todo">2 of 3 done<span class="bar"><i></i></span>Run the tests</div>
+ <div class="perm">
+  <div class="t">Claude wants to run a command</div>
+  <div class="q">python -m pytest -q</div>
+  <div class="stack"><div class="btn pri">Allow once</div><div class="btn sec2">Always allow <span style="font-family:Mono;font-size:12.5px">python -m pytest *</span></div><div class="btn ghost">Deny</div></div>
+ </div>
+</div></div>
+
+<!-- 3 · Lock-screen notification -->
+<div class="phone"><div class="scr lock"><div class="cam"></div>
+ <div class="sb"><span></span><span><i></i><i></i><i style="width:22px"></i></span></div>
+ <div class="clock">9:41</div><div class="date">Friday, 26 September</div>
+ <div class="n">
+  <div class="nh"><span class="ni"><svg width="13" height="13" viewBox="0 0 24 24"><path fill="#fff" d="M12 1.5l1.6 7.1 6.3-3.7-3.7 6.3 7.1 1.6-7.1 1.6 3.7 6.3-6.3-3.7L12 24l-1.6-7.1-6.3 3.7 3.7-6.3L.7 12.8l7.1-1.6L4.1 4.9l6.3 3.7z"/></svg></span>Tether · Workstation · now</div>
+  <div class="nt">Add --celsius flag needs approval</div>
+  <div class="nx">Bash: python -m pytest -q</div>
+  <div class="na"><span>Allow</span><span>Deny</span><span>Tell Claude</span></div>
+ </div>
+ <div class="n2"><b>✓ Fix flaky login test</b><br><span style="color:#55535b">Finished — your turn</span></div>
+ <div class="hint">Swipe up to unlock</div>
+</div></div>
+
+</body></html>

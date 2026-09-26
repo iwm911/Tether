@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.floatPreferencesKey
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import app.tether.core.AppSettings
@@ -74,6 +75,7 @@ class DataStoreSettingsRepository(context: Context, scope: CoroutineScope) : Set
             theme = this[K.theme]?.let { v -> ThemeMode.entries.firstOrNull { it.name == v } } ?: d.theme,
             dynamicColor = this[K.dynamicColor] ?: d.dynamicColor,
             biometricLock = this[K.biometricLock] ?: d.biometricLock,
+            lockAfterSeconds = this[K.lockAfterSeconds] ?: d.lockAfterSeconds,
             defaultModel = this[K.defaultModel] ?: d.defaultModel,
             defaultPermissionMode = this[K.defaultPermissionMode] ?: d.defaultPermissionMode,
             showThinking = this[K.showThinking] ?: d.showThinking,
@@ -95,6 +97,7 @@ class DataStoreSettingsRepository(context: Context, scope: CoroutineScope) : Set
         this[K.theme] = s.theme.name
         this[K.dynamicColor] = s.dynamicColor
         this[K.biometricLock] = s.biometricLock
+        this[K.lockAfterSeconds] = s.lockAfterSeconds
         this[K.defaultModel] = s.defaultModel
         this[K.defaultPermissionMode] = s.defaultPermissionMode
         this[K.showThinking] = s.showThinking
@@ -115,6 +118,7 @@ class DataStoreSettingsRepository(context: Context, scope: CoroutineScope) : Set
         val theme = stringPreferencesKey("theme")
         val dynamicColor = booleanPreferencesKey("dynamic_color")
         val biometricLock = booleanPreferencesKey("biometric_lock")
+        val lockAfterSeconds = intPreferencesKey("lock_after_seconds")
         val defaultModel = stringPreferencesKey("default_model")
         val defaultPermissionMode = stringPreferencesKey("default_permission_mode")
         val showThinking = booleanPreferencesKey("show_thinking")

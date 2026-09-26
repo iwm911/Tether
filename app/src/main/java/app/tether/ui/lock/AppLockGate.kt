@@ -65,7 +65,7 @@ import kotlinx.coroutines.launch
 /**
  * Wraps the whole app. When Settings › Biometric lock is on, the content is blurred behind a
  * branded lock screen until the user passes BiometricPrompt (biometric or device credential).
- * Locks on every cold start and after more than 60 s in the background; never locks when off.
+ * Locks on every cold start and when the user returns after Settings › Lock after; never when off.
  */
 @Composable
 fun AppLockGate(content: @Composable () -> Unit) {
@@ -76,8 +76,6 @@ fun AppLockGate(content: @Composable () -> Unit) {
     val context = LocalContext.current
     val activity = remember(context) { context.findFragmentActivity() }
     val scope = rememberCoroutineScope()
-
-    remember { AppLock.install(); true }
 
     val lockEnabled = settings.biometricLock
     val locked = lockEnabled && !unlocked

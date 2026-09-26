@@ -56,6 +56,7 @@ import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.SmartToy
 import androidx.compose.material.icons.rounded.Sync
+import androidx.compose.material.icons.rounded.Timer
 import androidx.compose.material.icons.rounded.Vibration
 import androidx.compose.material.icons.rounded.ViewAgenda
 import androidx.compose.material.icons.rounded.WarningAmber
@@ -140,6 +141,7 @@ fun SettingsScreen(onBack: () -> Unit, onOpenKeys: () -> Unit, onOpenMachines: (
 
     var modelSheet by remember { mutableStateOf(false) }
     var modeSheet by remember { mutableStateOf(false) }
+    var lockAfterSheet by remember { mutableStateOf(false) }
     var forgetting by remember { mutableStateOf<KnownHost?>(null) }
     var hostsOpen by remember { mutableStateOf(false) }
     val scroll = rememberScrollState()
@@ -317,7 +319,7 @@ fun SettingsScreen(onBack: () -> Unit, onOpenKeys: () -> Unit, onOpenMachines: (
                 ToggleRow(
                     title = "App lock",
                     subtitle = when {
-                        s.biometricLock -> "Unlock with fingerprint, face or screen lock. Locks after a minute away."
+                        s.biometricLock -> "Unlock with fingerprint, face or screen lock"
                         lockAvailable -> "Require fingerprint, face or screen lock to open Tether"
                         else -> AppLock.unavailableReason(context)
                     },
@@ -346,6 +348,16 @@ fun SettingsScreen(onBack: () -> Unit, onOpenKeys: () -> Unit, onOpenMachines: (
                         }
                     },
                 )
+                if (s.biometricLock) {
+                    RowDivider()
+                    ListRow(
+                        title = "Lock after",
+                        subtitle = if (s.lockAfterSeconds == 0) "As soon as you leave Tether" else AppLock.lockAfterLabel(s.lockAfterSeconds) + " away",
+                        icon = Icons.Rounded.Timer,
+                        showChevron = true,
+                        onClick = { lockAfterSheet = true },
+                    )
+                }
                 RowDivider()
                 val toggleHosts: (() -> Unit)? = if (hosts.isNotEmpty()) {
                     { hostsOpen = !hostsOpen }
@@ -434,6 +446,25 @@ fun SettingsScreen(onBack: () -> Unit, onOpenKeys: () -> Unit, onOpenMachines: (
             selected = s.defaultModel,
             onSelect = { v -> vm.update { it.copy(defaultModel = v) }; modelSheet = false },
             onDismiss = { modelSheet = false },
+        )
+    }
+    if (lockAfterSheet) {
+        PickerSheet(
+            title = "Lock after",
+            subtitle = "How long you can be away before Tether asks to unlock again. Screens Tether opens itself, like the photo picker, don't count.",
+            options = AppLock.LOCK_AFTER_CHOICES.map {
+                PickerOption(
+                    it.toString(),
+                    AppLock.lockAfterLabel(it),
+                    when (it) {
+                        0 -> "Every time you leave the app or turn off the screen"
+                        else -> "Quick switches to other apps don't lock"
+                    },
+                )
+            },
+            selected = s.lockAfterSeconds.toString(),
+            onSelect = { v -> vm.update { it.copy(lockAfterSeconds = v.toInt()) }; lockAfterSheet = false },
+            onDismiss = { lockAfterSheet = false },
         )
     }
     if (modeSheet) {

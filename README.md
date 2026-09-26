@@ -1,71 +1,180 @@
 <div align="center">
 
-<img src="site/mark.svg" width="88" height="88" alt="Tether logo: a clay-coloured ten-ray spark">
+<img src="site/mark.svg" width="80" height="80" alt="Tether logo">
 
 # Tether
 
-**Claude Code in your pocket.**
+### Claude Code in your pocket.
 
-Start, watch, steer and approve Claude Code agents on your own machines, from your Android phone, over SSH.
+Start Claude Code agents on your own computers, watch them work, and approve what they do, from your Android phone.
 
+[![Latest release](https://img.shields.io/github/v/release/iwm911/Tether?sort=semver&label=download&color=D97757)](https://github.com/iwm911/Tether/releases/latest)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![Latest release](https://img.shields.io/github/v/release/iwm911/Tether?sort=semver&label=release)](https://github.com/iwm911/Tether/releases/latest)
-[![Android 8.0+ (minSdk 26)](https://img.shields.io/badge/Android-8.0%2B%20(minSdk%2026)-3DDC84?logo=android&logoColor=white)](#requirements)
-[![Kotlin](https://img.shields.io/badge/Kotlin-2.1-7F52FF?logo=kotlin&logoColor=white)](https://kotlinlang.org)
+[![Android 8.0+](https://img.shields.io/badge/Android-8.0%2B-3DDC84?logo=android&logoColor=white)](#-get-started)
 
-[Download](https://github.com/iwm911/Tether/releases/latest) ·
-[Website](https://iwm911.github.io/Tether/) ·
-[Privacy](PRIVACY.md) ·
-[Contributing](CONTRIBUTING.md)
+**[⬇️ Download the APK](https://github.com/iwm911/Tether/releases/latest)** &nbsp;·&nbsp; [🌐 Website](https://iwm911.github.io/Tether/) &nbsp;·&nbsp; [🔒 Privacy](PRIVACY.md)
+
+<br>
+<img src="docs/assets/hero.png" width="900" alt="Illustration of Tether: the Home screen with an agent waiting for approval, a conversation showing a code diff and the approval panel, and a lock-screen notification with Allow, Deny and Tell Claude buttons">
+<br><sub>Illustration of the app's screens</sub>
 
 </div>
 
 ---
 
-Tether is an Android app for driving Claude Code from your phone. It connects over SSH to computers
-you already own, so there's no Tether server and no account. Agents run detached on the machine, so
-they keep working when your phone sleeps, loses signal or the app is killed. When you open the app
-again it re-attaches and picks up from where it left off.
+## 💡 The idea
 
-## Why
+You give Claude Code a big task and walk away. Ten minutes later it stops and waits:
+*"Can I run `npm test`?"* It sits there until you're back at the keyboard.
 
-Claude Code does its best work over long runs. Those runs tend to stop and wait for you just after
-you've walked away from the keyboard: *"Can I run `npm test`?"*. Tether sends that question to your
-phone. You can approve it from the notification, read the diff, reply, or change course, and your
-code and credentials never leave your own machines.
+**Tether sends that question to your phone.** Tap **Allow**, read the diff, or send a new instruction,
+from the couch, the train, or the queue at the coffee shop. The agent keeps running on your computer,
+with your files, your tools and your setup.
 
-## Features
+<table>
+<tr>
+<td width="33%" valign="top">
 
-- **A home screen for your agents.** Agents waiting on you come first, with inline **Allow / Deny**.
-  Running agents are next, with live status, their last message, elapsed time and cost. Recent
-  agents are listed after that.
-- **A conversation, not a terminal.** Claude's replies render as Markdown in a serif face. Tool calls
-  are quiet one-line rows (`Read  src/App.kt`, `Bash  ./gradlew test`) that expand to show unified
-  diffs, command output and file previews. The raw log is there if you ask for it.
-- **Approvals you can reach with a thumb.** Choose *Allow once*, *Always allow `<rule>`* or *Deny*,
-  and optionally tell Claude what to do instead. You can also answer from the notification (Allow,
-  Deny or Reply).
-- **Full control of each agent.** Interrupt with a Stop button. Tap the chip to cycle permission
-  modes (Ask → Accept edits → Plan → Auto). Switch models mid-run. The composer has `/` slash-command
-  autocomplete, voice dictation and image attachments. Messages sent while Claude is busy are queued.
-- **Live plan and question UI.** Claude's todo list becomes a pinned checklist with progress.
-  `AskUserQuestion` prompts appear as tappable choices.
-- **Branch and retry.** Edit an earlier message and branch from it. You get a preview of Claude
-  Code's file checkpoints first and can choose whether to restore files too.
-- **Past sessions and projects.** Browse every Claude Code session on each machine, including ones
-  started on the desktop, and continue any of them from the phone.
-- **New agents in any folder.** Pick a machine, browse its folders (git repos are marked), choose a
-  model and permission mode, and start.
-- **Claude Code's own background agents.** Tether can also start and manage native `claude --bg`
-  agents (see [Two kinds of agents](#two-kinds-of-agents)).
-- **Built for mobile networks.** SSH keepalives, instant re-validation when the network changes or
-  the app returns to the foreground, and an optional foreground service that keeps links open so
-  approval requests still arrive.
-- **Calm, native design.** Jetpack Compose and Material 3 with dark and light themes (following the
-  system by default), optional dynamic colour, haptics and an adjustable code text size.
-- **Built-in updates** from GitHub Releases, verified by SHA-256.
+### 📲 Approve from anywhere
+Permission requests show up as notifications with **Allow · Deny · Reply** buttons. No need to open
+the app.
 
-### Two kinds of agents
+</td>
+<td width="33%" valign="top">
+
+### 🖥️ Runs on your machine
+Claude works in your real repo with your tools, MCP servers and private network. Tether only
+connects to it over SSH.
+
+</td>
+<td width="33%" valign="top">
+
+### 🔁 Survives anything
+Agents run detached on the computer. Phone asleep, signal lost, app closed: the work carries on, and
+Tether picks up where it left off.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### 🚀 Start from the phone
+Pick a machine, browse to a folder, type a prompt. You don't need anything running on the computer
+beforehand.
+
+</td>
+<td valign="top">
+
+### 🗂️ All your machines, all your sessions
+Laptop, desktop and servers on one home screen. Continue **any** past Claude Code session, including
+ones you started at your desk.
+
+</td>
+<td valign="top">
+
+### 🔓 No account, no server
+Open source. Your phone talks straight to your computers. There's no Tether cloud in between.
+
+</td>
+</tr>
+</table>
+
+## 🤔 Why not Remote Control or cloud sessions?
+
+Anthropic has two official ways to use Claude Code from a phone, and both are good:
+[**Remote Control**](https://code.claude.com/docs/en/remote-control) (continue a session running on
+your computer from the Claude app) and
+[**cloud sessions**](https://code.claude.com/docs/en/claude-code-on-the-web) (Claude works in a VM
+in Anthropic's cloud). Tether fits a different need:
+
+| | **Tether** | Remote Control | Cloud sessions |
+|---|:---:|:---:|:---:|
+| Where Claude works | 🖥️ your computers | 🖥️ your computer | ☁️ Anthropic's cloud |
+| Start a brand-new session from the phone | ✅ any machine, any folder | ⚠️ only if `claude remote-control` is already running there | ✅ GitHub repos |
+| Keeps running with no terminal open | ✅ runs detached | ❌ the `claude` process must stay open (use tmux) | ✅ |
+| Works with API keys, Bedrock, Vertex, LLM gateways | ✅ whatever your Claude Code uses | ❌ claude.ai subscription only | ❌ claude.ai subscription only |
+| Your local tools, MCP servers, private network | ✅ | ✅ | ❌ cloud environment only |
+| Needs GitHub | ❌ | ❌ | ✅ |
+| Continue sessions you started at the desk | ✅ every session on disk | ⚠️ only ones with Remote Control on | ⚠️ via the Desktop app's hand-off |
+| Connection path | phone ⇄ SSH ⇄ your computer | via Anthropic's relay | via Anthropic's cloud |
+| Open source | ✅ Apache 2.0 | ❌ | ❌ |
+| iPhone / browser | ❌ Android only | ✅ | ✅ |
+
+**Use Tether** when you want your own machines, any login method, nothing pre-started, and no relay.
+**Use the official apps** when you're on iOS or in a browser, or when you can't reach your computer
+over SSH.
+
+## ⚙️ How it works
+
+```mermaid
+flowchart LR
+    phone["📱 Tether"] -- "SSH" --> machine["🖥️ Your computer"]
+    machine --> claude["✳️ Claude Code<br/>(running detached)"]
+    claude --> repo[("📁 your repo")]
+```
+
+1. Tether connects to your computer over **SSH**. Your key lives in the phone's secure hardware.
+2. It installs a tiny helper script (`~/.tether/bin`, Python standard library only).
+3. The helper starts Claude Code **in the background**, so it doesn't depend on the phone staying
+   connected.
+4. Tether streams the conversation to your phone and sends back your messages and approvals.
+
+## 🚀 Get started
+
+**You need:** an Android phone (8.0+), and a Mac or Linux computer you can SSH into with
+[Claude Code](https://code.claude.com/docs/en/quickstart) and `python3` installed. Tailscale or
+WireGuard works well for reaching it from outside your home network.
+
+1. **Install.** Download the APK from [Releases](https://github.com/iwm911/Tether/releases/latest)
+   and open it. Allow "Install unknown apps" when asked.
+2. **Add your computer.** Enter `user@host`. Tap **New key → Install on server** to set up
+   key login with your password once.
+3. **Start an agent.** Tap **New agent**, pick a folder, type what you want done, and put your phone
+   away. It'll tell you when Claude needs you.
+
+Tether updates itself from GitHub Releases, and every update is verified before it installs.
+
+## 🔒 Security & privacy
+
+- 🔑 **Keys never leave the phone.** They're encrypted with a key held in the Android Keystore.
+- 🛡️ **Host keys are pinned.** If a server's key changes, you get a loud warning before connecting.
+- 👆 **Optional app lock** with fingerprint, face or screen lock.
+- ✋ **Claude Code's permission rules still apply.** Tether passes your approvals through; it never
+  bypasses them.
+- 📊 **Anonymous usage stats** (app opens, agents started) via open-source
+  [Aptabase](https://aptabase.com). Nothing is sent until you've seen the notice, and it's one tap to
+  turn off. **Never** your machines, prompts or code. [Exactly what's sent →](PRIVACY.md)
+
+Found a security issue? Please report it
+[privately](https://github.com/iwm911/Tether/security/advisories/new).
+
+## 📖 More
+
+<details>
+<summary><b>Full feature list</b></summary>
+
+- **Home screen for your agents.** Agents waiting on you come first, with inline Allow / Deny; then
+  running agents with live status, last message, elapsed time and cost; then recent ones.
+- **A conversation, not a terminal.** Markdown replies; tool calls as quiet one-line rows that expand
+  to diffs, command output and file previews.
+- **Approvals.** *Allow once*, *Always allow `<rule>`* or *Deny*, optionally telling Claude what to
+  do instead. Also from the notification.
+- **Full control.** Stop button, permission modes (Ask → Accept edits → Plan → Auto), switch models
+  mid-run, `/` slash-command autocomplete, voice dictation, image attachments, queued messages.
+- **Live plans and questions.** Claude's todo list as a pinned checklist; `AskUserQuestion` as
+  tappable choices.
+- **Branch and retry.** Edit an earlier message and branch from it, optionally restoring files from
+  Claude Code's checkpoints.
+- **Past sessions.** Browse and continue every Claude Code session on each machine.
+- **Native background agents.** Start and manage `claude --bg` agents too (see below).
+- **Built for mobile networks.** SSH keepalives, instant reconnect on network changes, optional
+  foreground service so approvals keep arriving.
+- **Native design.** Jetpack Compose + Material 3, dark and light themes, dynamic colour, haptics.
+
+</details>
+
+<details>
+<summary><b>Two kinds of agents</b></summary>
 
 | | Live (recommended) | Background |
 |---|---|---|
@@ -75,153 +184,63 @@ code and credentials never leave your own machines.
 | Shows in `claude agents` on the computer | — | ✅ |
 | Reply | any time (queues while busy) | when it's idle/done |
 
-## How it works
+</details>
 
-```mermaid
-flowchart LR
-    phone["Tether<br/>(Android phone)"] -- "SSH<br/>(exec + SFTP)" --> helper["tether_helper.py<br/>~/.tether/bin"]
-    helper -- "spawns detached,<br/>stream-json over files" --> claude["Claude Code CLI<br/>claude -p / claude --bg"]
-    claude -- "reads & writes" --> repo[("your repo")]
-    helper -. "reads" .-> transcripts[("~/.claude/projects<br/>transcripts")]
-```
+<details>
+<summary><b>Under the hood</b></summary>
 
-1. Tether opens an SSH connection to your machine using **sshj** and BouncyCastle.
-2. On first use it uploads a small helper script over SFTP to `~/.tether/bin/tether_helper.py`
-   (Python 3.6+, standard library only). It uploads it again whenever the helper version changes.
-3. To start an agent, the helper spawns Claude Code **detached** (`setsid`, new session). Claude
-   reads stream-json from `~/.tether/runs/<id>/in.jsonl` and writes to `out.jsonl`. The run doesn't
-   depend on the SSH connection staying up.
-4. The app follows `out.jsonl` from a byte offset and renders it as a conversation. Your messages,
-   approvals, interrupts and mode or model changes are appended to `in.jsonl`.
-5. A `watch` command streams status changes for all runs, plus a heartbeat so the app can detect
-   dead links. Past sessions are read from Claude Code's own transcripts in `~/.claude/projects`.
+- SSH via **sshj** + BouncyCastle; the helper is uploaded over SFTP to
+  `~/.tether/bin/tether_helper.py` and re-uploaded when its version changes.
+- Agents are spawned detached (`setsid`). Claude reads stream-json from
+  `~/.tether/runs/<id>/in.jsonl` and writes `out.jsonl`; the app tails it from a byte offset.
+- A `watch` command streams status for all runs plus a heartbeat to detect dead links.
+- Past sessions come from Claude Code's own transcripts in `~/.claude/projects`.
+- Secrets: AES-256-GCM with a key generated inside the Android Keystore. Android backup and device
+  transfer are disabled.
 
-The architecture, the verified Claude Code protocol notes and the design direction are in
-[`docs/SPEC.md`](docs/SPEC.md).
+Architecture and protocol notes: [`docs/SPEC.md`](docs/SPEC.md).
 
-## Requirements
+</details>
 
-**Phone:** Android 8.0 or newer (minSdk 26, targetSdk 35).
-
-**Each machine you connect to:**
-
-- An SSH server reachable from the phone (LAN, Tailscale/WireGuard, etc.)
-- [Claude Code](https://docs.claude.com/en/docs/claude-code) installed and logged in
-  (`claude --version` works for that user). Tether finds `claude` through a login shell and the
-  usual install locations, or you can set the binary path per machine.
-- `python3` (3.6+) for the helper. It uses only the standard library, so there's nothing to `pip install`.
-
-The helper uses POSIX process groups and `fcntl`, so hosts need to be Linux or macOS.
-
-## Install
-
-1. Download the latest `.apk` from
-   **[GitHub Releases](https://github.com/iwm911/Tether/releases/latest)**.
-2. Open it on your phone. When Android asks, allow **Install unknown apps** for your browser or file
-   manager.
-
-Or, from a computer: `adb install tether-release-X.Y.Z-N.apk`.
-
-## Quick start
-
-1. **Add machine.** Enter the host. Pasting `user@host:port` fills in every field.
-2. **Key → New key** generates an Ed25519 key on the phone. **Install on server** uses your password
-   once to add the key to `authorized_keys`. You can also import an existing private key, with its
-   passphrase if it has one, or use password authentication.
-3. **Test connection** checks each step in turn: reach the host → host key → sign in → find Claude Code.
-4. **Trust the host key** fingerprint when asked.
-5. Tap **New agent**, pick a folder and type a prompt. Leave it running and approve its requests from
-   your phone.
-
-## Security model
-
-- **Nothing is hosted by us.** Tether talks directly to your machines over SSH. The only other
-  network request is the update check against the GitHub Releases API, plus optional anonymous
-  analytics (see [Privacy](#privacy--analytics)).
-- **Secrets are encrypted at rest.** Private keys, passphrases and passwords are encrypted with an
-  AES-256-GCM key that is generated inside the **Android Keystore** and never leaves it.
-- **Host keys are pinned (known hosts).** The first connection shows the key type and fingerprint
-  and asks you to trust it. If the key changes later, you get a red *"Host key changed"* warning with
-  the old and new fingerprints. Cancel is the default, and trusting the new key takes a deliberate
-  press-and-hold. You can review and remove them under Settings → Security → Trusted hosts.
-- **App lock.** Biometric or device-credential lock is optional. It applies on launch and after
-  more than 60 seconds in the background.
-- **No cloud backups.** Android backup and device-to-device transfer of app data are disabled.
-- **Verified updates.** The APK's SHA-256 must match the release manifest, Android shows its own
-  install confirmation, and the update has to be signed with the same key as the installed app.
-- **Claude Code's permission system still applies.** Tether passes approvals through; it doesn't
-  bypass them. The *Bypass permissions* mode shows a warning before you use it.
-
-Please report security issues privately via
-[GitHub Security Advisories](https://github.com/iwm911/Tether/security/advisories/new) rather than in
-public issues.
-
-## Privacy & analytics
-
-Tether collects **anonymous usage analytics** via [Aptabase](https://aptabase.com), an open-source,
-privacy-first analytics service. It's **on by default**. A notice appears on Home and nothing is sent
-until you acknowledge it; one tap in **Settings → Privacy** turns it off.
-
-- **Never collected:** device IDs, accounts, machine hostnames or IPs, usernames, paths, prompts, code or any
-  session content.
-- **Collected:** coarse events only (first open, app opened/updated, machine connected, agent
-  started, message sent, permission answered, conversation branched) with a few non-identifying
-  properties, plus app version, OS version, locale and a random session id that rotates hourly.
-- **Builds without an Aptabase key send nothing.** That includes forks and any build with
-  `-PtetherAptabaseKey` unset.
-
-Full details are in [PRIVACY.md](PRIVACY.md).
-
-## Build from source
+<details>
+<summary><b>Build from source</b></summary>
 
 ```bash
 export ANDROID_HOME=~/Android/Sdk
 ./gradlew :app:testDebugUnitTest :app:assembleRelease    # → app/build/outputs/apk/release/
 ```
 
-You need JDK 17+ and the Android SDK. The project must live on a local disk, not a network (CIFS)
-share.
+Needs JDK 17+ and the Android SDK, on a local disk (not a network share). For signed release builds,
+put `keystore.properties` (storeFile, storePassword, keyAlias, keyPassword) and the keystore in the
+project root; both are gitignored.
 
-Release builds are signed with your own key. Create `keystore.properties` (storeFile,
-storePassword, keyAlias, keyPassword) next to a keystore in the project root. Both files are
-gitignored. Without it, release builds fall back to the debug key.
-
-Optional Gradle properties:
-
-| Property | Purpose |
+| Gradle property | Purpose |
 |---|---|
-| `-PtetherUpdateRepo=owner/name` | GitHub repo whose releases the in-app updater follows (default `iwm911/Tether`) |
-| `-PtetherAptabaseKey=…` | Aptabase app key; unset = no analytics are sent |
+| `-PtetherUpdateRepo=owner/name` | Repo the in-app updater follows (default `iwm911/Tether`) |
+| `-PtetherAptabaseKey=…` | Aptabase app key; unset = no analytics at all |
 | `-PtetherVersionCode=N` / `-PtetherVersionName=X.Y.Z` | Override the version |
 
-## Updates
+</details>
 
-Tether updates itself from this repo's [GitHub Releases](https://github.com/iwm911/Tether/releases).
+<details>
+<summary><b>Publishing a release</b></summary>
 
 ```bash
-tools/publish_update.sh release --notes "What's new"      # bump with --code N --name X.Y.Z
+tools/publish_update.sh release --code N --name X.Y.Z --notes "What's new"
 ```
 
-This builds the signed release and publishes it as GitHub release `vX.Y.Z` on the current (pushed)
-commit, with the APK and an `update.json` manifest (versionCode + SHA-256) attached. It needs the
-`gh` CLI logged in with push access, and `keystore.properties`.
+Builds the signed APK and creates GitHub release `vX.Y.Z` on the current pushed commit, with the APK
+and an `update.json` manifest (version code + SHA-256). Needs the `gh` CLI and `keystore.properties`.
+Installed apps offer the update on their next check. `tools/publish_update.sh debug` publishes a
+pre-release that only debug builds pick up.
 
-At its next launch, every installed Tether shows "Tether X.Y.Z is available" on Home. You can also
-check from Settings → Updates → Check now. The app downloads the APK from GitHub, verifies the
-checksum and installs it after Android's confirmation. The first time, allow "Install unknown apps"
-for Tether.
+</details>
 
-`tools/publish_update.sh debug` publishes a pre-release that only debug builds pick up.
-
-Builds must be signed with `tether-release.jks`, or Android refuses the update. Forks can point the
-updater at their own repo with `-PtetherUpdateRepo=owner/name`.
-
-## Contributing
+## 🤝 Contributing
 
 Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## License
+## 📄 License
 
-[Apache License 2.0](LICENSE).
-
-Tether is an independent client for Claude Code. It isn't affiliated with or endorsed by Anthropic.
+[Apache License 2.0](LICENSE). Tether is an independent project, not affiliated with or endorsed by
+Anthropic.

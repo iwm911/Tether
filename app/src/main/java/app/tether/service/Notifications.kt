@@ -17,6 +17,7 @@ import androidx.core.app.RemoteInput
 import androidx.core.content.ContextCompat
 import app.tether.MainActivity
 import app.tether.R
+import app.tether.TetherApp
 import app.tether.core.AgentEvent
 import app.tether.core.AgentSummary
 import app.tether.core.RunRef
@@ -80,6 +81,22 @@ object Notifications {
         return NotificationManagerCompat.from(context).areNotificationsEnabled()
     }
 
+    /** Settings › App lock is on: notifications must not reveal agent content or act without auth. */
+    fun appLockOn(context: Context): Boolean =
+        (context.applicationContext as? TetherApp)?.container?.settings?.settings?.value?.biometricLock == true
+
+    /** With app lock on, the lock screen only shows [publicTitle], never commands, paths or replies. */
+    private fun NotificationCompat.Builder.guard(context: Context, channel: String, publicTitle: String): NotificationCompat.Builder {
+        if (!appLockOn(context)) return this
+        val public = NotificationCompat.Builder(context, channel)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setColor(ACCENT)
+            .setContentTitle(publicTitle)
+            .setContentText("Unlock to see details")
+            .build()
+        return setVisibility(NotificationCompat.VISIBILITY_PRIVATE).setPublicVersion(public)
+    }
+
     fun permissionId(ref: RunRef, requestId: String): Int = "perm:${ref.connectionId}/${ref.runId}/$requestId".hashCode()
 
     fun updateId(ref: RunRef): Int = "upd:${ref.connectionId}/${ref.runId}".hashCode()
@@ -135,6 +152,7 @@ object Notifications {
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .setContentIntent(openApp(context, single?.ref, WATCH_NOTIFICATION_ID))
+            .guard(context, CHANNEL_WATCH, "Tether")
         if (links.isNotEmpty()) builder.addAction(0, "Disconnect", disconnect)
 
         if (live.size > 1) {
@@ -185,7 +203,13 @@ object Notifications {
             return PendingIntent.getBroadcast(context, id + code, intent, mutability or PendingIntent.FLAG_UPDATE_CURRENT)
         }
 
-        val reply = NotificationCompat.Action.Builder(0, "Tell Claude", action(ACTION_REPLY, 3))
+        // App lock on: answering needs the device unlocked (Android 12+); older versions get no inline
+        // actions at all, so the only way in is the app, behind its own lock.
+        val locked = appLockOn(context)
+        val inlineActions = !locked || Build.VERSION.SDK_INT >= 31
+        fun button(label: String, intent: PendingIntent) =
+            NotificationCompat.Action.Builder(0, label, intent).setAuthenticationRequired(locked)
+        val reply = button("Tell Claude", action(ACTION_REPLY, 3))
             .addRemoteInput(RemoteInput.Builder(KEY_REPLY_TEXT).setLabel("What should Claude do instead?").build())
             .setAllowGeneratedReplies(false)
             .build()
@@ -203,9 +227,14 @@ object Notifications {
             .setAutoCancel(true)
             .setGroup(GROUP_APPROVALS)
             .setContentIntent(openApp(context, event.ref, id))
+            .guard(context, CHANNEL_APPROVALS, if (question) "An agent has a question" else "An agent needs your approval")
         // A question needs the picker: tapping opens it; Allow/Deny would answer nothing.
         if (question) builder.addAction(0, "Answer", openApp(context, event.ref, id))
-        else builder.addAction(0, "Allow", action(ACTION_ALLOW, 1)).addAction(0, "Deny", action(ACTION_DENY, 2)).addAction(reply)
+        else if (inlineActions) {
+            builder.addAction(button("Allow", action(ACTION_ALLOW, 1)).build())
+                .addAction(button("Deny", action(ACTION_DENY, 2)).build())
+                .addAction(reply)
+        } else builder.addAction(0, "Review", openApp(context, event.ref, id))
         val notification = builder.build()
         NotificationManagerCompat.from(context).notify(id, notification)
     }
@@ -229,6 +258,7 @@ object Notifications {
             .setAutoCancel(true)
             .setGroup(GROUP_UPDATES)
             .setContentIntent(openApp(context, event.ref, id))
+            .guard(context, CHANNEL_UPDATES, if (event.success) "An agent finished" else "An agent hit an error")
             .build()
         NotificationManagerCompat.from(context).notify(id, notification)
     }
@@ -249,6 +279,7 @@ object Notifications {
             .setAutoCancel(true)
             .setGroup(GROUP_UPDATES)
             .setContentIntent(openApp(context, event.ref, id))
+            .guard(context, CHANNEL_UPDATES, "An agent stopped")
             .build()
         NotificationManagerCompat.from(context).notify(id, notification)
     }

@@ -13,6 +13,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.tether.core.RunRef
 import app.tether.ui.components.LocalHapticsEnabled
 import app.tether.ui.connections.HostKeyPromptHost
+import app.tether.ui.lock.AppLock
 import app.tether.ui.lock.AppLockGate
 import app.tether.ui.nav.TetherNavHost
 import app.tether.ui.theme.TetherTheme
@@ -61,6 +62,15 @@ class MainActivity : FragmentActivity() {
         val updates = (application as TetherApp).container.updates
         updates.onResumeAfterPermission()
         updates.maybeCheck()
+    }
+
+    // Every activity Tether starts itself (pickers, settings pages, browser, BiometricPrompt's
+    // credential screen) goes through here; tell the app lock this isn't the user leaving.
+    @Deprecated("Deprecated in Java")
+    @Suppress("DEPRECATION")
+    override fun startActivityForResult(intent: Intent, requestCode: Int, options: Bundle?) {
+        AppLock.launchingExternal()
+        super.startActivityForResult(intent, requestCode, options)
     }
 
     override fun onNewIntent(intent: Intent) {

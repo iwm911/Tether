@@ -1,5 +1,6 @@
 package app.tether.service
 
+import android.app.KeyguardManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -42,6 +43,15 @@ class NotificationActionReceiver : BroadcastReceiver() {
                 if (text.isNullOrEmpty()) PermissionDecision.Deny() else PermissionDecision.Deny(message = text)
             }
             else -> return
+        }
+
+        // App lock on and the phone is locked: never act (covers notifications posted before the lock
+        // was turned on, and launchers that ignore setAuthenticationRequired). Tapping opens the app.
+        if (Notifications.appLockOn(context) &&
+            context.getSystemService(KeyguardManager::class.java)?.isKeyguardLocked != false
+        ) {
+            Log.i(TAG, "Ignored $action for $requestId: app lock is on and the device is locked")
+            return
         }
 
         val app = context.applicationContext as? TetherApp ?: return
