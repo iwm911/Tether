@@ -1,0 +1,131 @@
+package app.tether.data
+
+import android.content.Context
+import android.util.Log
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.MutablePreferences
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.emptyPreferences
+import androidx.datastore.preferences.core.floatPreferencesKey
+import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.preferencesDataStore
+import app.tether.core.AppSettings
+import app.tether.core.SettingsRepository
+import app.tether.core.ThemeMode
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import java.io.IOException
+
+/** Exactly one DataStore instance per process (the delegate guarantees it). */
+private val Context.settingsDataStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
+
+/**
+ * [AppSettings] persisted in Preferences DataStore. The initial [settings] value is read
+ * synchronously at construction (a few bytes) so the first frame — including the navigation start
+ * destination — already reflects what the user chose.
+ */
+class DataStoreSettingsRepository(context: Context, scope: CoroutineScope) : SettingsRepository {
+
+    private val store = context.applicationContext.settingsDataStore
+    private val state: MutableStateFlow<AppSettings>
+
+    override val settings: StateFlow<AppSettings>
+
+    init {
+        val initial = try {
+            runBlocking { store.data.first() }.toSettings()
+        } catch (e: Exception) {
+            Log.e(TAG, "Couldn't read settings; using defaults", e)
+            AppSettings()
+        }
+        state = MutableStateFlow(initial)
+        settings = state.asStateFlow()
+        scope.launch {
+            store.data
+                .catch { e -> if (e is IOException) emit(emptyPreferences()) else throw e }
+                .map { it.toSettings() }
+                .distinctUntilChanged()
+                .collect { state.value = it }
+        }
+    }
+
+    override suspend fun update(transform: (AppSettings) -> AppSettings) {
+        store.edit { prefs ->
+            val next = transform(prefs.toSettings())
+            prefs.write(next)
+            // Reflect immediately so toggles feel instant; the collector will confirm the same value.
+            state.value = next
+        }
+    }
+
+    private fun Preferences.toSettings(): AppSettings {
+        val d = AppSettings()
+        return AppSettings(
+            theme = this[K.theme]?.let { v -> ThemeMode.entries.firstOrNull { it.name == v } } ?: d.theme,
+            dynamicColor = this[K.dynamicColor] ?: d.dynamicColor,
+            biometricLock = this[K.biometricLock] ?: d.biometricLock,
+            defaultModel = this[K.defaultModel] ?: d.defaultModel,
+            defaultPermissionMode = this[K.defaultPermissionMode] ?: d.defaultPermissionMode,
+            showThinking = this[K.showThinking] ?: d.showThinking,
+            notifyPermissions = this[K.notifyPermissions] ?: d.notifyPermissions,
+            notifyCompletion = this[K.notifyCompletion] ?: d.notifyCompletion,
+            backgroundWatch = this[K.backgroundWatch] ?: d.backgroundWatch,
+            keepConnectionsAlive = this[K.keepAlive] ?: d.keepConnectionsAlive,
+            batteryPromptDismissed = this[K.batteryPrompt] ?: d.batteryPromptDismissed,
+            haptics = this[K.haptics] ?: d.haptics,
+            codeFontScale = this[K.codeFontScale] ?: d.codeFontScale,
+            onboardingDone = this[K.onboardingDone] ?: d.onboardingDone,
+            compactTools = this[K.compactTools] ?: d.compactTools,
+        )
+    }
+
+    private fun MutablePreferences.write(s: AppSettings) {
+        this[K.theme] = s.theme.name
+        this[K.dynamicColor] = s.dynamicColor
+        this[K.biometricLock] = s.biometricLock
+        this[K.defaultModel] = s.defaultModel
+        this[K.defaultPermissionMode] = s.defaultPermissionMode
+        this[K.showThinking] = s.showThinking
+        this[K.notifyPermissions] = s.notifyPermissions
+        this[K.notifyCompletion] = s.notifyCompletion
+        this[K.backgroundWatch] = s.backgroundWatch
+        this[K.keepAlive] = s.keepConnectionsAlive
+        this[K.batteryPrompt] = s.batteryPromptDismissed
+        this[K.haptics] = s.haptics
+        this[K.codeFontScale] = s.codeFontScale
+        this[K.onboardingDone] = s.onboardingDone
+        this[K.compactTools] = s.compactTools
+    }
+
+    private object K {
+        val theme = stringPreferencesKey("theme")
+        val dynamicColor = booleanPreferencesKey("dynamic_color")
+        val biometricLock = booleanPreferencesKey("biometric_lock")
+        val defaultModel = stringPreferencesKey("default_model")
+        val defaultPermissionMode = stringPreferencesKey("default_permission_mode")
+        val showThinking = booleanPreferencesKey("show_thinking")
+        val notifyPermissions = booleanPreferencesKey("notify_permissions")
+        val notifyCompletion = booleanPreferencesKey("notify_completion")
+        val backgroundWatch = booleanPreferencesKey("background_watch")
+        val keepAlive = booleanPreferencesKey("keep_connections_alive")
+        val batteryPrompt = booleanPreferencesKey("battery_prompt_dismissed")
+        val haptics = booleanPreferencesKey("haptics")
+        val codeFontScale = floatPreferencesKey("code_font_scale")
+        val onboardingDone = booleanPreferencesKey("onboarding_done")
+        val compactTools = booleanPreferencesKey("compact_tools")
+    }
+
+    private companion object {
+        const val TAG = "TetherSettings"
+    }
+}

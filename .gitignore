@@ -1,0 +1,18 @@
+.gradle/
+build/
+/app/build/
+local.properties
+.idea/
+*.iml
+.DS_Store
+/captures
+.externalNativeBuild
+.cxx
+keystore.properties
+*.jks
+/dist/
+
+# Python bytecode
+__pycache__/
+*.pyc
+.kotlin/
