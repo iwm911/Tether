@@ -93,6 +93,7 @@ import app.tether.ui.components.StatusPill
 import app.tether.ui.components.TetherCard
 import app.tether.ui.components.WorkingIndicator
 import app.tether.ui.components.accentEdge
+import app.tether.ui.components.backgroundLabel
 import app.tether.ui.components.formatCost
 import app.tether.ui.components.prettyPath
 import app.tether.ui.components.projectName
@@ -157,7 +158,7 @@ fun RunStatus.rank(): Int = when (this) {
 }
 
 fun List<AgentSummary>.sortedForDisplay(): List<AgentSummary> =
-    sortedWith(compareBy<AgentSummary> { it.run.status.rank() }.thenByDescending { it.run.updatedAt })
+    sortedWith(compareBy<AgentSummary> { it.run.displayStatus.rank() }.thenByDescending { it.run.updatedAt })
 
 fun RunInfo.displayTitle(): String = title?.takeIf { it.isNotBlank() } ?: projectName(cwd)
 
@@ -446,7 +447,7 @@ fun AgentRunCard(
     statusOverride: RunStatus? = null,
 ) {
     val run = agent.run
-    val status = statusOverride ?: run.status
+    val status = statusOverride ?: run.displayStatus
     val ended = status == RunStatus.ENDED || status == RunStatus.FAILED
     val titleColor = if (ended) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface
     TetherCard(modifier.fillMaxWidth(), onClick = onClick, contentPadding = PaddingValues(start = 20.dp, end = 16.dp, top = 18.dp, bottom = 18.dp)) {
@@ -502,7 +503,11 @@ fun AgentRunCard(
                 WorkingIndicator(
                     since = run.startedAt,
                     verbSeed = run.runId.hashCode(),
-                    label = if (status == RunStatus.STARTING) "Starting" else null,
+                    label = when {
+                        status == RunStatus.STARTING -> "Starting"
+                        run.status == RunStatus.IDLE && run.backgroundTasks > 0 && statusOverride == null -> backgroundLabel(run.backgroundTasks)
+                        else -> null
+                    },
                     modifier = Modifier.padding(top = 12.dp),
                 )
             }

@@ -226,6 +226,8 @@ data class RunInfo(
     val outBytes: Long = 0,
     val exitCode: Int? = null,
     val error: String? = null,
+    /** Background shell commands / subagents still running after the turn ended. */
+    val backgroundTasks: Int = 0,
     /** A branch (--fork-session) of another conversation. */
     val forked: Boolean = false,
     // ── native background agents only (kind = NATIVE) ──
@@ -244,6 +246,8 @@ data class RunInfo(
     val timeline: List<NativeTimelineEntry> = emptyList(),
 ) {
     val isNative: Boolean get() = kind == RunKind.NATIVE
+    /** What to show: an idle run whose background shells / subagents are still going counts as working. */
+    val displayStatus: RunStatus get() = if (alive && status == RunStatus.IDLE && backgroundTasks > 0) RunStatus.WORKING else status
     /** Native agent has a permission prompt open (answerable from the phone). */
     val nativeBlocked: Boolean get() = isNative && nativeStatus == "waiting"
 }
@@ -305,6 +309,24 @@ data class ModelOption(val value: String, val displayName: String, val descripti
 data class SlashCommand(val name: String, val description: String, val argumentHint: String = "")
 
 data class TodoItem(val content: String, val activeForm: String, val status: TodoStatus)
+
+/**
+ * A shell command or subagent the session is running outside the turn (CLI `task_started` until
+ * `task_notification`): `run_in_background` Bash, background Agent calls, workflows.
+ */
+data class BackgroundTask(
+    val id: String,
+    val description: String,
+    /** CLI task type: "local_bash" | "local_agent" | "local_workflow" | "remote_agent" | … */
+    val type: String? = null,
+    val subagentType: String? = null,
+    val lastToolName: String? = null,
+    val summary: String? = null,
+    val totalTokens: Long? = null,
+    val toolUses: Int? = null,
+) {
+    val isAgent: Boolean get() = type?.contains("agent") == true || type == "in_process_teammate" || subagentType != null
+}
 enum class TodoStatus { PENDING, IN_PROGRESS, COMPLETED }
 
 data class PermissionSuggestion(
@@ -445,6 +467,8 @@ data class ConversationState(
     val workingSince: Long? = null,
     /** Live "thinking" token estimate while the model is thinking. */
     val thinkingTokens: Int? = null,
+    /** Background shell commands / subagents still running, oldest first. */
+    val backgroundTasks: List<BackgroundTask> = emptyList(),
     val kind: RunKind = RunKind.TETHER,
     /** For a native background agent: its latest dashboard record (state, detail, subagents, timeline). */
     val nativeRun: RunInfo? = null,

@@ -70,7 +70,7 @@ RUNS_DIR = os.path.join(TETHER_DIR, "runs")
 CACHE_DIR = os.path.join(TETHER_DIR, "cache")
 CLAUDE_PROJECTS = os.path.join(HOME, ".claude", "projects")
 
-STATE_VERSION = 3
+STATE_VERSION = 4
 HEAD_BYTES = 1024 * 1024
 TAIL_BYTES = 256 * 1024
 RECENT_MS = 60 * 1000
@@ -954,6 +954,7 @@ def new_state():
         "lastText": None, "cost": 0.0, "turns": 0, "resultError": None,
         "initResp": False, "echoes": 0, "sent": 0, "lastKind": None,
         "requests": {}, "closed": [], "lastResultAt": 0, "workingSince": None,
+        "bgTasks": [],
     }
 
 
@@ -976,6 +977,17 @@ def consume_out(state, data, cwd):
                     state["permissionMode"] = o["permissionMode"]
                 if o.get("status"):
                     state["lastKind"] = "activity"
+            elif st in ("task_started", "task_updated", "task_notification", "task_progress"):
+                # Background shells / subagents outlive the turn: tracked apart from turn activity.
+                tid = o.get("task_id")
+                patch = o.get("patch") if isinstance(o.get("patch"), dict) else {}
+                if not tid:
+                    pass
+                elif st == "task_started":
+                    if not o.get("ambient") and tid not in state["bgTasks"]:
+                        state["bgTasks"] = (state["bgTasks"] + [tid])[-100:]
+                elif st == "task_notification" or patch.get("status") not in (None, "running", "pending"):
+                    state["bgTasks"] = [x for x in state["bgTasks"] if x != tid]
             else:
                 state["lastKind"] = "activity"
         elif t == "assistant":
@@ -1216,6 +1228,7 @@ def run_info(run_id, d):
         "outBytes": max(0, out_size),
         "exitCode": exit_code,
         "error": error,
+        "backgroundTasks": len(state["bgTasks"]) if alive else 0,
     }
 
 

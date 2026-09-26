@@ -43,7 +43,7 @@ internal class MachinesViewModel(private val container: AppContainer) : ViewMode
             MachineItem(
                 connection = c,
                 link = links[c.id] ?: LinkState.Idle,
-                running = mine.count { it.run.status.isLive },
+                running = mine.count { it.run.displayStatus.isLive },
                 needsYou = mine.count { it.run.status == RunStatus.AWAITING_PERMISSION },
                 error = errors[c.id],
             )

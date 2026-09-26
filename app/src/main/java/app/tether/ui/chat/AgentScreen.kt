@@ -119,6 +119,7 @@ import app.tether.ui.components.PrimaryButton
 import app.tether.ui.components.StatusDot
 import app.tether.ui.components.TetherTopBar
 import app.tether.ui.components.WorkingIndicator
+import app.tether.ui.components.backgroundLabel
 import app.tether.ui.components.compactNumber
 import app.tether.ui.components.formatCost
 import app.tether.ui.components.label
@@ -299,11 +300,13 @@ fun AgentScreen(ref: RunRef, onBack: () -> Unit, onOpenMachine: (String) -> Unit
                 RateLimitBanner(conv.rateLimit)
                 if (native) NativeHeaderCard(conv.nativeRun, onOpenTimeline = { showTimeline = true })
                 TodoStrip(conv.todos)
+                if (!native) BackgroundTasksStrip(conv.backgroundTasks.takeIf { !state.ended }.orEmpty())
                 Box(Modifier.fillMaxWidth().height(1.dp).background(headerLine))
             }
 
             // ── Conversation ──
-            val showFooter = conv.status == RunStatus.WORKING || conv.status == RunStatus.STARTING || conv.status == RunStatus.AWAITING_PERMISSION
+            val backgroundOnly = conv.status == RunStatus.IDLE && conv.backgroundTasks.isNotEmpty()
+            val showFooter = conv.status == RunStatus.WORKING || conv.status == RunStatus.STARTING || conv.status == RunStatus.AWAITING_PERMISSION || backgroundOnly
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 val listPadding = PaddingValues(top = Space.sm, bottom = bottomDp + Space.sm)
                 AnimatedContent(
@@ -328,7 +331,7 @@ fun AgentScreen(ref: RunRef, onBack: () -> Unit, onOpenMachine: (String) -> Unit
                             onRetry = vm::retry,
                             // A native agent's live activity is already in its header card.
                             footer = if (showFooter && !native) {
-                                { ListFooter(conv.status, conv.workingSince, conv.thinkingTokens, state.ref.runId.hashCode()) }
+                                { ListFooter(conv.status, conv.workingSince, conv.thinkingTokens, state.ref.runId.hashCode(), conv.backgroundTasks.size) }
                             } else null,
                             empty = if (!state.ended && !native) { { ReadyEmpty(conv.cwd, state.machineName) } } else null,
                             permission = permissionSlot,
@@ -768,7 +771,7 @@ private fun BannerRow(
 // ───────────────────────────── List states & dock ─────────────────────────────
 
 @Composable
-private fun ListFooter(status: RunStatus, since: Long?, tokens: Int?, seed: Int) {
+private fun ListFooter(status: RunStatus, since: Long?, tokens: Int?, seed: Int, background: Int) {
     AnimatedContent(
         targetState = status == RunStatus.AWAITING_PERMISSION,
         transitionSpec = { fadeIn(tween(Motion.Medium)) togetherWith fadeOut(tween(Motion.Short)) },
@@ -781,7 +784,11 @@ private fun ListFooter(status: RunStatus, since: Long?, tokens: Int?, seed: Int)
                 since = since,
                 tokens = tokens,
                 verbSeed = seed,
-                label = if (status == RunStatus.STARTING) "Starting Claude" else null,
+                label = when {
+                    status == RunStatus.STARTING -> "Starting Claude"
+                    status == RunStatus.IDLE -> backgroundLabel(background)
+                    else -> null
+                },
             )
         }
     }

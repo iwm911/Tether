@@ -117,7 +117,7 @@ class HomeViewModel(private val container: AppContainer) : ViewModel() {
         val recent = mutableListOf<AgentSummary>()
         for (a in visible.sortedForDisplay()) {
             val p = a.run.pending
-            when (a.run.status) {
+            when (a.run.displayStatus) {
                 RunStatus.AWAITING_PERMISSION -> {
                     val d = p?.let { l.decisions[decisionKey(a.ref, it.requestId)] }
                     if (d != null && d.settled) {
@@ -132,7 +132,7 @@ class HomeViewModel(private val container: AppContainer) : ViewModel() {
                 RunStatus.IDLE, RunStatus.ENDED, RunStatus.FAILED -> recent += a
             }
         }
-        val liveCounts = visible.filter { it.run.status == RunStatus.STARTING || it.run.status == RunStatus.WORKING || it.run.status == RunStatus.AWAITING_PERMISSION }
+        val liveCounts = visible.filter { it.run.displayStatus.let { s -> s == RunStatus.STARTING || s == RunStatus.WORKING || s == RunStatus.AWAITING_PERMISSION } }
             .groupingBy { it.ref.connectionId }.eachCount()
         val anyConnecting = conns.any { links[it.id] == LinkState.Connecting }
         val stillLoading = when (l.loadPhase) {
