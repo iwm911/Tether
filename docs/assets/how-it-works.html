@@ -1,0 +1,40 @@
+<!doctype html>
+<!-- Source for docs/assets/how-it-works.png. Re-render with tools/render_mockups.sh -->
+<html><head><meta charset="utf-8">
+<style>
+@font-face{font-family:Inter;src:url(../../site/fonts/inter_regular.ttf);font-weight:400}
+@font-face{font-family:Inter;src:url(../../site/fonts/inter_semibold.ttf);font-weight:600}
+@font-face{font-family:Mono;src:url(../../site/fonts/jetbrains_mono_regular.ttf);font-weight:400}
+*{box-sizing:border-box;margin:0;padding:0}
+body{width:1200px;height:300px;font-family:Inter,sans-serif;color:#FAF9F5;background:#1c1b1a;display:flex;align-items:center;justify-content:center;gap:0;overflow:hidden}
+.node{width:230px;background:#30302E;border-radius:22px;padding:22px 20px;text-align:center;box-shadow:0 0 0 1px #44443f inset}
+.node.hi{background:linear-gradient(180deg,#3b2a23,#33291f);box-shadow:0 0 0 1px #5a3a2c inset}
+.ico{font-size:34px;line-height:1;margin-bottom:12px}
+.t{font-size:18px;font-weight:600}
+.s{font-size:13.5px;color:#C2C0B6;margin-top:6px;line-height:1.4}
+code{font-family:Mono;font-size:12.5px;color:#F2B89F}
+.link{width:110px;display:flex;flex-direction:column;align-items:center;gap:8px}
+.lbl{font-size:12.5px;font-weight:600;color:#D97757;letter-spacing:.5px;text-transform:uppercase}
+.line{width:100%;height:3px;background:repeating-linear-gradient(90deg,#D97757 0 10px,transparent 10px 16px);position:relative}
+.line:after{content:"";position:absolute;right:-2px;top:-5px;border:6.5px solid transparent;border-left:9px solid #D97757}
+.sub{font-size:11.5px;color:#8E8C84;text-align:center}
+.box{display:flex;align-items:center;padding:26px 28px;border-radius:30px;box-shadow:0 0 0 1.5px #3a3a36 inset;position:relative}
+.box .tag{position:absolute;top:-11px;left:24px;background:#1c1b1a;padding:0 8px;font-size:12px;font-weight:600;letter-spacing:.6px;text-transform:uppercase;color:#8E8C84}
+</style></head><body>
+<div class="node">
+ <div class="ico">📱</div><div class="t">Tether</div>
+ <div class="s">on your Android phone<br>keys in the Keystore</div>
+</div>
+<div class="link"><div class="lbl">SSH</div><div class="line"></div><div class="sub">no relay,<br>no Tether server</div></div>
+<div class="box"><span class="tag">Your computer</span>
+ <div class="node" style="width:220px">
+  <div class="ico">🧩</div><div class="t">Helper</div>
+  <div class="s"><code>~/.tether/bin</code><br>Python, stdlib only</div>
+ </div>
+ <div class="link" style="width:90px"><div class="lbl">starts</div><div class="line"></div><div class="sub">detached</div></div>
+ <div class="node hi" style="width:240px">
+  <div class="ico"><svg width="34" height="34" viewBox="0 0 24 24"><path fill="#D97757" d="M12 1.5l1.6 7.1 6.3-3.7-3.7 6.3 7.1 1.6-7.1 1.6 3.7 6.3-6.3-3.7L12 24l-1.6-7.1-6.3 3.7 3.7-6.3L.7 12.8l7.1-1.6L4.1 4.9l6.3 3.7z"/></svg></div><div class="t">Claude Code</div>
+  <div class="s">works in your repo<br>with your tools &amp; MCP servers</div>
+ </div>
+</div>
+</body></html>

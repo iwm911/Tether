@@ -106,12 +106,7 @@ over SSH.
 
 ## ⚙️ How it works
 
-```mermaid
-flowchart LR
-    phone["📱 Tether"] -- "SSH" --> machine["🖥️ Your computer"]
-    machine --> claude["✳️ Claude Code<br/>(running detached)"]
-    claude --> repo[("📁 your repo")]
-```
+<p align="center"><img src="docs/assets/how-it-works.png" width="820" alt="Tether on your phone connects over SSH to a small helper on your computer, which starts Claude Code detached in your repo"></p>
 
 1. Tether connects to your computer over **SSH**. Your key lives in the phone's secure hardware.
 2. It installs a tiny helper script (`~/.tether/bin`, Python standard library only).
