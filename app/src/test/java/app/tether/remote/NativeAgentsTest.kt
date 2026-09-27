@@ -218,6 +218,10 @@ class NativeAgentsTest {
 
     private class FakeRemote(val snapshots: MutableSharedFlow<List<RunInfo>>, val transcript: List<String>) : ClaudeRemote {
         var current: List<RunInfo> = emptyList()
+        /** What a reply continues as (claude's new id), and agents whose transcript never catches up. */
+        var replyResult: RunInfo? = null
+        val slowFollow = mutableSetOf<RunRef>()
+        override suspend fun replyNative(ref: RunRef, message: String): RunInfo = replyResult ?: error("unused")
         override suspend fun probe(connectionId: String): ProbeResult = error("unused")
         override suspend fun listProjects(connectionId: String): List<ProjectSummary> = emptyList()
         override suspend fun listSessions(connectionId: String, cwd: String?, limit: Int): List<SessionSummary> = emptyList()
@@ -232,6 +236,7 @@ class NativeAgentsTest {
         override suspend fun deleteRun(ref: RunRef) = Unit
         override suspend fun listDir(connectionId: String, path: String?): DirListing = error("unused")
         override fun followNative(ref: RunRef): Flow<String> = flow {
+            if (ref in slowFollow) kotlinx.coroutines.awaitCancellation()
             transcript.forEach { emit(it) }
             emit("{\"tether\":\"caught-up\"}")
             kotlinx.coroutines.awaitCancellation()
@@ -292,6 +297,40 @@ class NativeAgentsTest {
             assertEquals("hello", (s.items[1] as ChatItem.AssistantText).text)
             assertTrue(s.pendingPermissions.isEmpty())
             assertEquals("hello test", s.title) // the agent's own name wins over the transcript title
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun replyContinuedUnderNewIdKeepsTheConversationOnScreen() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val transcript = listOf(
+                """{"type":"user","uuid":"u1","timestamp":"2026-09-26T00:32:33.000Z","message":{"role":"user","content":"First task"}}""",
+                """{"type":"assistant","uuid":"a1","timestamp":"2026-09-26T00:32:35.000Z","message":{"id":"m1","role":"assistant","model":"claude-haiku-4-5","content":[{"type":"text","text":"done"}],"usage":{"input_tokens":10,"output_tokens":1}}}""",
+            )
+            val snaps = MutableSharedFlow<List<RunInfo>>(replay = 1)
+            val remote = FakeRemote(snaps, transcript)
+            val hub = DefaultAgentHub(remote, FakeSsh(), Conns(), Settings(), scope)
+            scope.launch { hub.agents.collect { } }
+            snaps.emit(listOf(nativeRun("done", "done")))
+            val ref = nativeRunRef(CONN, "4653077f")
+            withTimeout(8_000) { hub.conversation(ref).first { !it.loadingHistory && it.items.size >= 2 } }
+
+            // The agent had exited, so claude continues the reply under a new id whose transcript is slow to arrive.
+            val next = nativeRunRef(CONN, "9b1c2d3e")
+            remote.slowFollow.add(next)
+            remote.replyResult = NativeAgents.toRunInfo(
+                NativeAgentDto(id = "9b1c2d3e", sessionId = "4653077f-a6b4", cwd = "/home/me/native", state = "working",
+                    alive = true, pid = 2, startedAt = 300, updatedAt = 300),
+            )
+            assertEquals(next, hub.continueNative(ref, "Second task"))
+
+            // The new agent's screen opens on the conversation so far plus the new prompt, not an empty reload.
+            val s = withTimeout(5_000) { hub.conversation(next).first() }
+            assertFalse(s.loadingHistory)
+            assertEquals(listOf("First task", "Second task"), s.items.filterIsInstance<ChatItem.User>().map { it.text })
         } finally {
             scope.cancel()
         }

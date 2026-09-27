@@ -312,9 +312,7 @@ class DefaultAgentHub(
 
     // ─────────────── native background agents: transcript followed live + job state ───────────────
 
-    private class NativeSession(val ref: RunRef) {
-        val lock = Any()
-        var reducer = StreamReducer()
+    private class NativeSession(val ref: RunRef, val lock: Any = Any(), var reducer: StreamReducer = StreamReducer()) {
         @Volatile var loadedOnce = false
         @Volatile var caughtUp = false
         @Volatile var error: String? = null
@@ -754,6 +752,12 @@ class DefaultAgentHub(
             throw e
         }
         val next = RunRef(ref.connectionId, info.runId)
+        if (next != ref && s != null) {
+            // Claude continued under a new id, whose transcript replays this same history. Start the new
+            // agent's screen from what is already shown (sharing the reducer and its lock) and let its
+            // pump rebuild off-screen and swap in at the caught-up marker, instead of reloading from empty.
+            nativeSessions.putIfAbsent(next, NativeSession(next, s.lock, s.reducer).apply { loadedOnce = true; caughtUp = true })
+        }
         mergeRun(ref.connectionId, if (info.status == RunStatus.IDLE) info.copy(status = RunStatus.WORKING, nativeState = "working", nativeStatus = "busy") else info)
         return next
     }
