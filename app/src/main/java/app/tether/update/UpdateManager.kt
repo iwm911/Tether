@@ -9,8 +9,11 @@ import android.content.pm.PackageInstaller
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.ProcessLifecycleOwner
 import app.tether.BuildConfig
 import app.tether.TetherApp
+import app.tether.service.Notifications
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -40,6 +43,9 @@ import java.security.MessageDigest
  * manifest for its variant, downloads the APK asset over HTTPS, checks its SHA-256 and hands it to
  * Android's PackageInstaller — Android then asks the user to confirm, as it must for any app
  * installed outside a store, and refuses APKs not signed with the installed app's key.
+ *
+ * Besides the check on launch/foreground, [UpdateCheckJob] looks about twice a day in the
+ * background; a newly found version is announced once with a notification while Tether isn't open.
  */
 @Serializable
 data class UpdateInfo(
@@ -91,11 +97,18 @@ class UpdateManager(
     private var source: Pair<String, UpdateInfo>? = null
 
     private val manifestName = if (BuildConfig.DEBUG) "update-debug.json" else "update.json"
+    private val prefs by lazy { app.getSharedPreferences("updates", Context.MODE_PRIVATE) }
 
     init {
         instance = this
         // First look shortly after launch, off the startup path.
-        scope.launch { delay(8_000); check(silent = true) }
+        scope.launch {
+            delay(8_000)
+            // Installed the version we announced (or a newer one): its notification is stale.
+            val notified = prefs.getInt(KEY_NOTIFIED_VERSION, 0)
+            if (notified in 1..BuildConfig.VERSION_CODE) Notifications.cancel(app, Notifications.APP_UPDATE_NOTIFICATION_ID)
+            check(silent = true)
+        }
     }
 
     /** Called when the app comes to the foreground: re-check at most every 6 h. */
@@ -103,17 +116,19 @@ class UpdateManager(
         if (System.currentTimeMillis() - lastCheck > 6 * 3_600_000L) check(silent = true)
     }
 
-    fun check(silent: Boolean = false) {
-        if (job?.isActive == true) return
+    /** Starts a check (or joins the one running); null while an update is downloading or installing. */
+    fun check(silent: Boolean = false): Job? {
         val prev = _state.value
-        if (prev is UpdateState.Downloading || prev is UpdateState.Installing) return
-        job = scope.launch {
+        if (prev is UpdateState.Downloading || prev is UpdateState.Installing) return null
+        job?.takeIf { it.isActive }?.let { return it }
+        return scope.launch {
             if (!silent) _state.value = UpdateState.Checking
             lastCheck = System.currentTimeMillis()
             _state.value = try {
                 val found = withContext(Dispatchers.IO) { newestRelease() }
                 if (found != null && found.second.versionCode > BuildConfig.VERSION_CODE) {
                     source = found
+                    announce(found.second)
                     UpdateState.Available(found.second)
                 } else {
                     UpdateState.UpToDate(System.currentTimeMillis())
@@ -124,7 +139,19 @@ class UpdateManager(
                 if (silent) prev.takeIf { it is UpdateState.Available } ?: UpdateState.Idle
                 else UpdateState.Failed("Couldn't check GitHub for updates: ${t.message ?: t.javaClass.simpleName}")
             }
-        }
+        }.also { job = it }
+    }
+
+    /**
+     * Notifies about [info] once per version, and only while no Tether screen is visible — in the
+     * app the Home banner already shows it.
+     */
+    private fun announce(info: UpdateInfo) {
+        if (prefs.getInt(KEY_NOTIFIED_VERSION, 0) >= info.versionCode) return
+        if (ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return
+        if (!Notifications.canPost(app)) return
+        Notifications.showAppUpdate(app, info.versionName, info.notes)
+        prefs.edit().putInt(KEY_NOTIFIED_VERSION, info.versionCode).apply()
     }
 
     /** Newest release (API order: newest first) carrying this variant's manifest and its APK. */
@@ -301,6 +328,8 @@ class UpdateManager(
     }
 
     companion object {
+        private const val KEY_NOTIFIED_VERSION = "notifiedVersionCode"
+
         @Volatile internal var instance: UpdateManager? = null
 
         fun sha256(file: File): String {

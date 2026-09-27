@@ -70,7 +70,7 @@ to decide what to improve in Tether.
   agents, files) is read from your machines and shown on your phone. Private keys, passphrases and
   passwords are stored on the phone, encrypted with a key held in the Android Keystore. App data is
   excluded from Android cloud backups and device transfer.
-- **GitHub.** To check for updates, the app asks the GitHub Releases API for the latest release of
+- **GitHub.** To check for updates (on launch and about twice a day in the background), the app asks the GitHub Releases API for the latest release of
   `iwm911/Tether` (or a fork's configured repo) and downloads the APK from there. GitHub's
   [privacy statement](https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement)
   applies to those requests.

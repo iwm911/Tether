@@ -124,6 +124,7 @@ WireGuard works well for reaching it from outside your home network.
    away. It'll tell you when Claude needs you.
 
 Tether updates itself from GitHub Releases, and every update is verified before it installs.
+It checks in the background about twice a day and sends a notification when a new version is out.
 
 ## 🔒 Security & privacy
 
@@ -231,7 +232,8 @@ tools/publish_update.sh release --code N --name X.Y.Z --notes "What's new"
 
 Builds the signed APK and creates GitHub release `vX.Y.Z` on the current pushed commit, with the APK
 and an `update.json` manifest (version code + SHA-256). Needs the `gh` CLI and `keystore.properties`.
-Installed apps offer the update on their next check. `tools/publish_update.sh debug` publishes a
+Installed apps offer the update on their next check (launch, or the twice-daily background check,
+which also posts a notification). `tools/publish_update.sh debug` publishes a
 pre-release that only debug builds pick up.
 
 </details>

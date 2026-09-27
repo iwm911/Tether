@@ -28,8 +28,10 @@ object Notifications {
     const val CHANNEL_APPROVALS = "approvals"
     const val CHANNEL_UPDATES = "updates"
     const val CHANNEL_WATCH = "watch"
+    const val CHANNEL_APP_UPDATES = "app_updates"
 
     const val WATCH_NOTIFICATION_ID = 0x7E7E0001
+    const val APP_UPDATE_NOTIFICATION_ID = 0x7E7E0002
 
     const val ACTION_ALLOW = "app.tether.action.ALLOW"
     const val ACTION_DISCONNECT_ALL = "app.tether.action.DISCONNECT_ALL"
@@ -70,7 +72,11 @@ object Notifications {
             enableVibration(false)
             setSound(null, null)
         }
-        nm.createNotificationChannels(listOf(approvals, updates, watch))
+        val appUpdates = NotificationChannel(CHANNEL_APP_UPDATES, "New Tether versions", NotificationManager.IMPORTANCE_DEFAULT).apply {
+            description = "A new version of Tether is ready to install"
+            setShowBadge(true)
+        }
+        nm.createNotificationChannels(listOf(approvals, updates, watch, appUpdates))
     }
 
     /** POST_NOTIFICATIONS granted (33+) and notifications not blocked for the app. */
@@ -286,6 +292,25 @@ object Notifications {
             .guard(context, CHANNEL_UPDATES, "An agent stopped")
             .build()
         NotificationManagerCompat.from(context).notify(id, notification)
+    }
+
+    /** A new Tether release is out; tapping opens Home, where the update banner installs it. */
+    @SuppressLint("MissingPermission")
+    fun showAppUpdate(context: Context, versionName: String, notes: String) {
+        if (!canPost(context)) return
+        val text = notes.trim().ifEmpty { "Tap to update" }
+        val notification = NotificationCompat.Builder(context, CHANNEL_APP_UPDATES)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setColor(ACCENT)
+            .setContentTitle("Tether $versionName is available")
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setCategory(NotificationCompat.CATEGORY_RECOMMENDATION)
+            .setAutoCancel(true)
+            .setContentIntent(openApp(context, null, APP_UPDATE_NOTIFICATION_ID))
+            .build()
+        NotificationManagerCompat.from(context).notify(APP_UPDATE_NOTIFICATION_ID, notification)
     }
 
     fun cancel(context: Context, id: Int) {
