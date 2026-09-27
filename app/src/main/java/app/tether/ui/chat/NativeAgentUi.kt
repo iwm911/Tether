@@ -239,6 +239,62 @@ internal fun NativeWorkingDock(stopping: Boolean, onStop: () -> Unit) {
     }
 }
 
+/**
+ * Replaces the composer on a terminal session: it's watch-only here, since a reply can't reach the
+ * terminal. Continuing opens the composer for a background copy of the conversation.
+ */
+@Composable
+internal fun TerminalWatchDock(machineName: String?, onContinue: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(26.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        border = BorderStroke(1.dp, TetherTheme.colors.hairline),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(top = 6.dp, bottom = 8.dp),
+    ) {
+        Column(Modifier.padding(start = Space.lg, end = Space.md, top = Space.md, bottom = Space.md)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Rounded.Terminal, contentDescription = null, tint = TetherTheme.colors.faint, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Watching a terminal session", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
+            }
+            Text(
+                "It's open on ${machineName ?: "your computer"}. Replies from here can't reach it — continue at the computer, or in a background copy.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+            Row(Modifier.fillMaxWidth().padding(top = Space.sm), horizontalArrangement = Arrangement.End) {
+                SecondaryButton("Continue as a copy", onClick = onContinue, icon = Icons.AutoMirrored.Rounded.CallSplit)
+            }
+        }
+    }
+}
+
+/** Sits above the composer while writing to a terminal session's background copy. */
+@Composable
+internal fun TerminalCopyNotice(terminalBusy: Boolean, onCancel: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().padding(start = Space.lg, end = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            Icons.AutoMirrored.Rounded.CallSplit,
+            contentDescription = null,
+            tint = if (terminalBusy) TetherTheme.colors.warning else TetherTheme.colors.faint,
+            modifier = Modifier.size(15.dp),
+        )
+        Spacer(Modifier.width(6.dp))
+        Text(
+            if (terminalBusy) "The terminal session is working in this folder — a copy edits the same files"
+            else "Starts a background copy · the terminal session is untouched",
+            style = MaterialTheme.typography.labelMedium,
+            color = if (terminalBusy) TetherTheme.colors.warning else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
+        TextButton(onClick = onCancel) { Text("Cancel", style = MaterialTheme.typography.labelLarge) }
+    }
+}
+
 @Composable
 internal fun NativeOverflowMenu(
     run: RunInfo?,

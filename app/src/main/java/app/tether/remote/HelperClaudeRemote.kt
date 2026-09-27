@@ -279,7 +279,8 @@ class HelperClaudeRemote internal constructor(
 
     override suspend fun replyNative(ref: RunRef, message: String): RunInfo {
         val body = buildJsonObject { put("message", message) }.toString().toByteArray(Charsets.UTF_8)
-        val out = helper(ref.connectionId, claudeArgs(ref.connectionId) + listOf("native-send", nativeIdOf(ref)), stdin = body, timeoutMs = 120_000)
+        val id = nativeIdOf(ref)
+        val out = helper(ref.connectionId, claudeArgs(ref.connectionId) + listOf(NativeAgents.replyCommand(id), id), stdin = body, timeoutMs = 120_000)
         return decode(out, "background agent") { NativeAgents.toRunInfo(NativeAgents.parseOne(it)) }
     }
 

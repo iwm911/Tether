@@ -2199,11 +2199,14 @@ def cmd_native_reply_with(opts, agent_id, msg):
     if not terminal:
         stop_native(opts, agent_id, item)
     # No --model / --permission-mode here: the session keeps its own saved options, and passing any
-    # flag makes claude start a copy under a new id instead of continuing this one.
-    new_id, _text = launch_bg(opts, cwd, ["--bg", "--resume", sid, "--", msg])
+    # flag makes claude start a copy under a new id instead of continuing this one. A terminal session
+    # is still in use, so it gets exactly that: --fork-session copies it under a new session id rather
+    # than writing into the conversation the terminal is running.
+    args = ["--bg", "--resume", sid] + (["--fork-session"] if terminal else [])
+    new_id, _text = launch_bg(opts, cwd, args + ["--", msg])
     if new_id == "untrusted":
         raise HelperError("Claude Code no longer trusts %s." % cwd)
-    cur = wait_native(opts, new_id) or {"id": new_id, "cwd": cwd, "kind": "background", "sessionId": sid,
+    cur = wait_native(opts, new_id) or {"id": new_id, "cwd": cwd, "kind": "background", "sessionId": None if terminal else sid,
                                         "state": "working", "startedAt": now_ms()}
     if new_id != agent_id and not terminal:
         record_fork(agent_id, new_id)
