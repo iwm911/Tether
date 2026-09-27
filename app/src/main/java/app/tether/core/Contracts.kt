@@ -156,13 +156,17 @@ interface ClaudeRemote {
     /**
      * Sends a message to a native agent. A running one gets it typed into its terminal via
      * `claude attach` (queued while it works, like at the keyboard); a stopped one is resumed.
-     * Returns the (maybe new) agent.
+     * Returns the (maybe new) agent. A [model] / [permissionMode] restarts it with the message under
+     * those settings (`claude --bg --resume … --model …`): a new id, the same conversation.
      */
-    suspend fun replyNative(ref: RunRef, message: String): RunInfo = throw UnsupportedOperationException()
+    suspend fun replyNative(ref: RunRef, message: String, model: String? = null, permissionMode: String? = null): RunInfo =
+        throw UnsupportedOperationException()
     /** Answers the native agent's open permission prompt ("1" = Yes / Esc = No). */
     suspend fun answerNative(ref: RunRef, allow: Boolean): RunInfo = throw UnsupportedOperationException()
     /** Presses Esc in the native agent: interrupts the current turn, keeps the agent. */
     suspend fun interruptNative(ref: RunRef): RunInfo = throw UnsupportedOperationException()
+    /** Shift+Tabs the running native agent to [mode] in its terminal, like at the keyboard. */
+    suspend fun setNativeMode(ref: RunRef, mode: String): RunInfo = throw UnsupportedOperationException()
     /** Restores (or with [dryRun] previews restoring) files to before user message [messageId] of [sessionId]. */
     suspend fun rewindFiles(connectionId: String, sessionId: String, messageId: String, cwd: String, dryRun: Boolean, runId: String? = null): RewindResult =
         RewindResult(false, error = "Not supported.")
@@ -257,7 +261,8 @@ interface AgentHub {
     suspend fun startNative(connectionId: String, request: StartRunRequest, trustFolder: Boolean = false): NativeStartResult =
         throw UnsupportedOperationException("Background agents are not supported here.")
     /** Replies to a finished native agent; returns the ref that continues the conversation (normally the same). */
-    suspend fun continueNative(ref: RunRef, text: String): RunRef = throw UnsupportedOperationException()
+    suspend fun continueNative(ref: RunRef, text: String, model: String? = null, permissionMode: String? = null): RunRef =
+        throw UnsupportedOperationException()
     suspend fun nativeTimeline(ref: RunRef): List<NativeTimelineEntry> = emptyList()
     suspend fun nativeLogs(ref: RunRef): String = ""
 }

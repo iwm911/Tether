@@ -34,10 +34,11 @@ Commands
                                  Terminal sessions (kind "interactive") are listed too, as term-<pid>: watch-only;
                                  native-reply continues one as a background copy, the rest refuse them.
     native-start                 stdin {cwd, prompt, model?, permissionMode?, trust} -> NativeAgent | {error:"untrusted"}
-    native-reply <id>            stdin {message}: stop (if running) + `claude --bg --resume <session> msg`
+    native-reply <id>            stdin {message, model?, permissionMode?}: stop (if running) + `claude --bg --resume <session> [flags] msg`
     native-send <id>             stdin {message}: type into the RUNNING agent via `claude attach` (queues while busy)
     native-answer <id>           stdin {decision: allow|deny}: answer the agent's permission prompt
     native-interrupt <id>        press Esc in the agent (interrupts the current turn, keeps the agent)
+    native-mode <id>             stdin {mode}: Shift+Tab the RUNNING agent to that permission mode
     native-ask <id>              stdin {answers:[{choices:[i…], other:str|null}]}: answer an AskUserQuestion prompt
     native-question <id>         the pending AskUserQuestion with multiSelect flags (peeks the TUI once, cached)
     native-stop <id> | native-rm <id>
@@ -2183,10 +2184,26 @@ def cmd_native_reply(opts, agent_id):
     msg = req.get("message")
     if not isinstance(msg, str) or not msg.strip():
         raise HelperError("Nothing to send.")
-    cmd_native_reply_with(opts, native_id(agent_id, terminal_ok=True), msg)
+    cmd_native_reply_with(opts, native_id(agent_id, terminal_ok=True), msg,
+                          model=setting_arg(req.get("model"), MODEL_ARG_RE, "model"),
+                          mode=setting_arg(req.get("permissionMode"), None, "permission mode"))
 
 
-def cmd_native_reply_with(opts, agent_id, msg):
+MODEL_ARG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-\[\]]{0,80}$")
+PERMISSION_MODES = ("default", "acceptEdits", "plan", "auto", "bypassPermissions")
+
+
+def setting_arg(v, pattern, what):
+    """A model / permission mode from the app, checked before it becomes a claude flag."""
+    if v is None or v == "":
+        return None
+    ok = isinstance(v, str) and (pattern.match(v) if pattern else v in PERMISSION_MODES)
+    if not ok:
+        raise HelperError("Unknown %s." % what)
+    return v
+
+
+def cmd_native_reply_with(opts, agent_id, msg, model=None, mode=None):
     item = find_native(opts, agent_id)
     if not item:
         raise HelperError("That background agent no longer exists.")
@@ -2202,7 +2219,18 @@ def cmd_native_reply_with(opts, agent_id, msg):
     # flag makes claude start a copy under a new id instead of continuing this one. A terminal session
     # is still in use, so it gets exactly that: --fork-session copies it under a new session id rather
     # than writing into the conversation the terminal is running.
+    # A model / mode chosen on the phone rides along as flags: they apply to this session only (unlike
+    # the TUI's /model, which also saves the choice as the default for every new session).
     args = ["--bg", "--resume", sid] + (["--fork-session"] if terminal else [])
+    if (model or mode) and not terminal:
+        # Any flag starts a copy with only the flags given: keep the setting that isn't changing.
+        flags = st.get("respawnFlags")
+        model = model or flag_value(flags, "--model")
+        mode = mode or flag_value(flags, "--permission-mode")
+    if model:
+        args += ["--model", model]
+    if mode:
+        args += ["--permission-mode", mode]
     new_id, _text = launch_bg(opts, cwd, args + ["--", msg])
     if new_id == "untrusted":
         raise HelperError("Claude Code no longer trusts %s." % cwd)
@@ -2421,6 +2449,78 @@ def cmd_native_interrupt(opts, agent_id):
     if item.get("status") == "busy":
         attach_session(opts, agent_id, [b"\x1b", 1.0])
     emit(native_agent(find_native(opts, agent_id) or item))
+
+
+# The mode line under the prompt, as Tui.text() reads it (whitespace removed), e.g. "⏸ manual mode on",
+# "⏵⏵ accept edits on (shift+tab to cycle)". "auto mode unavailable for this model" matches none.
+SCREEN_MODES = (("manualmodeon", "default"), ("accepteditson", "acceptEdits"), ("planmodeon", "plan"),
+                ("automodeon", "auto"), ("bypasspermissionson", "bypassPermissions"))
+
+
+def screen_mode(text):
+    """The mode the newest mode line in text shows, or None."""
+    best, at = None, -1
+    for label, mode in SCREEN_MODES:
+        i = text.rfind(label)
+        if i > at:
+            best, at = mode, i
+    return best
+
+
+def cmd_native_mode(opts, agent_id):
+    """Switches a running agent's permission mode with Shift+Tab, like a person at its terminal.
+    The cycle (manual → accept edits → plan → auto → bypass) skips modes the agent can't use; when the
+    wanted one never comes up, the agent is put back where it was."""
+    req = read_request()
+    want = setting_arg(req.get("mode"), None, "permission mode")
+    if not want:
+        raise HelperError("Unknown permission mode.")
+    agent_id, item, alive = live_native(opts, agent_id)
+    if not alive:
+        raise HelperError("That background agent has stopped.")
+    if item.get("status") == "waiting":
+        raise HelperError("Answer Claude's request first.")
+    tui = Tui(opts, agent_id)
+    try:
+        orig = cur = screen_mode(tui.text(0))
+        if cur is None:
+            raise HelperError("Couldn't read the agent's mode.")
+
+        def press():
+            m = tui.mark()
+            tui.send(b"\x1b[Z", 0.8)
+            mode = screen_mode(tui.text(m))
+            if mode is None:
+                tui.pump(1.0)
+                mode = screen_mode(tui.text(m))
+            if mode is None:
+                raise HelperError("Couldn't read the agent's mode.")
+            return mode
+
+        for _ in range(len(SCREEN_MODES)):
+            if cur == want:
+                break
+            cur = press()
+        if cur != want:
+            for _ in range(len(SCREEN_MODES)):
+                if cur == orig:
+                    break
+                cur = press()
+            raise HelperError("That mode isn't available for this agent.")
+    finally:
+        tui.close()
+    # The daemon mirrors the mode into the job's respawn flags, which native_agent reports.
+    deadline = time.time() + 3.0
+    cur_item = item
+    while time.time() < deadline:
+        cur_item = find_native(opts, agent_id) or cur_item
+        if flag_value(job_state(agent_id).get("respawnFlags"), "--permission-mode") == want or \
+                (want == "default" and not flag_value(job_state(agent_id).get("respawnFlags"), "--permission-mode")):
+            break
+        time.sleep(0.3)
+    res = native_agent(cur_item)
+    res["permissionMode"] = want
+    emit(res)
 
 
 def question_block(st):
@@ -3317,6 +3417,8 @@ def main(argv):
         cmd_native_answer(opts, need())
     elif cmd == "native-interrupt":
         cmd_native_interrupt(opts, need())
+    elif cmd == "native-mode":
+        cmd_native_mode(opts, need())
     elif cmd == "native-ask":
         cmd_native_ask(opts, need())
     elif cmd == "native-question":

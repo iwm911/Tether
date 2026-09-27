@@ -115,6 +115,8 @@ class NativeAgentsTest {
         // native-send refuses term-<pid> ids; only native-reply starts the background copy.
         assertEquals("native-reply", NativeAgents.replyCommand(RunRef("c", "native-term-4242").nativeId!!))
         assertEquals("native-send", NativeAgents.replyCommand(RunRef("c", "native-a1b2c3d4").nativeId!!))
+        // A new model / mode needs a restart, which only native-reply does.
+        assertEquals("native-reply", NativeAgents.replyCommand(RunRef("c", "native-a1b2c3d4").nativeId!!, restart = true))
     }
 
     @Test
@@ -220,8 +222,13 @@ class NativeAgentsTest {
         var current: List<RunInfo> = emptyList()
         /** What a reply continues as (claude's new id), and agents whose transcript never catches up. */
         var replyResult: RunInfo? = null
+        /** (model, permissionMode) of the last reply. */
+        var replySettings: Pair<String?, String?>? = null
         val slowFollow = mutableSetOf<RunRef>()
-        override suspend fun replyNative(ref: RunRef, message: String): RunInfo = replyResult ?: error("unused")
+        override suspend fun replyNative(ref: RunRef, message: String, model: String?, permissionMode: String?): RunInfo {
+            replySettings = model to permissionMode
+            return replyResult ?: error("unused")
+        }
         override suspend fun probe(connectionId: String): ProbeResult = error("unused")
         override suspend fun listProjects(connectionId: String): List<ProjectSummary> = emptyList()
         override suspend fun listSessions(connectionId: String, cwd: String?, limit: Int): List<SessionSummary> = emptyList()
@@ -325,7 +332,8 @@ class NativeAgentsTest {
                 NativeAgentDto(id = "9b1c2d3e", sessionId = "4653077f-a6b4", cwd = "/home/me/native", state = "working",
                     alive = true, pid = 2, startedAt = 300, updatedAt = 300),
             )
-            assertEquals(next, hub.continueNative(ref, "Second task"))
+            assertEquals(next, hub.continueNative(ref, "Second task", model = "sonnet"))
+            assertEquals("sonnet" to null, remote.replySettings)
 
             // The new agent's screen opens on the conversation so far plus the new prompt, not an empty reload.
             val s = withTimeout(5_000) { hub.conversation(next).first() }
