@@ -56,7 +56,7 @@ object ServiceController {
         container.scope.launch(Dispatchers.Main.immediate) {
             val sessionsOpen = container.ssh.states.map { it.isNotEmpty() }.distinctUntilChanged()
             val wants = combine(
-                container.agents.agents.map { list -> list.any { it.run.displayStatus in LIVE } }.distinctUntilChanged(),
+                container.agents.agents.map { list -> list.any { it.run.displayStatus in LIVE && !it.run.terminal } }.distinctUntilChanged(),
                 container.settings.settings.map { it.backgroundWatch to it.keepConnectionsAlive }.distinctUntilChanged(),
                 sessionsOpen,
                 suspended,

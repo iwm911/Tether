@@ -281,7 +281,7 @@ fun NewAgentScreen(
                 StepCard(4, "Permissions", summary = null) {
                     if (state.effectiveBackground) {
                         Text(
-                            "A background agent asks for permission in Claude Code on your computer, not here.",
+                            "A background agent's requests show here and in Claude Code on your computer. Answer in either place.",
                             style = MaterialTheme.typography.bodySmall,
                             color = TetherTheme.colors.info,
                             modifier = Modifier.padding(bottom = Space.sm),
@@ -428,8 +428,8 @@ private fun AgentKindSelector(background: Boolean, onSelect: (Boolean) -> Unit) 
         }
         AnimatedContent(background, transitionSpec = { fadeIn() togetherWith fadeOut() }, label = "kindDesc") { bg ->
             Text(
-                if (bg) "Runs as claude --bg and shows in “claude agents” on your computer. Approvals happen there."
-                else "Recommended. Streams here — approve Claude's actions from your phone.",
+                if (bg) "Recommended. Runs as claude --bg: it's in “claude agents” on your computer too, and you can attach to it there."
+                else "Streams here live, with images, rewind and branching. Shows in “claude agents” only while it runs.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = Space.sm, start = 4.dp),

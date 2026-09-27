@@ -485,7 +485,7 @@ fun AgentRunCard(
                 }
                 if (run.isNative) {
                     Spacer(Modifier.width(8.dp))
-                    BackgroundBadge()
+                    BackgroundBadge(run)
                 }
             }
             AnimatedVisibility(

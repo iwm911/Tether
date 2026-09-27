@@ -244,12 +244,17 @@ data class RunInfo(
     val tokens: Long = 0,
     /** Latest timeline entries, oldest first. */
     val timeline: List<NativeTimelineEntry> = emptyList(),
+    /**
+     * A `claude` session open in a terminal on the computer (listed by `claude agents`): watch-only here.
+     * Replying continues its conversation as a new background agent; the terminal session is untouched.
+     */
+    val terminal: Boolean = false,
 ) {
     val isNative: Boolean get() = kind == RunKind.NATIVE
     /** What to show: an idle run whose background shells / subagents are still going counts as working. */
     val displayStatus: RunStatus get() = if (alive && status == RunStatus.IDLE && backgroundTasks > 0) RunStatus.WORKING else status
     /** Native agent has a permission prompt open (answerable from the phone). */
-    val nativeBlocked: Boolean get() = isNative && nativeStatus == "waiting"
+    val nativeBlocked: Boolean get() = isNative && !terminal && nativeStatus == "waiting"
 }
 
 @Serializable
@@ -460,6 +465,8 @@ data class ConversationState(
     val totalCostUsd: Double = 0.0,
     /** Input+cache tokens of the latest assistant message ≈ context in use. */
     val contextTokens: Long? = null,
+    /** Context window size the CLI reported for the current model; null until known. */
+    val contextWindow: Long? = null,
     val queuedCount: Int = 0,
     val link: LinkState = LinkState.Idle,
     val loadingHistory: Boolean = true,

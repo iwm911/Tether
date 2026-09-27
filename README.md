@@ -166,7 +166,10 @@ Found a security issue? Please report it
 - **Branch and retry.** Edit an earlier message and branch from it, optionally restoring files from
   Claude Code's checkpoints.
 - **Past sessions.** Browse and continue every Claude Code session on each machine.
-- **Native background agents.** Start and manage `claude --bg` agents too (see below).
+- **Same agents on phone and computer.** New agents start as `claude --bg` by default, so they're in
+  `claude agents` on the computer too. Background agents and terminal `claude` sessions started on the
+  computer show up in the app: watch them live, and reply to a terminal session to continue it in a
+  background copy.
 - **Built for mobile networks.** SSH keepalives, instant reconnect on network changes, optional
   foreground service so approvals keep arriving.
 - **Native design.** Jetpack Compose + Material 3, dark and light themes, dynamic colour, haptics.
@@ -176,13 +179,14 @@ Found a security issue? Please report it
 <details>
 <summary><b>Two kinds of agents</b></summary>
 
-| | Live (recommended) | Background |
+| | Background (default) | Live |
 |---|---|---|
-| Runs as | `claude -p` stream-json, driven by Tether | native `claude --bg` |
-| Approve tool use from the phone | ✅ panel + notification actions | ❌ approvals happen on the computer |
-| Streaming, interrupt, mode/model switch | ✅ | stop only |
-| Shows in `claude agents` on the computer | — | ✅ |
-| Reply | any time (queues while busy) | when it's idle/done |
+| Runs as | native `claude --bg` | `claude -p` stream-json, driven by Tether |
+| Approve tool use from the phone | ✅ panel + notification actions | ✅ panel + notification actions |
+| Shows in `claude agents` on the computer | ✅ attach, logs, stop | only while it runs |
+| Streaming | message by message | ✅ token by token |
+| Images, rewind, mode/model switch mid-run | — | ✅ |
+| Reply | any time (queues while busy) | any time (queues while busy) |
 
 </details>
 

@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Computer
+import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -32,15 +33,17 @@ import app.tether.ui.theme.TetherTheme
  * screen and the agent screen.
  */
 
-/** The small "Background" tag that marks a native agent. */
+/** The small "Background" (or "Terminal") tag that marks a native agent. */
 @Composable
-fun BackgroundBadge(modifier: Modifier = Modifier) {
-    MiniBadge("Background", TetherTheme.colors.faint, modifier, icon = Icons.Rounded.Computer)
+fun BackgroundBadge(run: RunInfo, modifier: Modifier = Modifier) {
+    if (run.terminal) MiniBadge("Terminal", TetherTheme.colors.faint, modifier, icon = Icons.Rounded.Terminal)
+    else MiniBadge("Background", TetherTheme.colors.faint, modifier, icon = Icons.Rounded.Computer)
 }
 
 /** Human label for a native agent's state. */
 fun nativeStateLabel(run: RunInfo): String = when {
     !run.alive -> "Stopped"
+    run.terminal && run.nativeStatus == "waiting" -> "Waiting in terminal"
     run.nativeStatus == "waiting" -> "Needs you"
     run.nativeStatus == "busy" || (run.nativeStatus == null && run.nativeState == "working") -> "Working"
     run.nativeState == "blocked" -> "Your turn"

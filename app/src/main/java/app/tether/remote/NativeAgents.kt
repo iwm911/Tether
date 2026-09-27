@@ -81,6 +81,7 @@ internal object NativeAgents {
 
     fun status(d: NativeAgentDto): RunStatus = when {
         !d.alive -> RunStatus.ENDED
+        d.status == "waiting" && d.kind == "interactive" -> RunStatus.IDLE // answered in the terminal, not here
         d.status == "waiting" -> RunStatus.AWAITING_PERMISSION
         d.status == "busy" -> RunStatus.WORKING
         d.state == "starting" -> RunStatus.STARTING
@@ -119,6 +120,7 @@ internal object NativeAgents {
             subagents = d.fan,
             tokens = d.tokens,
             timeline = d.timeline,
+            terminal = d.kind == "interactive",
         )
     }
 
