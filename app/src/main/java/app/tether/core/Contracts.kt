@@ -146,6 +146,9 @@ interface ClaudeRemote {
     suspend fun listDir(connectionId: String, path: String?): DirListing
     /** Slash commands Claude Code offers in [cwd] (built-ins, custom commands, skills, plugins, MCP prompts). */
     suspend fun listCommands(connectionId: String, cwd: String): List<SlashCommand> = emptyList()
+    /** Answers a side question about session [sessionId] (/btw) without adding anything to it. */
+    suspend fun askAside(connectionId: String, sessionId: String, cwd: String, question: String, model: String?): String =
+        throw UnsupportedOperationException("Side questions are not supported here.")
 
     // ── Claude Code's own background agents (`claude --bg`). [listRuns] and [watch] include them
     //    as RunInfo(kind = NATIVE, runId = "native-<id>"). ──
@@ -245,6 +248,10 @@ interface AgentHub {
 
     /** Slash commands for a composer that has no live stream-json run to ask (empty when unavailable). */
     suspend fun slashCommands(connectionId: String, cwd: String): List<SlashCommand> = emptyList()
+
+    /** /btw: Claude answers [question] from session [sessionId]'s context; the session itself is untouched. */
+    suspend fun askAside(connectionId: String, sessionId: String, cwd: String, question: String, model: String? = null): String =
+        throw UnsupportedOperationException("Side questions are not supported here.")
 
     /** Stops every machine watch stream until un-paused (the notification's "Disconnect"). */
     fun setPaused(paused: Boolean) {}

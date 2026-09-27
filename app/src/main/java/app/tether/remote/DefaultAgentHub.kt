@@ -711,6 +711,9 @@ class DefaultAgentHub(
         return remote.listCommands(connectionId, cwd).also { if (it.isNotEmpty()) commandCache[key] = it }
     }
 
+    override suspend fun askAside(connectionId: String, sessionId: String, cwd: String, question: String, model: String?): String =
+        remote.askAside(connectionId, sessionId, cwd, question, model)
+
     override suspend fun previewRewind(connectionId: String, sessionId: String, messageId: String, cwd: String, sourceRunId: String?): app.tether.core.RewindResult =
         remote.rewindFiles(connectionId, sessionId, messageId, cwd, dryRun = true, runId = sourceRunId?.takeIf { !it.startsWith(app.tether.core.NATIVE_RUN_PREFIX) })
 

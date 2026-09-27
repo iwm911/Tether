@@ -194,6 +194,17 @@ class ChatViewModel(private val container: AppContainer, initialRef: RunRef) : V
     /** One-shot human messages for the snackbar. */
     val messages: Flow<String> = _messages.receiveAsFlow()
 
+    private val btwController = BtwController(viewModelScope, container.agents)
+    /** The open /btw side question, if any. */
+    val btw: StateFlow<BtwState?> = btwController.state
+    fun dismissBtw() = btwController.dismiss()
+
+    /** A `/btw …` draft goes to a side question instead of the agent. */
+    private fun askAside(): Boolean {
+        val c = conv.value
+        return btwController.intercept(composer, refFlow.value.connectionId, c.sessionId, c.cwd, state.value.model, ::say)
+    }
+
     val state: StateFlow<ChatUiState> = combine(
         conv,
         refFlow,
@@ -404,6 +415,7 @@ class ChatViewModel(private val container: AppContainer, initialRef: RunRef) : V
 
     /** Sends the composer's draft. Sending while Claude works is allowed: the CLI queues it. */
     fun send() {
+        if (askAside()) return
         if (refFlow.value.isNative) return replyNative()
         val (text, attachments) = composer.take() ?: return
         val images = attachments.map { it.image }
@@ -608,6 +620,11 @@ class SessionViewModel(
     private val _messages = Channel<String>(Channel.BUFFERED)
     val messages: Flow<String> = _messages.receiveAsFlow()
 
+    private val btwController = BtwController(viewModelScope, container.agents)
+    /** The open /btw side question, if any. */
+    val btw: StateFlow<BtwState?> = btwController.state
+    fun dismissBtw() = btwController.dismiss()
+
     val branching = MutableStateFlow(false)
 
     /** Branch this past session at a message (see ChatViewModel.branch); opens via [continued]. */
@@ -677,6 +694,8 @@ class SessionViewModel(
     /** Starts a new run that resumes this session with the composer's prompt. */
     fun continueConversation() {
         if (_state.value.continuing) return
+        val conv = _state.value.conversation
+        if (btwController.intercept(composer, connectionId, sessionId, conv?.cwd, conv?.model) { _messages.trySend(it) }) return
         val (text, attachments) = composer.take() ?: return
         val cwd = _state.value.conversation?.cwd ?: "~"
         val title = _state.value.conversation?.title

@@ -75,6 +75,7 @@ fun SessionScreen(connectionId: String, sessionId: String, onBack: () -> Unit, o
     val machines by app.tether.LocalAppContainer.current.connections.connections.collectAsStateWithLifecycle()
     val plan = machines.firstOrNull { it.id == connectionId }?.lastPlan
     val branching by vm.branching.collectAsStateWithLifecycle()
+    val btw by vm.btw.collectAsStateWithLifecycle()
     val commands by vm.commands.collectAsStateWithLifecycle()
     var sheetFor by remember { mutableStateOf<ChatItem.User?>(null) }
     var editFor by remember { mutableStateOf<Pair<ChatItem.User, Boolean>?>(null) }
@@ -88,6 +89,7 @@ fun SessionScreen(connectionId: String, sessionId: String, onBack: () -> Unit, o
     sheetFor?.let { m ->
         UserMessageSheet(m, onDismiss = { sheetFor = null }, onEdit = { editFor = m to false }, onRetry = { editFor = m to true })
     }
+    btw?.let { BtwSheet(it, onDismiss = vm::dismissBtw) }
     editFor?.let { (m, retry) ->
         EditBranchSheet(
             message = m,
@@ -191,7 +193,7 @@ fun SessionScreen(connectionId: String, sessionId: String, onBack: () -> Unit, o
                 placeholder = if (conv == null) "Loading conversation…" else "Continue this conversation…",
                 enabled = conv != null,
                 sending = state.continuing,
-                commands = commands,
+                commands = withBtw(commands),
                 onError = { msg -> scope.launch { snackbar.showSnackbar(msg) } },
             )
         }

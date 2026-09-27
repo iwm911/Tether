@@ -185,6 +185,7 @@ fun AgentScreen(ref: RunRef, onBack: () -> Unit, onOpenMachine: (String) -> Unit
     LaunchedEffect(vm) { vm.closed.collect { onBack() } }
     LaunchedEffect(vm) { vm.branched.collect { onOpenAgent(it) } }
     val branching by vm.branching.collectAsStateWithLifecycle()
+    val btw by vm.btw.collectAsStateWithLifecycle()
     val nativeCommands by vm.nativeCommands.collectAsStateWithLifecycle()
     var sheetFor by remember { mutableStateOf<ChatItem.User?>(null) }
     var editFor by remember { mutableStateOf<Pair<ChatItem.User, Boolean>?>(null) }
@@ -198,6 +199,7 @@ fun AgentScreen(ref: RunRef, onBack: () -> Unit, onOpenMachine: (String) -> Unit
     sheetFor?.let { m ->
         UserMessageSheet(m, onDismiss = { sheetFor = null }, onEdit = { editFor = m to false }, onRetry = { editFor = m to true })
     }
+    btw?.let { BtwSheet(it, onDismiss = vm::dismissBtw) }
     editFor?.let { (m, retry) ->
         EditBranchSheet(
             message = m,
@@ -421,7 +423,7 @@ fun AgentScreen(ref: RunRef, onBack: () -> Unit, onOpenMachine: (String) -> Unit
                             !alive -> "Resumes this background agent"
                             else -> "Sends to this background agent"
                         },
-                        commands = nativeCommands,
+                        commands = withBtw(nativeCommands),
                         allowAttachments = false,
                         onError = { msg -> scope.launch { snackbar.showSnackbar(msg) } },
                     )
@@ -448,7 +450,7 @@ fun AgentScreen(ref: RunRef, onBack: () -> Unit, onOpenMachine: (String) -> Unit
                         model = state.model,
                         models = conv.models,
                         onSelectModel = vm::setModel,
-                        commands = conv.commands,
+                        commands = withBtw(conv.commands),
                         hint = conv.queuedCount.takeIf { it > 0 }?.let { n ->
                             if (n == 1) "1 message queued · Claude reads it next" else "$n messages queued · Claude reads them next"
                         },

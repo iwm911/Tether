@@ -65,7 +65,7 @@ import subprocess
 import sys
 import time
 
-HELPER_VERSION = "1.9.0"
+HELPER_VERSION = "1.10.0"
 
 HOME = os.path.expanduser("~")
 TETHER_DIR = os.path.join(HOME, ".tether")
@@ -3209,6 +3209,60 @@ def cmd_commands(opts):
             pass
 
 
+BTW_PROMPT = ("The user is asking a quick side question (/btw) while the main task goes on elsewhere. "
+              "Answer it directly and briefly from what you already know of this conversation. You have "
+              "no tools here: don't start, continue or plan the main task, and don't ask to run anything.")
+
+
+def cmd_btw(opts):
+    """A side question about a session, like Claude Code's /btw (which `claude -p` refuses): a forked,
+    unsaved, tool-less resume of it. stdin {sessionId, cwd, question, model?} -> {answer}."""
+    req = read_request()
+    sid = req.get("sessionId")
+    question = (req.get("question") or "").strip()
+    if not isinstance(sid, str) or not re.match(r"^[0-9A-Za-z-]+$", sid):
+        raise HelperError("This conversation has no session to ask about yet.")
+    if not question:
+        raise HelperError("Ask something after /btw.")
+    cwd = os.path.abspath(os.path.expanduser(req.get("cwd") or HOME))
+    if not os.path.isdir(cwd):
+        cwd = HOME
+    claude, login_path = resolve_claude(opts.get("claude"))
+    if not claude:
+        raise HelperError("Claude Code was not found on this machine.")
+    args = [claude, "-p", "--resume", sid, "--fork-session", "--no-session-persistence",
+            "--tools", "", "--strict-mcp-config", "--append-system-prompt", BTW_PROMPT,
+            "--output-format", "json"]
+    model = req.get("model")
+    if isinstance(model, str) and re.match(r"^[\w.\[\]:-]+$", model) and model != "default":
+        args += ["--model", model]
+    p = subprocess.Popen(args + ["--", question], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE, cwd=cwd, env=claude_env(claude, login_path), start_new_session=True)
+    try:
+        out, err = p.communicate(timeout=240)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(p.pid, signal.SIGTERM)
+        except OSError:
+            pass
+        p.communicate()
+        raise HelperError("Claude took too long to answer.")
+    try:
+        parsed = json.loads(out.decode("utf-8", "replace") or "null")
+    except ValueError:
+        parsed = None
+    # Older versions print the result object; newer ones the whole message list ending in it.
+    items = parsed if isinstance(parsed, list) else [parsed]
+    result = next((o for o in reversed(items) if isinstance(o, dict) and o.get("type") == "result"), None)
+    if not result:
+        msg = err.decode("utf-8", "replace").strip().splitlines()
+        raise HelperError(msg[-1] if msg else "Claude didn't answer.")
+    answer = result.get("result") if isinstance(result.get("result"), str) else ""
+    if result.get("is_error"):
+        raise HelperError(answer or "Claude couldn't answer.")
+    emit({"answer": answer, "costUsd": result.get("total_cost_usd")})
+
+
 def cmd_ls(opts, path=None):
     p = os.path.abspath(os.path.expanduser(path)) if path else HOME
     if not os.path.isdir(p):
@@ -3300,6 +3354,8 @@ def main(argv):
         cmd_ls(opts, arg)
     elif cmd == "commands":
         cmd_commands(opts)
+    elif cmd == "btw":
+        cmd_btw(opts)
     elif cmd == "rewind":
         cmd_rewind(opts)
     elif cmd == "native-list":

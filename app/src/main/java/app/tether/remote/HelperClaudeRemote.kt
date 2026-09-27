@@ -475,6 +475,15 @@ class HelperClaudeRemote internal constructor(
         return decode(out, "command list") { parseSlashCommands(RemoteJson.parseObject(it)?.arr("commands")) }
     }
 
+    override suspend fun askAside(connectionId: String, sessionId: String, cwd: String, question: String, model: String?): String {
+        val body = buildJsonObject {
+            put("sessionId", sessionId); put("cwd", cwd); put("question", question)
+            model?.let { put("model", it) }
+        }.toString().toByteArray(Charsets.UTF_8)
+        val out = helper(connectionId, claudeArgs(connectionId) + "btw", stdin = body, timeoutMs = 270_000)
+        return decode(out, "answer") { RemoteJson.parseObject(it)?.str("answer") ?: throw IOException("no answer") }
+    }
+
     /** Forgets verified-helper state (e.g. after the user edits the machine). */
     fun invalidate(connectionId: String) {
         ready.remove(connectionId)
