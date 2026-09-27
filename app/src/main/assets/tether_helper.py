@@ -38,6 +38,7 @@ Commands
     native-send <id>             stdin {message}: type into the RUNNING agent via `claude attach` (queues while busy)
     native-answer <id>           stdin {decision: allow|deny}: answer the agent's permission prompt
     native-interrupt <id>        press Esc in the agent (interrupts the current turn, keeps the agent)
+    native-mode <id>             stdin {mode}: Shift+Tab in the agent until its footer shows that permission mode
     native-ask <id>              stdin {answers:[{choices:[i…], other:str|null}]}: answer an AskUserQuestion prompt
     native-question <id>         the pending AskUserQuestion with multiSelect flags (peeks the TUI once, cached)
     native-stop <id> | native-rm <id>
@@ -65,7 +66,7 @@ import subprocess
 import sys
 import time
 
-HELPER_VERSION = "1.9.0"
+HELPER_VERSION = "1.10.0"
 
 HOME = os.path.expanduser("~")
 TETHER_DIR = os.path.join(HOME, ".tether")
@@ -1910,7 +1911,7 @@ def native_agent(item, want_timeline=True):
         "tokens": st.get("tokens") if isinstance(st.get("tokens"), int) else 0,
         "result": trim(result, NATIVE_RESULT_CAP),
         "model": flag_value(flags, "--model"),
-        "permissionMode": flag_value(flags, "--permission-mode"),
+        "permissionMode": native_modes().get(aid) or flag_value(flags, "--permission-mode"),
         "transcript": bool(tpath),
     }
     if item.get("status") == "waiting" and not terminal:
@@ -2417,6 +2418,85 @@ def cmd_native_interrupt(opts, agent_id):
         raise HelperError("That background agent has stopped.")
     if item.get("status") == "busy":
         attach_session(opts, agent_id, [b"\x1b", 1.0])
+    emit(native_agent(find_native(opts, agent_id) or item))
+
+
+# The mode line under the prompt (2.1.283): "⏸ manual mode on", "⏵⏵ accept edits on (shift+tab to cycle)",
+# "⏸ plan mode on …". Matched with whitespace removed; "auto mode unavailable …" must not read as auto.
+NATIVE_MODE_LABELS = (
+    ("manualmodeon", "default"),
+    ("accepteditson", "acceptEdits"),
+    ("planmodeon", "plan"),
+    ("automodeon", "auto"),
+    ("bypasspermissionson", "bypassPermissions"),
+)
+NATIVE_MODE_NAMES = {"default": "Ask", "acceptEdits": "Accept edits", "plan": "Plan", "auto": "Auto",
+                     "bypassPermissions": "Bypass"}
+NATIVE_MODES_PATH = os.path.join(TETHER_DIR, "native_modes.json")
+
+
+def tui_mode(tui):
+    """The permission mode the agent's footer shows ("default" when it shows none)."""
+    sc = Screen(40, 120)
+    sc.feed(bytes(tui.buf).decode("utf-8", "replace"))
+    lines = [l for l in sc.lines() if l.strip()]
+    for line in reversed(lines[-4:]):
+        flat = re.sub(r"\s+", "", line).lower()
+        for label, mode in NATIVE_MODE_LABELS:
+            if label in flat:
+                return mode
+    return "default"
+
+
+def native_modes():
+    m = read_json(NATIVE_MODES_PATH, {})
+    return m if isinstance(m, dict) else {}
+
+
+def record_native_mode(agent_id, mode):
+    """The mode set from the phone: claude's own files keep only the launch flag."""
+    m = dict((k, v) for k, v in native_modes().items() if os.path.isdir(os.path.join(JOBS_DIR, k)))
+    m[agent_id] = mode
+    try:
+        ensure_dir(TETHER_DIR)
+        write_json_atomic(NATIVE_MODES_PATH, m)
+    except (OSError, IOError):
+        pass
+
+
+def cmd_native_mode(opts, agent_id):
+    """Presses Shift+Tab in the agent's TUI until its footer shows the wanted mode. The cycle skips
+    modes the agent can't use (auto on some models, bypass without the flag): a full turn without
+    it leaves the agent where it started and fails."""
+    req = read_request()
+    mode = req.get("mode")
+    if mode not in NATIVE_MODE_NAMES:
+        raise HelperError("Unknown permission mode.")
+    agent_id, item, alive = live_native(opts, agent_id)
+    if not alive:
+        raise HelperError("That background agent has stopped. Send it a message to continue it first.")
+    if item.get("status") == "waiting":
+        raise HelperError("Answer Claude's request first.")
+    tui = Tui(opts, agent_id)
+    try:
+        start = cur = tui_mode(tui)
+        for _ in range(len(NATIVE_MODE_NAMES) + 1):
+            if cur == mode:
+                break
+            prev = cur
+            tui.send(b"\x1b[Z", 0.8)
+            cur = tui_mode(tui)
+            if cur == prev:  # footer not redrawn yet
+                tui.pump(1.0)
+                cur = tui_mode(tui)
+            if cur == start:
+                break
+        tui.pump(0.3)
+    finally:
+        tui.close()
+    if cur != mode:
+        raise HelperError("%s mode isn't available for this agent." % NATIVE_MODE_NAMES[mode])
+    record_native_mode(agent_id, mode)
     emit(native_agent(find_native(opts, agent_id) or item))
 
 
@@ -3314,6 +3394,8 @@ def main(argv):
         cmd_native_answer(opts, need())
     elif cmd == "native-interrupt":
         cmd_native_interrupt(opts, need())
+    elif cmd == "native-mode":
+        cmd_native_mode(opts, need())
     elif cmd == "native-ask":
         cmd_native_ask(opts, need())
     elif cmd == "native-question":

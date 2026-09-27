@@ -330,6 +330,12 @@ class HelperClaudeRemote internal constructor(
         return decode(out, "background agent") { NativeAgents.toRunInfo(NativeAgents.parseOne(it)) }
     }
 
+    override suspend fun setNativeMode(ref: RunRef, mode: String): RunInfo {
+        val body = buildJsonObject { put("mode", mode) }.toString().toByteArray(Charsets.UTF_8)
+        val out = helper(ref.connectionId, claudeArgs(ref.connectionId) + listOf("native-mode", nativeIdOf(ref)), stdin = body, timeoutMs = 60_000)
+        return decode(out, "background agent") { NativeAgents.toRunInfo(NativeAgents.parseOne(it)) }
+    }
+
     override suspend fun nativeTimeline(ref: RunRef): List<NativeTimelineEntry> {
         val out = helper(ref.connectionId, listOf("native-timeline", nativeIdOf(ref)), timeoutMs = 30_000)
         return decode(out, "activity timeline") { NativeAgents.parseTimeline(it) }

@@ -163,6 +163,8 @@ interface ClaudeRemote {
     suspend fun answerNative(ref: RunRef, allow: Boolean): RunInfo = throw UnsupportedOperationException()
     /** Presses Esc in the native agent: interrupts the current turn, keeps the agent. */
     suspend fun interruptNative(ref: RunRef): RunInfo = throw UnsupportedOperationException()
+    /** Presses Shift+Tab in the running native agent until it is in permission [mode]. */
+    suspend fun setNativeMode(ref: RunRef, mode: String): RunInfo = throw UnsupportedOperationException()
     /** Restores (or with [dryRun] previews restoring) files to before user message [messageId] of [sessionId]. */
     suspend fun rewindFiles(connectionId: String, sessionId: String, messageId: String, cwd: String, dryRun: Boolean, runId: String? = null): RewindResult =
         RewindResult(false, error = "Not supported.")

@@ -931,13 +931,16 @@ class DefaultAgentHub(
     }
 
     override suspend fun setPermissionMode(ref: RunRef, mode: String) {
-        if (ref.isNative) throw RemoteException("A background agent takes its approvals and settings on the computer.")
+        if (ref.isNative) {
+            mergeRun(ref.connectionId, remote.setNativeMode(ref, mode))
+            return
+        }
         control(ref, "mode", buildJsonObject { put("subtype", "set_permission_mode"); put("mode", mode) })
         updateRun(ref) { it.copy(permissionMode = mode) }
     }
 
     override suspend fun setModel(ref: RunRef, model: String) {
-        if (ref.isNative) throw RemoteException("A background agent takes its approvals and settings on the computer.")
+        if (ref.isNative) throw RemoteException("A background agent's model is set on the computer.")
         control(ref, "model", buildJsonObject { put("subtype", "set_model"); put("model", model) })
     }
 

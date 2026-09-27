@@ -414,6 +414,9 @@ fun AgentScreen(ref: RunRef, onBack: () -> Unit, onOpenMachine: (String) -> Unit
                         sending = state.replying,
                         working = nativeWorking && alive,
                         onStop = vm::interrupt,
+                        // Switched by Shift+Tab in its terminal, which skips modes it can't use: pick from the sheet.
+                        permissionMode = state.permissionMode,
+                        onSelectMode = if (alive && !terminal) vm::setMode else null,
                         hint = when {
                             terminal -> "Open in a terminal on your computer · replying starts a background copy"
                             conv.status == RunStatus.AWAITING_PERMISSION -> "Answer Claude's request above first"
