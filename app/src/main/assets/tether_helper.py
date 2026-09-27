@@ -33,7 +33,8 @@ Commands
     native-list                  [NativeAgent]  (agents --json --all merged with ~/.claude/jobs/<id>/state.json)
                                  Terminal sessions (kind "interactive") are listed too, as term-<pid>: watch-only;
                                  native-reply continues one as a background copy, the rest refuse them.
-    native-start                 stdin {cwd, prompt, model?, permissionMode?, trust} -> NativeAgent | {error:"untrusted"}
+    native-start                 stdin {cwd, prompt, model?, permissionMode?, trust, mcp?} -> NativeAgent
+                                   | {error:"untrusted"} | {error:"mcp", servers} (mcp: "enable" | "skip" answers it)
     native-reply <id>            stdin {message}: stop (if running) + `claude --bg --resume <session> msg`
     native-send <id>             stdin {message}: type into the RUNNING agent via `claude attach` (queues while busy)
     native-answer <id>           stdin {decision: allow|deny}: answer the agent's permission prompt
@@ -65,7 +66,7 @@ import subprocess
 import sys
 import time
 
-HELPER_VERSION = "1.9.0"
+HELPER_VERSION = "1.10.0"
 
 HOME = os.path.expanduser("~")
 TETHER_DIR = os.path.join(HOME, ".tether")
@@ -2052,16 +2053,7 @@ def folder_trusted(cwd):
 def trust_folder(cwd):
     """Marks cwd trusted for Claude Code: read, set, write a temp file, os.replace; keeps everything else."""
     cwd = os.path.normpath(cwd)
-    text = read_text(CLAUDE_JSON)
-    if text is None:
-        data = {}
-    else:
-        try:
-            data = json.loads(text)
-        except ValueError:
-            raise HelperError("~/.claude.json is not valid JSON; not touching it.")
-        if not isinstance(data, dict):
-            raise HelperError("~/.claude.json has an unexpected shape; not touching it.")
+    data = read_json_object(CLAUDE_JSON, "~/.claude.json")
     projects = data.get("projects")
     if not isinstance(projects, dict):
         projects = {}
@@ -2073,17 +2065,92 @@ def trust_folder(cwd):
     if entry.get("hasTrustDialogAccepted") is True:
         return
     entry["hasTrustDialogAccepted"] = True
+    write_json_atomic(CLAUDE_JSON, data)
+
+
+def read_json_object(path, label):
+    """The JSON object in path ({} when missing); raises rather than overwrite a file we cannot read."""
+    text = read_text(path)
+    if text is None:
+        return {}
     try:
-        mode = os.stat(CLAUDE_JSON).st_mode & 0o777
+        data = json.loads(text)
+    except ValueError:
+        raise HelperError("%s is not valid JSON; not touching it." % label)
+    if not isinstance(data, dict):
+        raise HelperError("%s has an unexpected shape; not touching it." % label)
+    return data
+
+
+def write_json_atomic(path, data):
+    """Writes a temp file next to path, then os.replace, keeping path's permissions."""
+    try:
+        mode = os.stat(path).st_mode & 0o777
     except OSError:
         mode = 0o600
-    tmp = "%s.tether%d.tmp" % (CLAUDE_JSON, os.getpid())
+    tmp = "%s.tether%d.tmp" % (path, os.getpid())
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
         f.flush()
         os.fsync(f.fileno())
-    os.replace(tmp, CLAUDE_JSON)
+    os.replace(tmp, path)
+
+
+# ── project MCP servers (.mcp.json in cwd or a parent). Claude Code asks once per folder which ones
+#    to enable; a `claude --bg` session would sit on that screen, so Tether asks on the phone instead
+#    and records the answer where Claude does: <cwd>/.claude/settings.local.json. ──
+
+def project_mcp_servers(cwd):
+    names = []
+    p = os.path.normpath(cwd)
+    while True:
+        data = read_json(os.path.join(p, ".mcp.json"))
+        servers = data.get("mcpServers") if isinstance(data, dict) else None
+        if isinstance(servers, dict):
+            names += [n for n in servers if isinstance(n, str) and n not in names]
+        parent = os.path.dirname(p)
+        if parent == p:
+            return names
+        p = parent
+
+
+def pending_mcp_servers(cwd):
+    """Project MCP servers Claude Code has not been told to enable or skip in cwd yet."""
+    names = project_mcp_servers(cwd)
+    if not names:
+        return []
+    cwd = os.path.normpath(cwd)
+    sources = [read_json(f) for f in ("/etc/claude-code/managed-settings.json",
+                                      os.path.join(HOME, ".claude", "settings.json"),
+                                      os.path.join(cwd, ".claude", "settings.json"),
+                                      os.path.join(cwd, ".claude", "settings.local.json"))]
+    data = read_json(CLAUDE_JSON, {}) or {}
+    projects = data.get("projects") if isinstance(data, dict) and isinstance(data.get("projects"), dict) else {}
+    sources.append(projects.get(cwd))
+    decided = set()
+    for s in sources:
+        if not isinstance(s, dict):
+            continue
+        if s.get("enableAllProjectMcpServers") is True:
+            return []
+        for key in ("enabledMcpjsonServers", "disabledMcpjsonServers"):
+            v = s.get(key)
+            if isinstance(v, list):
+                decided.update(x for x in v if isinstance(x, str))
+    return [n for n in names if n not in decided]
+
+
+def settle_mcp_servers(cwd, names, enable):
+    """Adds names to enabledMcpjsonServers (or disabledMcpjsonServers) in <cwd>/.claude/settings.local.json."""
+    d = os.path.join(os.path.normpath(cwd), ".claude")
+    path = os.path.join(d, "settings.local.json")
+    data = read_json_object(path, path.replace(HOME, "~", 1))
+    key = "enabledMcpjsonServers" if enable else "disabledMcpjsonServers"
+    cur = data.get(key) if isinstance(data.get(key), list) else []
+    data[key] = cur + [n for n in names if n not in cur]
+    os.makedirs(d, exist_ok=True)
+    write_json_atomic(path, data)
 
 
 def read_request():
@@ -2151,6 +2218,13 @@ def cmd_native_start(opts):
             emit({"error": "untrusted", "cwd": cwd})
             return
         trust_folder(cwd)
+    pending = pending_mcp_servers(cwd)
+    if pending:
+        choice = req.get("mcp")
+        if choice not in ("enable", "skip"):
+            emit({"error": "mcp", "cwd": cwd, "servers": pending})
+            return
+        settle_mcp_servers(cwd, pending, choice == "enable")
     new_id, text = launch_bg(opts, cwd, args)
     if new_id == "untrusted":
         # Claude has its own notion (e.g. a parent entry we did not read the same way): trust exactly cwd.

@@ -150,8 +150,11 @@ interface ClaudeRemote {
     // ── Claude Code's own background agents (`claude --bg`). [listRuns] and [watch] include them
     //    as RunInfo(kind = NATIVE, runId = "native-<id>"). ──
 
-    /** Starts `claude --bg`; [trust] = mark the folder trusted for Claude Code first when it is not. */
-    suspend fun startNative(connectionId: String, request: StartRunRequest, trust: Boolean): NativeStartResult =
+    /**
+     * Starts `claude --bg`; [trust] = mark the folder trusted for Claude Code first when it is not,
+     * [mcp] = enable or skip the folder's not-yet-approved project MCP servers.
+     */
+    suspend fun startNative(connectionId: String, request: StartRunRequest, trust: Boolean, mcp: McpChoice? = null): NativeStartResult =
         throw UnsupportedOperationException("Background agents are not supported here.")
     /**
      * Sends a message to a native agent. A running one gets it typed into its terminal via
@@ -254,7 +257,7 @@ interface AgentHub {
 
     // ── native background agents (`claude --bg`); stop/remove/conversation also accept their refs ──
 
-    suspend fun startNative(connectionId: String, request: StartRunRequest, trustFolder: Boolean = false): NativeStartResult =
+    suspend fun startNative(connectionId: String, request: StartRunRequest, trustFolder: Boolean = false, mcp: McpChoice? = null): NativeStartResult =
         throw UnsupportedOperationException("Background agents are not supported here.")
     /** Replies to a finished native agent; returns the ref that continues the conversation (normally the same). */
     suspend fun continueNative(ref: RunRef, text: String): RunRef = throw UnsupportedOperationException()
