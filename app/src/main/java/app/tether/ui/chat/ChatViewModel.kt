@@ -16,6 +16,8 @@ import app.tether.core.RunRef
 import app.tether.core.NativeTimelineEntry
 import app.tether.core.SlashCommand
 import app.tether.core.isNative
+import app.tether.core.nativeId
+import app.tether.remote.NativeAgents
 import app.tether.core.RunStatus
 import app.tether.core.StartRunRequest
 import app.tether.ui.components.projectName
@@ -320,6 +322,7 @@ class ChatViewModel(private val container: AppContainer, initialRef: RunRef) : V
             try {
                 val next = container.agents.continueNative(r, text)
                 if (next != r) refFlow.value = next // claude continued it under a new id: follow it
+                if (r.nativeId?.startsWith(NativeAgents.TERMINAL_PREFIX) == true) say("Continued in a background copy · the terminal session is untouched")
             } catch (ce: CancellationException) {
                 throw ce
             } catch (t: Throwable) {

@@ -225,6 +225,10 @@ fun AgentScreen(ref: RunRef, onBack: () -> Unit, onOpenMachine: (String) -> Unit
     var bottomPx by remember { mutableIntStateOf(0) }
     val bottomDp = with(density) { bottomPx.toDp() }
     BackHandler(enabled = rawView) { rawView = false }
+    // A terminal session is watch-only; the composer shows only once the user opts into a background copy.
+    val terminal = native && conv.nativeRun?.terminal == true
+    var copyDraft by rememberSaveable(state.ref) { mutableStateOf(false) }
+    BackHandler(enabled = terminal && copyDraft && !rawView) { copyDraft = false }
 
     val onRespond: (String, PermissionDecision) -> Unit = remember(vm) { { id, d -> vm.respond(id, d) } }
     val respondingIds = state.respondingIds
@@ -383,8 +387,10 @@ fun AgentScreen(ref: RunRef, onBack: () -> Unit, onOpenMachine: (String) -> Unit
                     onFetchQuestion = if (native) ({ vm.fetchQuestion() }) else null,
                 )
             }
-            // 0 = live composer, 1 = ended, 3 = native composer (always available; queues while busy)
+            // 0 = live composer, 1 = ended, 3 = native composer (always available; queues while busy),
+            // 4 = terminal session: watch-only until the user chooses to continue in a background copy
             val dockMode = when {
+                terminal && !copyDraft -> 4
                 native -> 3
                 state.ended -> 1
                 else -> 0
@@ -397,16 +403,24 @@ fun AgentScreen(ref: RunRef, onBack: () -> Unit, onOpenMachine: (String) -> Unit
                 },
                 label = "composerOrEnded",
             ) { mode ->
-                if (mode == 3) {
+                if (mode == 4) {
+                    TerminalWatchDock(machineName = state.machineName, onContinue = { copyDraft = true })
+                } else if (mode == 3) {
                     val run = conv.nativeRun
-                    val terminal = run?.terminal == true
                     val nativeWorking = !terminal && (conv.status == RunStatus.WORKING || conv.status == RunStatus.STARTING)
                     val alive = run?.alive == true
+                    Column {
+                    if (terminal) {
+                        TerminalCopyNotice(
+                            terminalBusy = conv.status == RunStatus.WORKING || conv.status == RunStatus.STARTING,
+                            onCancel = { copyDraft = false },
+                        )
+                    }
                     Composer(
                         state = vm.composer,
                         onSend = vm::send,
                         placeholder = when {
-                            terminal -> "Continue in a background copy…"
+                            terminal -> "Message for the copy…"
                             nativeWorking -> "Add a message — Claude reads it next…"
                             else -> "Reply to Claude…"
                         },
@@ -415,7 +429,7 @@ fun AgentScreen(ref: RunRef, onBack: () -> Unit, onOpenMachine: (String) -> Unit
                         working = nativeWorking && alive,
                         onStop = vm::interrupt,
                         hint = when {
-                            terminal -> "Open in a terminal on your computer · replying starts a background copy"
+                            terminal -> null // TerminalCopyNotice above says it
                             conv.status == RunStatus.AWAITING_PERMISSION -> "Answer Claude's request above first"
                             nativeWorking && alive -> "Messages queue while Claude works · ■ interrupts"
                             !alive -> "Resumes this background agent"
@@ -425,6 +439,7 @@ fun AgentScreen(ref: RunRef, onBack: () -> Unit, onOpenMachine: (String) -> Unit
                         allowAttachments = false,
                         onError = { msg -> scope.launch { snackbar.showSnackbar(msg) } },
                     )
+                    }
                 } else if (mode == 1) {
                     EndedCard(
                         failed = conv.status == RunStatus.FAILED,

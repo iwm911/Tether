@@ -111,6 +111,13 @@ class NativeAgentsTest {
     }
 
     @Test
+    fun terminalReplyContinuesAsBackgroundCopy() {
+        // native-send refuses term-<pid> ids; only native-reply starts the background copy.
+        assertEquals("native-reply", NativeAgents.replyCommand(RunRef("c", "native-term-4242").nativeId!!))
+        assertEquals("native-send", NativeAgents.replyCommand(RunRef("c", "native-a1b2c3d4").nativeId!!))
+    }
+
+    @Test
     fun doneAliveIsIdleAndStoppedIsEnded() {
         val list = NativeAgents.parseList(fixture("native_list.json")).map(NativeAgents::toRunInfo)
         val done = list[1]
