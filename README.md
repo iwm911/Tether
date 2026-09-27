@@ -14,10 +14,6 @@ Start Claude Code agents on your own computers, watch them work, and approve wha
 
 **[⬇️ Download the APK](https://github.com/iwm911/Tether/releases/latest)** &nbsp;·&nbsp; [🌐 Website](https://iwm911.github.io/Tether/) &nbsp;·&nbsp; [🔒 Privacy](PRIVACY.md)
 
-<br>
-<img src="docs/assets/hero.png" width="900" alt="Illustration of Tether: the Home screen with an agent waiting for approval, a conversation showing a code diff and the approval panel, and the notification shade with Allow, Deny and Tell Claude buttons">
-<br><sub>Illustration of the app's screens</sub>
-
 </div>
 
 ---
