@@ -303,6 +303,31 @@ class StreamReducerTest {
     }
 
     @Test
+    fun builtInMissingFromInitializeIsStillSettled() {
+        val r = StreamReducer()
+        // initialize doesn't list /cost; its <synthetic> reply must still land on the command.
+        r.accept("""{"type":"control_response","response":{"subtype":"success","request_id":"init_1","response":{"commands":[{"name":"context","description":"","argumentHint":""}]}}}""")
+        r.addOptimisticUser("/cost", 0, queued = false)
+        r.accept("""{"type":"assistant","message":{"id":"syn1","model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"Current session: 44% used"}]},"parent_tool_use_id":null,"uuid":"a1"}""")
+        val s = r.snapshot()
+        val u = s.items.ofType<ChatItem.User>().single()
+        assertTrue(u.command)
+        assertEquals("Current session: 44% used", u.commandOutput)
+        assertTrue(s.items.ofType<ChatItem.AssistantText>().isEmpty())
+    }
+
+    @Test
+    fun echoedPathPromptIsNotTakenBySyntheticReply() {
+        val r = StreamReducer()
+        r.addOptimisticUser("/tmp is full, clean it", 0, queued = false)
+        r.accept("""{"type":"user","message":{"role":"user","content":[{"type":"text","text":"/tmp is full, clean it"}]},"parent_tool_use_id":null,"uuid":"u1","isReplay":true}""")
+        r.accept("""{"type":"assistant","message":{"id":"syn1","model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"API Error: overloaded"}]},"parent_tool_use_id":null,"uuid":"a1"}""")
+        val s = r.snapshot()
+        assertEquals(null, s.items.ofType<ChatItem.User>().single().commandOutput)
+        assertEquals(1, s.items.ofType<ChatItem.AssistantText>().size)
+    }
+
+    @Test
     fun promptCommandEchoReconcilesOptimisticCommand() {
         val r = StreamReducer()
         r.accept("""{"type":"control_response","response":{"subtype":"success","request_id":"init_1","response":{"commands":[{"name":"hi","description":"say ok","argumentHint":"<word>"}]}}}""")

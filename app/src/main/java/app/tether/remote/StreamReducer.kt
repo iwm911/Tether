@@ -636,13 +636,16 @@ class StreamReducer(private val clock: () -> Long = { System.currentTimeMillis()
     /**
      * Live, a local command (/context, /cost…) is never echoed back as a user message: its output
      * arrives as a `<synthetic>` assistant message. That output is what settles the queued command.
+     * initialize omits some built-ins (/cost), so any pending `/name` message qualifies as a fallback.
      */
     private fun onLocalCommandReply(text: String): Boolean {
-        val key = optimistic.firstOrNull { (find(it)?.item as? ChatItem.User)?.command == true } ?: return false
+        val pending = optimistic.mapNotNull { k -> (find(k)?.item as? ChatItem.User)?.let { k to it } }
+        val key = (pending.firstOrNull { it.second.command } ?: pending.firstOrNull { SLASH_NAME.containsMatchIn(it.second.text) })?.first
+            ?: return false
         val slot = find(key) ?: return false
         val cur = slot.item as? ChatItem.User ?: return false
         optimistic.remove(key)
-        slot.item = cur.copy(queued = false, commandOutput = text.trim().takeIf { it.isNotEmpty() }?.let(::capCommandOutput))
+        slot.item = cur.copy(queued = false, command = true, commandOutput = text.trim().takeIf { it.isNotEmpty() }?.let(::capCommandOutput))
         home[key]?.let(::touch)
         version++
         return true
