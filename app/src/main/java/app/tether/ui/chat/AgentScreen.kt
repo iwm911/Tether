@@ -435,6 +435,10 @@ fun AgentScreen(ref: RunRef, onBack: () -> Unit, onOpenMachine: (String) -> Unit
                             !alive -> "Resumes this background agent"
                             else -> "Sends to this background agent"
                         },
+                        // The copy of a terminal session starts with its own settings: nothing to show yet.
+                        permissionMode = if (terminal) null else state.permissionMode,
+                        model = if (terminal) null else state.model,
+                        lockedSettings = if (terminal) null else "Set when the agent started on the computer — change them there",
                         commands = nativeCommands,
                         allowAttachments = false,
                         onError = { msg -> scope.launch { snackbar.showSnackbar(msg) } },

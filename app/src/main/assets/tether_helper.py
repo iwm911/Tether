@@ -511,9 +511,13 @@ def scan_head(path):
 
 
 def scan_titles(data, into):
-    """Walks lines, keeping the LAST custom/ai title and last prompt seen."""
+    """Walks lines, keeping the LAST custom/ai title, last prompt and permission mode seen."""
     for raw in iter_lines_bytes(data):
-        if b'"custom-title"' in raw or b'"ai-title"' in raw or b'"last-prompt"' in raw or b'"summary"' in raw:
+        if b'"permission-mode"' in raw:
+            o = parse_line(raw)
+            if o and o.get("type") == "permission-mode" and isinstance(o.get("permissionMode"), str):
+                into["permissionMode"] = o["permissionMode"]
+        elif b'"custom-title"' in raw or b'"ai-title"' in raw or b'"last-prompt"' in raw or b'"summary"' in raw:
             o = parse_line(raw)
             if not o:
                 continue
@@ -1877,9 +1881,12 @@ def native_agent(item, want_timeline=True):
     terminal = item.get("kind") == "interactive"
     name = st.get("name") or item.get("name")
     intent = st.get("intent")
+    titles = {}
+    if tpath and not terminal:
+        # Only for the mode: Shift+Tab on the computer writes a permission-mode line.
+        scan_titles(read_tail(tpath, 64 * 1024), titles)
     if terminal:
         # Claude derives a name from the folder ("tether-ac"); the conversation's own title says more.
-        titles = {}
         if tpath:
             updated = max(updated, mtime_ms(tpath))
             scan_titles(read_tail(tpath, 256 * 1024), titles)
@@ -1910,7 +1917,7 @@ def native_agent(item, want_timeline=True):
         "tokens": st.get("tokens") if isinstance(st.get("tokens"), int) else 0,
         "result": trim(result, NATIVE_RESULT_CAP),
         "model": flag_value(flags, "--model"),
-        "permissionMode": flag_value(flags, "--permission-mode"),
+        "permissionMode": titles.get("permissionMode") or flag_value(flags, "--permission-mode"),
         "transcript": bool(tpath),
     }
     if item.get("status") == "waiting" and not terminal:

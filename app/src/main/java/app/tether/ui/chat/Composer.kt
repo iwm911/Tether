@@ -292,6 +292,11 @@ fun Composer(
     model: String? = null,
     models: List<ModelOption> = emptyList(),
     onSelectModel: ((String) -> Unit)? = null,
+    /**
+     * Shows [permissionMode] / [model] as read-only chips (a background agent's settings live on the
+     * computer); tapping one explains that with this message via [onError].
+     */
+    lockedSettings: String? = null,
     commands: List<SlashCommand> = emptyList(),
     hint: String? = null,
     allowAttachments: Boolean = true,
@@ -429,7 +434,33 @@ fun Composer(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        if (onCycleMode != null || onSelectMode != null) {
+                        if (lockedSettings != null) {
+                            val mode = PermissionMode.fromCli(permissionMode)
+                            if (permissionMode != null) {
+                                ComposerChip(
+                                    text = mode?.label ?: permissionMode.replaceFirstChar { it.uppercase() },
+                                    icon = (mode ?: PermissionMode.DEFAULT).icon(),
+                                    tint = (mode ?: PermissionMode.DEFAULT).tint(),
+                                    emphasised = mode != null && mode != PermissionMode.DEFAULT,
+                                    enabled = true,
+                                    contentDescription = "Permission mode: ${mode?.label ?: permissionMode}",
+                                    onClick = { currentOnError(lockedSettings) },
+                                    onLongClick = null,
+                                )
+                            }
+                            if (model != null) {
+                                ComposerChip(
+                                    text = modelLabel(model, models.ifEmpty { FallbackModels }),
+                                    icon = Icons.Rounded.Bolt,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    emphasised = false,
+                                    enabled = true,
+                                    contentDescription = "Model: ${modelLabel(model, models)}",
+                                    onClick = { currentOnError(lockedSettings) },
+                                    onLongClick = null,
+                                )
+                            }
+                        } else if (onCycleMode != null || onSelectMode != null) {
                             val mode = PermissionMode.fromCli(permissionMode)
                             ComposerChip(
                                 text = mode?.label ?: permissionMode?.replaceFirstChar { it.uppercase() } ?: PermissionMode.DEFAULT.label,
@@ -449,7 +480,7 @@ fun Composer(
                                 onLongClick = { haptics.confirm(); showModeSheet = true },
                             )
                         }
-                        if (onSelectModel != null) {
+                        if (onSelectModel != null && lockedSettings == null) {
                             ComposerChip(
                                 text = modelLabel(model, models.ifEmpty { FallbackModels }),
                                 icon = Icons.Rounded.Bolt,
