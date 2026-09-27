@@ -124,7 +124,8 @@ WireGuard works well for reaching it from outside your home network.
    away. It'll tell you when Claude needs you.
 
 Tether updates itself from GitHub Releases, and every update is verified before it installs.
-It checks in the background about twice a day and sends a notification when a new version is out.
+It checks in the background about twice a day and sends a notification when a new version is out
+(with an Update button; turn it off in Settings › Notifications › New Tether versions).
 
 ## 🔒 Security & privacy
 

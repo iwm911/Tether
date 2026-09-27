@@ -294,7 +294,10 @@ object Notifications {
         NotificationManagerCompat.from(context).notify(id, notification)
     }
 
-    /** A new Tether release is out; tapping opens Home, where the update banner installs it. */
+    /**
+     * A new Tether release is out. Tapping opens Home (with its update banner); Update opens the app
+     * and starts the install there — Android's install confirmation can't appear from the background.
+     */
     @SuppressLint("MissingPermission")
     fun showAppUpdate(context: Context, versionName: String, notes: String) {
         if (!canPost(context)) return
@@ -309,6 +312,7 @@ object Notifications {
             .setCategory(NotificationCompat.CATEGORY_RECOMMENDATION)
             .setAutoCancel(true)
             .setContentIntent(openApp(context, null, APP_UPDATE_NOTIFICATION_ID))
+            .addAction(0, "Update", installUpdate(context))
             .build()
         NotificationManagerCompat.from(context).notify(APP_UPDATE_NOTIFICATION_ID, notification)
     }
@@ -330,6 +334,14 @@ object Notifications {
             }
         }
         return PendingIntent.getActivity(context, requestCode, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+    }
+
+    private fun installUpdate(context: Context): PendingIntent {
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            action = MainActivity.ACTION_INSTALL_UPDATE
+        }
+        return PendingIntent.getActivity(context, APP_UPDATE_NOTIFICATION_ID + 1, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
     }
 
     fun agentTitle(a: AgentSummary): String =

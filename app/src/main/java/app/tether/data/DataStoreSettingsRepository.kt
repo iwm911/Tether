@@ -81,6 +81,7 @@ class DataStoreSettingsRepository(context: Context, scope: CoroutineScope) : Set
             showThinking = this[K.showThinking] ?: d.showThinking,
             notifyPermissions = this[K.notifyPermissions] ?: d.notifyPermissions,
             notifyCompletion = this[K.notifyCompletion] ?: d.notifyCompletion,
+            notifyAppUpdates = this[K.notifyAppUpdates] ?: d.notifyAppUpdates,
             backgroundWatch = this[K.backgroundWatch] ?: d.backgroundWatch,
             keepConnectionsAlive = this[K.keepAlive] ?: d.keepConnectionsAlive,
             batteryPromptDismissed = this[K.batteryPrompt] ?: d.batteryPromptDismissed,
@@ -104,6 +105,7 @@ class DataStoreSettingsRepository(context: Context, scope: CoroutineScope) : Set
         this[K.showThinking] = s.showThinking
         this[K.notifyPermissions] = s.notifyPermissions
         this[K.notifyCompletion] = s.notifyCompletion
+        this[K.notifyAppUpdates] = s.notifyAppUpdates
         this[K.backgroundWatch] = s.backgroundWatch
         this[K.keepAlive] = s.keepConnectionsAlive
         this[K.batteryPrompt] = s.batteryPromptDismissed
@@ -126,6 +128,7 @@ class DataStoreSettingsRepository(context: Context, scope: CoroutineScope) : Set
         val showThinking = booleanPreferencesKey("show_thinking")
         val notifyPermissions = booleanPreferencesKey("notify_permissions")
         val notifyCompletion = booleanPreferencesKey("notify_completion")
+        val notifyAppUpdates = booleanPreferencesKey("notify_app_updates")
         val backgroundWatch = booleanPreferencesKey("background_watch")
         val keepAlive = booleanPreferencesKey("keep_connections_alive")
         val batteryPrompt = booleanPreferencesKey("battery_prompt_dismissed")

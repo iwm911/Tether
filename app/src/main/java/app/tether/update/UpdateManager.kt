@@ -13,6 +13,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
 import app.tether.BuildConfig
 import app.tether.TetherApp
+import app.tether.core.SettingsRepository
 import app.tether.service.Notifications
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -22,6 +23,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
@@ -86,6 +89,7 @@ private data class GhAsset(
 
 class UpdateManager(
     private val app: Application,
+    private val settings: SettingsRepository,
     private val scope: CoroutineScope,
 ) {
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
@@ -101,6 +105,16 @@ class UpdateManager(
 
     init {
         instance = this
+        // Background checks + notifications follow Settings › Notifications › New Tether versions.
+        scope.launch {
+            settings.settings.map { it.notifyAppUpdates }.distinctUntilChanged().collect { on ->
+                if (on) UpdateCheckJob.schedule(app)
+                else {
+                    UpdateCheckJob.cancel(app)
+                    Notifications.cancel(app, Notifications.APP_UPDATE_NOTIFICATION_ID)
+                }
+            }
+        }
         // First look shortly after launch, off the startup path.
         scope.launch {
             delay(8_000)
@@ -147,6 +161,7 @@ class UpdateManager(
      * app the Home banner already shows it.
      */
     private fun announce(info: UpdateInfo) {
+        if (!settings.settings.value.notifyAppUpdates) return
         if (prefs.getInt(KEY_NOTIFIED_VERSION, 0) >= info.versionCode) return
         if (ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return
         if (!Notifications.canPost(app)) return
@@ -225,6 +240,19 @@ class UpdateManager(
             c.disconnect()
         }
         if (!part.renameTo(dest)) throw IOException("Couldn't save the downloaded update.")
+    }
+
+    /**
+     * The notification's Update button: install the announced update. If the process was restarted
+     * since it was announced, look it up again first.
+     */
+    fun installFromNotification() {
+        Notifications.cancel(app, Notifications.APP_UPDATE_NOTIFICATION_ID)
+        if (source != null) return install()
+        scope.launch {
+            check()?.join()
+            if (_state.value is UpdateState.Available) install()
+        }
     }
 
     /** Downloads (with progress), verifies and installs the available update. */

@@ -13,7 +13,8 @@ import kotlinx.coroutines.launch
 /**
  * Periodic background look at GitHub Releases, so a new version reaches the user as a notification
  * even when Tether isn't opened for days. Uses the platform JobScheduler (no WorkManager needed):
- * about twice a day, only with a network, kept across reboots.
+ * about twice a day, only with a network, kept across reboots. Scheduled only while Settings ›
+ * Notifications › New Tether versions is on.
  */
 class UpdateCheckJob : JobService() {
     private var work: Job? = null
@@ -49,6 +50,10 @@ class UpdateCheckJob : JobService() {
                 .setPersisted(true)
                 .build()
             runCatching { js.schedule(job) }
+        }
+
+        fun cancel(context: Context) {
+            context.getSystemService(JobScheduler::class.java)?.cancel(JOB_ID)
         }
     }
 }
