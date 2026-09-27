@@ -152,6 +152,8 @@ class StreamReducer(private val clock: () -> Long = { System.currentTimeMillis()
     private var totalCost = 0.0
     private var lastTotalCost: Double? = null
     private var contextTokens: Long? = null
+    /** Context window of the current model as the CLI reports it (`modelUsage[..].contextWindow`). */
+    private var contextWindow: Long? = null
     private var rateLimit: RateLimitInfo? = null
     private var planName: String? = null
     /** uuid of the newest top-level assistant line — the fork point for the next user message. */
@@ -281,6 +283,7 @@ class StreamReducer(private val clock: () -> Long = { System.currentTimeMillis()
             models = models,
             totalCostUsd = totalCost,
             contextTokens = contextTokens,
+            contextWindow = contextWindow,
             queuedCount = queued,
             loadingHistory = false,
             rateLimit = rateLimit,
@@ -716,7 +719,7 @@ class StreamReducer(private val clock: () -> Long = { System.currentTimeMillis()
             "local_command" -> o.str("content")?.let(::onLocalCommandOutput)
             "init" -> {
                 o.str("session_id")?.let { sessionId = it }
-                o.str("model")?.takeIf { it.isNotBlank() && !it.startsWith("<") }?.let { model = it }
+                o.str("model")?.takeIf { it.isNotBlank() && !it.startsWith("<") }?.let { model = it; windowHint(it) }
                 o.str("cwd")?.let { cwd = it }
                 o.str("permissionMode")?.let { permissionMode = it; modeConfirmed = true }
                 if (!sessionNoticeShown) {
@@ -831,6 +834,7 @@ class StreamReducer(private val clock: () -> Long = { System.currentTimeMillis()
             lastTotalCost = total
         }
         o.str("session_id")?.let { sessionId = it }
+        o.obj("modelUsage")?.let(::onModelUsage)
         if (!bookkeeping) {
             if (interrupted) {
                 if (!lastIsInterruptNotice()) addNotice("Interrupted", NoticeKind.INTERRUPTED)
@@ -977,6 +981,8 @@ class StreamReducer(private val clock: () -> Long = { System.currentTimeMillis()
         modelRequests.remove(rid)?.let { requested ->
             val cur = model
             if (cur == null || !cur.contains(requested)) model = requested
+            contextWindow = null
+            windowHint(requested)
             version++
             return
         }
@@ -992,6 +998,20 @@ class StreamReducer(private val clock: () -> Long = { System.currentTimeMillis()
             modeConfirmed = true
             version++
         }
+    }
+
+    /** Picks the current model's context window out of a result's per-model usage. */
+    private fun onModelUsage(usage: JsonObject) {
+        val windows = usage.entries.mapNotNull { (k, v) -> (v as? JsonObject)?.long("contextWindow")?.takeIf { it > 0 }?.let { k to it } }
+        if (windows.isEmpty()) return
+        val base = model?.substringBefore('[')
+        contextWindow = windows.firstOrNull { base != null && it.first.substringBefore('[') == base }?.second
+            ?: windows.maxOf { it.second }
+    }
+
+    /** "claude-opus-4-6[1m]" names its long context before any result reports the window. */
+    private fun windowHint(model: String) {
+        if (contextWindow == null && "[1m]" in model.lowercase()) contextWindow = 1_000_000L
     }
 
     private fun onRateLimit(o: JsonObject) {

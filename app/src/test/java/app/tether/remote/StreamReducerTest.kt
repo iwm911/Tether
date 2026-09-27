@@ -107,6 +107,19 @@ class StreamReducerTest {
     }
 
     @Test
+    fun contextWindowComesFromResultModelUsage() {
+        assertEquals(200_000L, live(fixture("stream_multiturn_partial_interrupt.jsonl")).snapshot().contextWindow)
+        val r = StreamReducer(clock = { 1_000L })
+        r.accept("""{"type":"system","subtype":"init","session_id":"s","model":"claude-opus-4-6[1m]","cwd":"/w"}""")
+        assertEquals(1_000_000L, r.snapshot().contextWindow)
+        r.accept(
+            """{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"ok","session_id":"s",""" +
+                """"modelUsage":{"claude-haiku-4-5":{"contextWindow":200000},"claude-opus-4-6":{"contextWindow":500000}}}""",
+        )
+        assertEquals(500_000L, r.snapshot().contextWindow)
+    }
+
+    @Test
     fun partialStreamShowsStreamingTextWhileWorking() {
         val lines = fixture("stream_multiturn_partial_interrupt.jsonl")
         val r = live(lines.take(150)) // mid-way through the "count to 200" text deltas

@@ -460,6 +460,8 @@ data class ConversationState(
     val totalCostUsd: Double = 0.0,
     /** Input+cache tokens of the latest assistant message ≈ context in use. */
     val contextTokens: Long? = null,
+    /** Context window size the CLI reported for the current model; null until known. */
+    val contextWindow: Long? = null,
     val queuedCount: Int = 0,
     val link: LinkState = LinkState.Idle,
     val loadingHistory: Boolean = true,

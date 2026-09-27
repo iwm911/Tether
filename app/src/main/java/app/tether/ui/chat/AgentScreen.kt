@@ -51,6 +51,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.CallSplit
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material.icons.rounded.Computer
 import androidx.compose.material.icons.rounded.ContentCopy
@@ -80,6 +81,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -131,10 +133,28 @@ import app.tether.ui.theme.TetherTheme
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.DateFormat
+import java.text.SimpleDateFormat
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.temporal.ChronoUnit
 import java.util.Date
+import java.util.Locale
 import kotlin.math.roundToInt
 
-private const val ContextWindowTokens = 200_000L
+private const val DefaultContextWindow = 200_000L
+private const val LongContextWindow = 1_000_000L
+
+/** The CLI-reported window; until a turn reports it, guess from the model id and the tokens already in use. */
+private fun contextWindowFor(reported: Long?, model: String?, tokens: Long?): Long = when {
+    reported != null && reported > 0 -> reported
+    model?.lowercase()?.contains("[1m]") == true -> LongContextWindow
+    (tokens ?: 0L) > DefaultContextWindow -> LongContextWindow
+    else -> DefaultContextWindow
+}
+
+/** Rate-limit warnings the user closed, keyed by kind + window + reset, so a new window or a hard limit shows again. */
+private val dismissedRateBanners = mutableStateListOf<String>()
 
 /** Holds the screen awake while the calling screen is shown, if the user turned that on in Settings. */
 @Composable
@@ -252,6 +272,7 @@ fun AgentScreen(ref: RunRef, onBack: () -> Unit, onOpenMachine: (String) -> Unit
                     actions = {
                         ContextMeter(
                             tokens = conv.contextTokens,
+                            window = contextWindowFor(conv.contextWindow, state.model ?: conv.model, conv.contextTokens),
                             costUsd = conv.totalCostUsd,
                             model = state.model,
                             models = conv.models,
@@ -463,6 +484,7 @@ fun AgentScreen(ref: RunRef, onBack: () -> Unit, onOpenMachine: (String) -> Unit
 @Composable
 private fun ContextMeter(
     tokens: Long?,
+    window: Long,
     costUsd: Double,
     model: String?,
     models: List<ModelOption>,
@@ -472,7 +494,7 @@ private fun ContextMeter(
 ) {
     var open by remember { mutableStateOf(false) }
     val haptics = rememberHaptics()
-    val fraction = ((tokens ?: 0L).toFloat() / ContextWindowTokens).coerceIn(0f, 1f)
+    val fraction = ((tokens ?: 0L).toFloat() / window).coerceIn(0f, 1f)
     val animated by animateFloatAsState(fraction, Motion.gentle(), label = "ctx")
     val c = TetherTheme.colors
     val arc by animateColorAsState(
@@ -517,7 +539,7 @@ private fun ContextMeter(
                 Spacer(Modifier.height(Space.sm))
                 InfoLine(
                     "Context",
-                    if (tokens != null) "${compactNumber(tokens)} / ${compactNumber(ContextWindowTokens)} · $pct%" else "Not measured yet",
+                    if (tokens != null) "${compactNumber(tokens)} / ${compactNumber(window)} · $pct%" else "Not measured yet",
                 )
                 InfoLine("Model", modelLabel(model, models))
                 if (plan != null) {
@@ -703,8 +725,9 @@ private fun RateLimitBanner(info: RateLimitInfo?) {
         status.contains("warn") -> "warn"
         else -> null
     }
+    val dismissKey = kind?.let { "$it|${info?.windowLabel}|${info?.resetsAt}" }
     AnimatedContent(
-        targetState = kind,
+        targetState = kind?.takeIf { dismissKey !in dismissedRateBanners },
         transitionSpec = {
             (fadeIn(tween(Motion.Medium)) + expandVertically(Motion.gentle())) togetherWith
                 (fadeOut(tween(Motion.Short)) + shrinkVertically(tween(Motion.Medium))) using SizeTransform(clip = true)
@@ -727,15 +750,26 @@ private fun RateLimitBanner(info: RateLimitInfo?) {
                 },
                 title = if (k == "limit") "Usage limit reached" else "Approaching your usage limit",
                 detail = listOfNotNull(pct, reset?.let { "resets $it" }).joinToString(" · ").ifEmpty { null },
+                onClose = { dismissKey?.let(dismissedRateBanners::add) },
             )
         }
     }
 }
 
+/** "today 14:00", "tomorrow 09:00", or "Tue, Oct 6, 14:00" — weekly windows reset days away. */
 private fun formatReset(resetsAt: Long?): String? {
     if (resetsAt == null || resetsAt <= 0) return null
     val ms = if (resetsAt < 100_000_000_000L) resetsAt * 1000 else resetsAt
-    return DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(ms))
+    val time = DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(ms))
+    val days = ChronoUnit.DAYS.between(LocalDate.now(), Instant.ofEpochMilli(ms).atZone(ZoneId.systemDefault()).toLocalDate())
+    return when (days) {
+        0L -> "today $time"
+        1L -> "tomorrow $time"
+        else -> {
+            val locale = Locale.getDefault()
+            SimpleDateFormat(android.text.format.DateFormat.getBestDateTimePattern(locale, "EEEMMMdjmm"), locale).format(Date(ms))
+        }
+    }
 }
 
 @Composable
@@ -746,6 +780,7 @@ private fun BannerRow(
     detail: String? = null,
     action: String? = null,
     onAction: (() -> Unit)? = null,
+    onClose: (() -> Unit)? = null,
 ) {
     Row(
         Modifier
@@ -766,6 +801,10 @@ private fun BannerRow(
         }
         if (action != null && onAction != null) {
             TextButton(onClick = onAction) { Text(action, color = tint, style = MaterialTheme.typography.labelLarge) }
+        } else if (onClose != null) {
+            IconButton(onClick = onClose, modifier = Modifier.size(32.dp)) {
+                Icon(Icons.Rounded.Close, contentDescription = "Dismiss", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
+            }
         } else Spacer(Modifier.width(8.dp))
     }
 }
