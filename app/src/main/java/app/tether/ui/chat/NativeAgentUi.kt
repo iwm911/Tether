@@ -154,8 +154,10 @@ internal fun NativeHeaderCard(run: RunInfo?, onOpenTimeline: () -> Unit, modifie
                     val rot by animateFloatAsState(if (expanded) 0f else -90f, label = "hdrChev")
                     Icon(Icons.Rounded.ExpandMore, contentDescription = null, tint = TetherTheme.colors.faint, modifier = Modifier.padding(start = 2.dp).size(18.dp).rotate(rot))
                 }
-                IconButton(onClick = onOpenTimeline, modifier = Modifier.size(40.dp)) {
-                    Icon(Icons.Rounded.History, contentDescription = "Activity timeline", tint = TetherTheme.colors.faint, modifier = Modifier.size(18.dp))
+                if (!run.terminal) {
+                    IconButton(onClick = onOpenTimeline, modifier = Modifier.size(40.dp)) {
+                        Icon(Icons.Rounded.History, contentDescription = "Activity timeline", tint = TetherTheme.colors.faint, modifier = Modifier.size(18.dp))
+                    }
                 }
             }
             AnimatedVisibility(expanded, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
@@ -251,6 +253,8 @@ internal fun NativeOverflowMenu(
 ) {
     var open by remember { mutableStateOf(false) }
     val haptics = rememberHaptics()
+    // A terminal session has no job of its own: no logs, timeline, stop or remove from here.
+    val terminal = run?.terminal == true
     Box {
         IconButton(onClick = { haptics.tick(); open = true }) { Icon(Icons.Rounded.MoreVert, contentDescription = "More options") }
         DropdownMenu(
@@ -260,16 +264,18 @@ internal fun NativeOverflowMenu(
             containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
             border = BorderStroke(1.dp, TetherTheme.colors.hairline),
         ) {
-            DropdownMenuItem(
-                text = { Text("View terminal output") },
-                leadingIcon = { Icon(Icons.Rounded.Terminal, contentDescription = null) },
-                onClick = { open = false; onLogs() },
-            )
-            DropdownMenuItem(
-                text = { Text("Activity timeline") },
-                leadingIcon = { Icon(Icons.Rounded.History, contentDescription = null) },
-                onClick = { open = false; onTimeline() },
-            )
+            if (!terminal) {
+                DropdownMenuItem(
+                    text = { Text("View terminal output") },
+                    leadingIcon = { Icon(Icons.Rounded.Terminal, contentDescription = null) },
+                    onClick = { open = false; onLogs() },
+                )
+                DropdownMenuItem(
+                    text = { Text("Activity timeline") },
+                    leadingIcon = { Icon(Icons.Rounded.History, contentDescription = null) },
+                    onClick = { open = false; onTimeline() },
+                )
+            }
             DropdownMenuItem(
                 text = { Text("Fork into a live agent") },
                 leadingIcon = { Icon(Icons.AutoMirrored.Rounded.CallSplit, contentDescription = null) },
@@ -287,19 +293,21 @@ internal fun NativeOverflowMenu(
                 leadingIcon = { Icon(Icons.Rounded.Computer, contentDescription = null) },
                 onClick = { open = false; onOpenMachine() },
             )
-            HorizontalDivider(color = TetherTheme.colors.hairline, modifier = Modifier.padding(vertical = 4.dp))
-            if (run?.alive == true) {
+            if (!terminal) {
+                HorizontalDivider(color = TetherTheme.colors.hairline, modifier = Modifier.padding(vertical = 4.dp))
+                if (run?.alive == true) {
+                    DropdownMenuItem(
+                        text = { Text("Stop agent", color = TetherTheme.colors.danger) },
+                        leadingIcon = { Icon(Icons.Rounded.StopCircle, contentDescription = null, tint = TetherTheme.colors.danger) },
+                        onClick = { open = false; onStop() },
+                    )
+                }
                 DropdownMenuItem(
-                    text = { Text("Stop agent", color = TetherTheme.colors.danger) },
-                    leadingIcon = { Icon(Icons.Rounded.StopCircle, contentDescription = null, tint = TetherTheme.colors.danger) },
-                    onClick = { open = false; onStop() },
+                    text = { Text("Remove agent", color = TetherTheme.colors.danger) },
+                    leadingIcon = { Icon(Icons.Rounded.DeleteOutline, contentDescription = null, tint = TetherTheme.colors.danger) },
+                    onClick = { open = false; onRemove() },
                 )
             }
-            DropdownMenuItem(
-                text = { Text("Remove agent", color = TetherTheme.colors.danger) },
-                leadingIcon = { Icon(Icons.Rounded.DeleteOutline, contentDescription = null, tint = TetherTheme.colors.danger) },
-                onClick = { open = false; onRemove() },
-            )
         }
     }
 }

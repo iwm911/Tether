@@ -180,14 +180,15 @@ can_use_tool: Bash
           <table class="kinds">
             <caption>Two kinds of agents</caption>
             <thead>
-              <tr><th scope="col"><span class="sr">Capability</span></th><th scope="col">Live (recommended)</th><th scope="col">Background</th></tr>
+              <tr><th scope="col"><span class="sr">Capability</span></th><th scope="col">Background (default)</th><th scope="col">Live</th></tr>
             </thead>
             <tbody>
-              <tr><th scope="row">Runs as</th><td><code>claude -p</code> stream-json, driven by Tether</td><td>native <code>claude --bg</code></td></tr>
-              <tr><th scope="row">Approve tool use from the phone</th><td class="y">Yes, in the chat and from notifications</td><td>No, approvals happen on the computer</td></tr>
-              <tr><th scope="row">Streaming, interrupt, mode and model switch</th><td class="y">Yes</td><td>Stop only</td></tr>
-              <tr><th scope="row">Listed in <code>claude agents</code></th><td>No</td><td class="y">Yes</td></tr>
-              <tr><th scope="row">Reply</th><td>Any time (queues while busy)</td><td>When it’s idle or done</td></tr>
+              <tr><th scope="row">Runs as</th><td>native <code>claude --bg</code></td><td><code>claude -p</code> stream-json, driven by Tether</td></tr>
+              <tr><th scope="row">Approve tool use from the phone</th><td class="y">Yes, in the chat and from notifications</td><td class="y">Yes, in the chat and from notifications</td></tr>
+              <tr><th scope="row">Listed in <code>claude agents</code></th><td class="y">Yes: attach, logs, stop</td><td>Only while it runs</td></tr>
+              <tr><th scope="row">Streaming</th><td>Message by message</td><td class="y">Token by token</td></tr>
+              <tr><th scope="row">Images, rewind, mode and model switch</th><td>No</td><td class="y">Yes</td></tr>
+              <tr><th scope="row">Reply</th><td>Any time (queues while busy)</td><td>Any time (queues while busy)</td></tr>
             </tbody>
           </table>
         </div>

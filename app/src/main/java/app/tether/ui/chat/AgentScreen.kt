@@ -399,17 +399,23 @@ fun AgentScreen(ref: RunRef, onBack: () -> Unit, onOpenMachine: (String) -> Unit
             ) { mode ->
                 if (mode == 3) {
                     val run = conv.nativeRun
-                    val nativeWorking = conv.status == RunStatus.WORKING || conv.status == RunStatus.STARTING
+                    val terminal = run?.terminal == true
+                    val nativeWorking = !terminal && (conv.status == RunStatus.WORKING || conv.status == RunStatus.STARTING)
                     val alive = run?.alive == true
                     Composer(
                         state = vm.composer,
                         onSend = vm::send,
-                        placeholder = if (nativeWorking) "Add a message — Claude reads it next…" else "Reply to Claude…",
+                        placeholder = when {
+                            terminal -> "Continue in a background copy…"
+                            nativeWorking -> "Add a message — Claude reads it next…"
+                            else -> "Reply to Claude…"
+                        },
                         enabled = !state.replying && !conv.loadingHistory && conv.status != RunStatus.AWAITING_PERMISSION,
                         sending = state.replying,
                         working = nativeWorking && alive,
                         onStop = vm::interrupt,
                         hint = when {
+                            terminal -> "Open in a terminal on your computer · replying starts a background copy"
                             conv.status == RunStatus.AWAITING_PERMISSION -> "Answer Claude's request above first"
                             nativeWorking && alive -> "Messages queue while Claude works · ■ interrupts"
                             !alive -> "Resumes this background agent"

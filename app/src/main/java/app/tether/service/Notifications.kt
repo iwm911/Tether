@@ -113,7 +113,7 @@ object Notifications {
         links: Map<String, app.tether.core.LinkState> = emptyMap(),
         machines: List<app.tether.core.Connection> = emptyList(),
     ): Notification {
-        val live = agents.filter { it.run.displayStatus in LIVE }
+        val live = agents.filter { it.run.displayStatus in LIVE && !it.run.terminal }
         val needs = live.count { it.run.status == RunStatus.AWAITING_PERMISSION }
         val working = live.size - needs
         val summary = watchSummary(working, needs)

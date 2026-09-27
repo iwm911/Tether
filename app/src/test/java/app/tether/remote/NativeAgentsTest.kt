@@ -93,6 +93,24 @@ class NativeAgentsTest {
     }
 
     @Test
+    fun terminalSessionIsWatchOnly() {
+        val json = """[{"id":"term-4242","sessionId":"647b67c2-0fb0-483a-b4d5-b7ba37aec8d5","cwd":"/tmp/t","kind":"interactive",
+            "name":"Pong reply","state":"idle","status":"waiting","pid":4242,"alive":true,"startedAt":1,"updatedAt":2}]"""
+        val d = NativeAgents.parseList(json).single()
+        val r = NativeAgents.toRunInfo(d)
+        assertTrue(r.terminal)
+        assertTrue(r.isNative)
+        assertEquals("native-term-4242", r.runId)
+        assertEquals("Pong reply", r.title)
+        // Its prompt is answered in the terminal: nothing to approve here, and it does not count as needing the phone.
+        assertEquals(RunStatus.IDLE, r.status)
+        assertFalse(r.nativeBlocked)
+        assertNull(r.pending)
+        val busy = NativeAgents.toRunInfo(d.copy(status = "busy", state = "working"))
+        assertEquals(RunStatus.WORKING, busy.status)
+    }
+
+    @Test
     fun doneAliveIsIdleAndStoppedIsEnded() {
         val list = NativeAgents.parseList(fixture("native_list.json")).map(NativeAgents::toRunInfo)
         val done = list[1]

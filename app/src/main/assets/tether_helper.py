@@ -31,6 +31,8 @@ Commands
     commands [--cwd P]           {commands: [{name, description, argumentHint}]} from claude's initialize reply
   Claude Code's own background agents (`claude --bg`, listed by `claude agents`):
     native-list                  [NativeAgent]  (agents --json --all merged with ~/.claude/jobs/<id>/state.json)
+                                 Terminal sessions (kind "interactive") are listed too, as term-<pid>: watch-only;
+                                 native-reply continues one as a background copy, the rest refuse them.
     native-start                 stdin {cwd, prompt, model?, permissionMode?, trust} -> NativeAgent | {error:"untrusted"}
     native-reply <id>            stdin {message}: stop (if running) + `claude --bg --resume <session> msg`
     native-send <id>             stdin {message}: type into the RUNNING agent via `claude attach` (queues while busy)
@@ -63,7 +65,7 @@ import subprocess
 import sys
 import time
 
-HELPER_VERSION = "1.8.0"
+HELPER_VERSION = "1.9.0"
 
 HOME = os.path.expanduser("~")
 TETHER_DIR = os.path.join(HOME, ".tether")
@@ -1587,6 +1589,9 @@ def cmd_delete(opts, run_id):
 # detail, subagent fan-out and tokens; timeline.jsonl is the activity history.
 
 JOBS_DIR = os.path.join(HOME, ".claude", "jobs")
+CLAUDE_SESSIONS = os.path.join(HOME, ".claude", "sessions")
+# A running terminal `claude` session (kind "interactive" in `claude agents`) has no id of its own: term-<pid>.
+TERMINAL_PREFIX = "term-"
 CLAUDE_JSON = os.path.join(HOME, ".claude.json")
 NATIVE_ID_RE = re.compile(r"^[0-9A-Za-z_-]{4,64}$")
 ANSI_RE = re.compile(r"\x1b\[[0-9;?<=>]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][0-9A-Za-z]|\x1b[=>78DEHMc]")
@@ -1719,10 +1724,44 @@ def render_terminal(raw, max_rows=5000, max_cols=4096):
     return "\n".join(res)
 
 
-def native_id(v):
+def native_id(v, terminal_ok=False):
     if not NATIVE_ID_RE.match(v or ""):
         raise HelperError("Invalid background agent id.")
+    if not terminal_ok and v.startswith(TERMINAL_PREFIX):
+        raise HelperError("This Claude Code session runs in a terminal on your computer. Continue it there, "
+                          "or reply here to start a background copy.")
     return v
+
+
+def terminal_pid(agent_id):
+    try:
+        return int(agent_id[len(TERMINAL_PREFIX):]) if agent_id.startswith(TERMINAL_PREFIX) else None
+    except ValueError:
+        return None
+
+
+def parent_pid(pid):
+    try:
+        with open("/proc/%d/stat" % pid) as f:
+            s = f.read()
+        return int(s[s.rindex(")") + 2:].split()[1])
+    except (OSError, IOError, ValueError, IndexError):
+        pass
+    out, _err, rc = run_cmd(["ps", "-o", "ppid=", "-p", str(pid)], timeout=5)
+    try:
+        return int(out.strip()) if rc == 0 and out else None
+    except ValueError:
+        return None
+
+
+def tether_runner_pids():
+    """Pids of Tether's live-run runners: their `claude -p` child also shows in `claude agents` as interactive."""
+    pids = set()
+    for _run_id, d in iter_run_dirs():
+        p = read_pid(d)
+        if p:
+            pids.add(p)
+    return pids
 
 
 def claude_run(opts, args, cwd=None, timeout=30, raw=False):
@@ -1835,14 +1874,28 @@ def native_agent(item, want_timeline=True):
     updated = max(updated, mtime_ms(os.path.join(jd, "timeline.jsonl")), mtime_ms(os.path.join(jd, "state.json")))
     started = item.get("startedAt") if isinstance(item.get("startedAt"), (int, float)) else iso_to_ms(st.get("createdAt"))
     flags = st.get("respawnFlags")
+    terminal = item.get("kind") == "interactive"
+    name = st.get("name") or item.get("name")
+    intent = st.get("intent")
+    if terminal:
+        # Claude derives a name from the folder ("tether-ac"); the conversation's own title says more.
+        titles = {}
+        if tpath:
+            updated = max(updated, mtime_ms(tpath))
+            scan_titles(read_tail(tpath, 256 * 1024), titles)
+        reg = read_json(os.path.join(CLAUDE_SESSIONS, "%d.json" % pid), {}) if pid else {}
+        if not (isinstance(reg, dict) and reg.get("nameSource") not in (None, "derived")):
+            name = titles.get("customTitle") or titles.get("aiTitle") or name
+        intent = titles.get("lastPrompt")
     out = {
         "id": aid,
         "sessionId": sid,
         "cwd": item.get("cwd") or st.get("cwd") or HOME,
         "kind": item.get("kind") or "background",
-        "name": one_line(st.get("name") or item.get("name"), 160),
-        "intent": one_line(st.get("intent"), 240),
-        "state": item.get("state") or st.get("state") or ("working" if pid else "done"),
+        "name": one_line(name, 160),
+        "intent": one_line(intent, 240),
+        "state": item.get("state") or st.get("state") or (
+            ("working" if item.get("status") == "busy" else "idle") if terminal else ("working" if pid else "done")),
         "status": item.get("status"),
         "pid": pid,
         "alive": bool(pid) and pid_alive(pid),
@@ -1860,7 +1913,7 @@ def native_agent(item, want_timeline=True):
         "permissionMode": flag_value(flags, "--permission-mode"),
         "transcript": bool(tpath),
     }
-    if item.get("status") == "waiting":
+    if item.get("status") == "waiting" and not terminal:
         # A question lives in state.json ("block") — its tool_use reaches the transcript only once answered.
         pt = question_pending(aid, st) or (pending_tool_use(tpath, out["cwd"]) if tpath else None)
         if not pt:
@@ -1889,6 +1942,9 @@ def native_items(opts):
             if isinstance(st, dict) and NATIVE_ID_RE.match(n):
                 items.append({"id": n, "cwd": st.get("cwd"), "kind": "background", "sessionId": st.get("sessionId"),
                               "name": st.get("name"), "state": st.get("state"), "startedAt": iso_to_ms(st.get("createdAt"))})
+    for item in items:
+        if item.get("kind") == "interactive" and isinstance(item.get("pid"), int) and not item.get("id"):
+            item["id"] = TERMINAL_PREFIX + str(item["pid"])
     return items
 
 
@@ -1921,11 +1977,20 @@ def native_list(opts):
     for succ, ancestors in lin.items():
         if succ in present:
             hidden.update(ancestors)  # the same conversation continues under succ
+    runners = None
     for item in items:
         if item.get("id") in hidden:
             continue
-        if not item.get("id") or item.get("kind") not in (None, "background"):
-            continue  # interactive terminal sessions cannot be driven from here
+        kind = item.get("kind")
+        if kind == "interactive":
+            if not item.get("id"):
+                continue
+            if runners is None:
+                runners = tether_runner_pids()
+            if parent_pid(item["pid"]) in runners:
+                continue  # a Tether live run: listed by `runs` already
+        elif not item.get("id") or kind not in (None, "background"):
+            continue
         try:
             a = native_agent(item)
             prev = [x for x in lin.get(a["id"], []) if x in present]
@@ -1958,6 +2023,13 @@ def native_signature():
     for n in names:
         d = os.path.join(JOBS_DIR, n)
         sig.append((n, mtime_ms(os.path.join(d, "state.json")), file_size(os.path.join(d, "timeline.jsonl"))))
+    try:
+        # Terminal sessions: busy / idle / waiting live in ~/.claude/sessions/<pid>.json.
+        for n in sorted(os.listdir(CLAUDE_SESSIONS)):
+            if n.endswith(".json"):
+                sig.append((n, mtime_ms(os.path.join(CLAUDE_SESSIONS, n))))
+    except OSError:
+        pass
     return sig
 
 
@@ -2111,7 +2183,7 @@ def cmd_native_reply(opts, agent_id):
     msg = req.get("message")
     if not isinstance(msg, str) or not msg.strip():
         raise HelperError("Nothing to send.")
-    cmd_native_reply_with(opts, native_id(agent_id), msg)
+    cmd_native_reply_with(opts, native_id(agent_id, terminal_ok=True), msg)
 
 
 def cmd_native_reply_with(opts, agent_id, msg):
@@ -2123,7 +2195,9 @@ def cmd_native_reply_with(opts, agent_id, msg):
     if not sid or not SESSION_ID_RE.match(sid):
         raise HelperError("This background agent has no conversation to continue.")
     cwd = native_cwd(item.get("cwd") or st.get("cwd"))
-    stop_native(opts, agent_id, item)
+    terminal = item.get("kind") == "interactive"
+    if not terminal:
+        stop_native(opts, agent_id, item)
     # No --model / --permission-mode here: the session keeps its own saved options, and passing any
     # flag makes claude start a copy under a new id instead of continuing this one.
     new_id, _text = launch_bg(opts, cwd, ["--bg", "--resume", sid, "--", msg])
@@ -2131,7 +2205,7 @@ def cmd_native_reply_with(opts, agent_id, msg):
         raise HelperError("Claude Code no longer trusts %s." % cwd)
     cur = wait_native(opts, new_id) or {"id": new_id, "cwd": cwd, "kind": "background", "sessionId": sid,
                                         "state": "working", "startedAt": now_ms()}
-    if new_id != agent_id:
+    if new_id != agent_id and not terminal:
         record_fork(agent_id, new_id)
     res = native_agent(cur)
     res["previousId"] = agent_id
@@ -2996,6 +3070,10 @@ def cmd_native_logs(opts, agent_id):
 
 
 def native_transcript_path(agent_id, sid):
+    pid = terminal_pid(agent_id)
+    if pid is not None and not sid:
+        reg = read_json(os.path.join(CLAUDE_SESSIONS, "%d.json" % pid), {}) or {}
+        sid = reg.get("sessionId") if isinstance(reg, dict) and isinstance(reg.get("sessionId"), str) else None
     st = job_state(agent_id)
     p = st.get("linkScanPath")
     if isinstance(p, str) and os.path.isfile(p) and p.startswith(CLAUDE_PROJECTS + os.sep):
@@ -3007,7 +3085,7 @@ def native_transcript_path(agent_id, sid):
 def cmd_native_follow(opts, agent_id, sid=None):
     """All (filtered) transcript lines so far, then each new one as it is written, until the reader goes.
     `{"tether":"caught-up"}` separates history from live lines."""
-    agent_id = native_id(agent_id)
+    agent_id = native_id(agent_id, terminal_ok=True)
     if sid and not SESSION_ID_RE.match(sid):
         raise HelperError("Invalid session id.")
     try:

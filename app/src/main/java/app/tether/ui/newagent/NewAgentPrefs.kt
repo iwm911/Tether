@@ -24,8 +24,11 @@ object NewAgentPrefs {
 
     fun lastConnection(ctx: Context): String? = prefs(ctx).getString(LAST_CONN, null)
 
-    /** Last chosen kind: true = native background agent (`claude --bg`), false = Tether live run. */
-    fun background(ctx: Context): Boolean = prefs(ctx).getBoolean(BACKGROUND, false)
+    /**
+     * Last chosen kind: true = native background agent (`claude --bg`), false = Tether live run.
+     * Background by default, so what the phone starts is also in `claude agents` on the computer.
+     */
+    fun background(ctx: Context): Boolean = prefs(ctx).getBoolean(BACKGROUND, true)
 
     fun rememberBackground(ctx: Context, background: Boolean) {
         prefs(ctx).edit().putBoolean(BACKGROUND, background).apply()

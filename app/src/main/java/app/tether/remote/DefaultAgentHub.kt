@@ -220,7 +220,7 @@ class DefaultAgentHub(
                 } else if (before.status != RunStatus.IDLE && run.status == RunStatus.IDLE && run.turns > before.turns) {
                     out.add(AgentEvent.TurnCompleted(ref, title, success = run.error == null, snippet = run.lastText))
                 }
-                if (before.alive && !run.alive) {
+                if (before.alive && !run.alive && !run.terminal) { // a terminal session was closed at the computer
                     out.add(AgentEvent.Ended(ref, title, error = if (run.status == RunStatus.FAILED) run.error else null))
                 }
             }
@@ -732,10 +732,12 @@ class DefaultAgentHub(
         if (msg.isEmpty()) return ref
         val s = nativeSessions[ref]
         val before = currentRun(ref)
+        // A terminal session is not touched: the reply starts a background copy, which the screen then follows.
+        val terminal = before?.terminal == true
         val busy = before?.alive == true && before.status == RunStatus.WORKING
-        val key = s?.let { synchronized(it.lock) { it.reducer.addOptimisticUser(msg, 0, queued = busy) } }
+        val key = if (terminal) null else s?.let { synchronized(it.lock) { it.reducer.addOptimisticUser(msg, 0, queued = busy) } }
         s?.bump()
-        if (!busy) updateRun(ref) { it.copy(status = RunStatus.WORKING, nativeState = "working", nativeStatus = "busy", detail = if (it.alive) "Reading your message…" else "Continuing…", updatedAt = System.currentTimeMillis()) }
+        if (!busy && !terminal) updateRun(ref) { it.copy(status = RunStatus.WORKING, nativeState = "working", nativeStatus = "busy", detail = if (it.alive) "Reading your message…" else "Continuing…", updatedAt = System.currentTimeMillis()) }
         val info = try {
             remote.replyNative(ref, msg)
         } catch (e: Throwable) {
