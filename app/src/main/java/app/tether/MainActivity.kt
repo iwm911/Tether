@@ -82,6 +82,11 @@ class MainActivity : FragmentActivity() {
     }
 
     private fun handleIntent(intent: Intent?) {
+        if (intent?.action == ACTION_INSTALL_UPDATE) {
+            intent.action = null
+            (application as TetherApp).container.updates.installFromNotification()
+            return
+        }
         val c = intent?.getStringExtra(EXTRA_CONNECTION_ID) ?: return
         val r = intent.getStringExtra(EXTRA_RUN_ID) ?: return
         pendingAgent.value = RunRef(c, r)
@@ -92,5 +97,6 @@ class MainActivity : FragmentActivity() {
     companion object {
         const val EXTRA_CONNECTION_ID = "app.tether.extra.CONNECTION_ID"
         const val EXTRA_RUN_ID = "app.tether.extra.RUN_ID"
+        const val ACTION_INSTALL_UPDATE = "app.tether.action.INSTALL_UPDATE"
     }
 }

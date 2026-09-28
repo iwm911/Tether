@@ -61,6 +61,7 @@ import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.SmartToy
 import androidx.compose.material.icons.rounded.Sync
+import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material.icons.rounded.Timer
 import androidx.compose.material.icons.rounded.Vibration
 import androidx.compose.material.icons.rounded.ViewAgenda
@@ -286,6 +287,14 @@ fun SettingsScreen(onBack: () -> Unit, onOpenKeys: () -> Unit, onOpenMachines: (
                     icon = Icons.Rounded.DoneAll,
                     checked = s.notifyCompletion,
                     onCheckedChange = { on -> vm.update { it.copy(notifyCompletion = on) } },
+                )
+                RowDivider()
+                ToggleRow(
+                    title = "New Tether versions",
+                    subtitle = "Check for updates in the background and tell me when one is out",
+                    icon = Icons.Rounded.SystemUpdate,
+                    checked = s.notifyAppUpdates,
+                    onCheckedChange = { on -> vm.update { it.copy(notifyAppUpdates = on) } },
                 )
                 RowDivider()
                 ToggleRow(

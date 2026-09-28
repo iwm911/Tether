@@ -41,7 +41,7 @@ class AppContainer(val app: Application) {
     val remote: ClaudeRemote = HelperClaudeRemote(app, ssh, connections, scope)
     val analytics = Analytics(settings, scope)
     val agents: AgentHub = TrackedAgentHub(DefaultAgentHub(remote, ssh, connections, settings, scope), analytics)
-    val updates = UpdateManager(app, scope)
+    val updates = UpdateManager(app, settings, scope)
 }
 
 val LocalAppContainer = staticCompositionLocalOf<AppContainer> { error("AppContainer not provided") }

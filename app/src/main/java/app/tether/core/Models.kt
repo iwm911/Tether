@@ -500,6 +500,8 @@ data class AppSettings(
     val showThinking: Boolean = true,
     val notifyPermissions: Boolean = true,
     val notifyCompletion: Boolean = true,
+    /** Look for new Tether releases in the background and notify about them. */
+    val notifyAppUpdates: Boolean = true,
     /** Keep a foreground service watching running agents while the app is in background. */
     val backgroundWatch: Boolean = true,
     /** Termius-style: keep SSH connections open in the background (foreground service + wake/Wi-Fi locks). */
