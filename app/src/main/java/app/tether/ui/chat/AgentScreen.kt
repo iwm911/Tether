@@ -110,8 +110,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.tether.LocalAppContainer
 import app.tether.core.ChatItem
+import app.tether.core.FallbackModels
 import app.tether.core.LinkState
 import app.tether.core.ModelOption
+import app.tether.core.PermissionMode
 import app.tether.core.PermissionDecision
 import app.tether.core.RateLimitInfo
 import app.tether.core.RunRef
@@ -428,8 +430,24 @@ fun AgentScreen(ref: RunRef, onBack: () -> Unit, onOpenMachine: (String) -> Unit
                         sending = state.replying,
                         working = nativeWorking && alive,
                         onStop = vm::interrupt,
+                        // Mode: Shift+Tab in the agent's terminal right away (or with the next message
+                        // while it's stopped). Model: Claude Code only switches it on a restart, so the
+                        // next message restarts the agent under it. A terminal session's copy has neither.
+                        permissionMode = if (terminal) null else state.permissionMode,
+                        onCycleMode = if (terminal) null else vm::cycleMode,
+                        onSelectMode = if (terminal) null else vm::setMode,
+                        model = if (terminal) null else state.model,
+                        onSelectModel = if (terminal) null else vm::setModel,
                         hint = when {
                             terminal -> null // TerminalCopyNotice above says it
+                            state.nativeNextModel != null || state.nativeNextMode != null -> {
+                                val what = listOfNotNull(
+                                    state.nativeNextModel?.let { modelLabel(it, FallbackModels) },
+                                    state.nativeNextMode?.let { m -> PermissionMode.fromCli(m)?.label?.let { "$it mode" } },
+                                ).joinToString(" · ")
+                                if (nativeWorking && alive) "Your next message stops this turn and restarts on $what"
+                                else "Your next message restarts the agent on $what"
+                            }
                             conv.status == RunStatus.AWAITING_PERMISSION -> "Answer Claude's request above first"
                             nativeWorking && alive -> "Messages queue while Claude works · ■ interrupts"
                             !alive -> "Resumes this background agent"

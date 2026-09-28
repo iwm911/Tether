@@ -81,9 +81,11 @@ internal object NativeAgents {
 
     /**
      * Helper command for a reply: `native-send` types into a background agent but refuses a terminal
-     * session, so `native-reply` continues that conversation as a background copy instead.
+     * session, so `native-reply` continues that conversation as a background copy instead. A reply
+     * that changes the model ([restart]) also goes through `native-reply`: only a restart takes flags.
      */
-    fun replyCommand(nativeId: String): String = if (nativeId.startsWith(TERMINAL_PREFIX)) "native-reply" else "native-send"
+    fun replyCommand(nativeId: String, restart: Boolean = false): String =
+        if (restart || nativeId.startsWith(TERMINAL_PREFIX)) "native-reply" else "native-send"
 
     fun parseTimeline(json: String): List<NativeTimelineEntry> =
         RemoteJson.json.decodeFromString(ListSerializer(NativeTimelineEntry.serializer()), json)

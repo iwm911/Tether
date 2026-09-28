@@ -277,10 +277,15 @@ class HelperClaudeRemote internal constructor(
         return NativeStartResult.Started(nativeRunRef(connectionId, dto.id))
     }
 
-    override suspend fun replyNative(ref: RunRef, message: String): RunInfo {
-        val body = buildJsonObject { put("message", message) }.toString().toByteArray(Charsets.UTF_8)
+    override suspend fun replyNative(ref: RunRef, message: String, model: String?, permissionMode: String?): RunInfo {
+        val body = buildJsonObject {
+            put("message", message)
+            model?.let { put("model", it) }
+            permissionMode?.let { put("permissionMode", it) }
+        }.toString().toByteArray(Charsets.UTF_8)
         val id = nativeIdOf(ref)
-        val out = helper(ref.connectionId, claudeArgs(ref.connectionId) + listOf(NativeAgents.replyCommand(id), id), stdin = body, timeoutMs = 120_000)
+        val restart = model != null || permissionMode != null
+        val out = helper(ref.connectionId, claudeArgs(ref.connectionId) + listOf(NativeAgents.replyCommand(id, restart), id), stdin = body, timeoutMs = 120_000)
         return decode(out, "background agent") { NativeAgents.toRunInfo(NativeAgents.parseOne(it)) }
     }
 
@@ -323,6 +328,12 @@ class HelperClaudeRemote internal constructor(
             })
         }.toString().toByteArray(Charsets.UTF_8)
         val out = helper(ref.connectionId, claudeArgs(ref.connectionId) + listOf("native-ask", nativeIdOf(ref)), stdin = body, timeoutMs = 120_000)
+        return decode(out, "background agent") { NativeAgents.toRunInfo(NativeAgents.parseOne(it)) }
+    }
+
+    override suspend fun setNativeMode(ref: RunRef, mode: String): RunInfo {
+        val body = buildJsonObject { put("mode", mode) }.toString().toByteArray(Charsets.UTF_8)
+        val out = helper(ref.connectionId, claudeArgs(ref.connectionId) + listOf("native-mode", nativeIdOf(ref)), stdin = body, timeoutMs = 60_000)
         return decode(out, "background agent") { NativeAgents.toRunInfo(NativeAgents.parseOne(it)) }
     }
 

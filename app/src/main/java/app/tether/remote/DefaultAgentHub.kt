@@ -419,7 +419,8 @@ class DefaultAgentHub(
             title = run?.title?.takeIf { it.isNotBlank() } ?: base.title ?: cwd?.let { projectNameOf(it) },
             cwd = cwd,
             sessionId = run?.sessionId ?: base.sessionId,
-            model = base.model ?: run?.model,
+            // The agent's flags hold the current choice; the transcript only the model that last replied.
+            model = run?.model ?: base.model,
             permissionMode = run?.permissionMode ?: base.permissionMode,
             pendingPermissions = run?.pending?.takeIf { status == RunStatus.AWAITING_PERMISSION }?.let { p ->
                 listOf(
@@ -725,19 +726,21 @@ class DefaultAgentHub(
         return res
     }
 
-    override suspend fun continueNative(ref: RunRef, text: String): RunRef {
+    override suspend fun continueNative(ref: RunRef, text: String, model: String?, permissionMode: String?): RunRef {
         val msg = text.trim()
         if (msg.isEmpty()) return ref
         val s = nativeSessions[ref]
         val before = currentRun(ref)
         // A terminal session is not touched: the reply starts a background copy, which the screen then follows.
         val terminal = before?.terminal == true
-        val busy = before?.alive == true && before.status == RunStatus.WORKING
+        // A new model / mode restarts the agent with this message, so nothing is queued behind a turn.
+        val restart = !terminal && (model != null || permissionMode != null)
+        val busy = !restart && before?.alive == true && before.status == RunStatus.WORKING
         val key = if (terminal) null else s?.let { synchronized(it.lock) { it.reducer.addOptimisticUser(msg, 0, queued = busy) } }
         s?.bump()
         if (!busy && !terminal) updateRun(ref) { it.copy(status = RunStatus.WORKING, nativeState = "working", nativeStatus = "busy", detail = if (it.alive) "Reading your message…" else "Continuing…", updatedAt = System.currentTimeMillis()) }
         val info = try {
-            remote.replyNative(ref, msg)
+            remote.replyNative(ref, msg, model.takeIf { restart }, permissionMode.takeIf { restart })
         } catch (e: Throwable) {
             if (s != null && key != null) {
                 synchronized(s.lock) { s.reducer.removeOptimistic(key) }
@@ -935,13 +938,17 @@ class DefaultAgentHub(
     }
 
     override suspend fun setPermissionMode(ref: RunRef, mode: String) {
-        if (ref.isNative) throw RemoteException("A background agent takes its approvals and settings on the computer.")
+        if (ref.isNative) {
+            mergeRun(ref.connectionId, remote.setNativeMode(ref, mode))
+            return
+        }
         control(ref, "mode", buildJsonObject { put("subtype", "set_permission_mode"); put("mode", mode) })
         updateRun(ref) { it.copy(permissionMode = mode) }
     }
 
     override suspend fun setModel(ref: RunRef, model: String) {
-        if (ref.isNative) throw RemoteException("A background agent takes its approvals and settings on the computer.")
+        // A background agent changes model by restarting with the next message (continueNative).
+        if (ref.isNative) throw RemoteException("A background agent switches model with your next message.")
         control(ref, "model", buildJsonObject { put("subtype", "set_model"); put("model", model) })
     }
 
