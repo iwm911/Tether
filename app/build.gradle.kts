@@ -21,8 +21,8 @@ android {
         minSdk = 26
         targetSdk = 35
         // Bump for every release; tools/publish_update.sh publishes the result as a GitHub release.
-        versionCode = (project.findProperty("tetherVersionCode") as String?)?.toInt() ?: 13
-        versionName = (project.findProperty("tetherVersionName") as String?) ?: "1.7.0"
+        versionCode = (project.findProperty("tetherVersionCode") as String?)?.toInt() ?: 14
+        versionName = (project.findProperty("tetherVersionName") as String?) ?: "1.7.1"
         vectorDrawables { useSupportLibrary = true }
         // GitHub repo (owner/name) whose releases the in-app updater follows; override for forks.
         val updateRepo = (project.findProperty("tetherUpdateRepo") as String?) ?: "iwm911/Tether"
