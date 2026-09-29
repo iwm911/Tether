@@ -27,6 +27,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.coroutineScope
@@ -100,6 +101,8 @@ class DefaultAgentHub(
     private val openConversations = MutableStateFlow(0)
     private val watchJobs = HashMap<String, Job>()
     private val paused = MutableStateFlow(false)
+    /** Machines the user disconnected: no watch stream (which would reopen SSH) until [release]. */
+    private val held = MutableStateFlow<Set<String>>(emptySet())
 
     private val sessions = object : LinkedHashMap<RunRef, ConvSession>(16, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<RunRef, ConvSession>): Boolean =
@@ -113,10 +116,10 @@ class DefaultAgentHub(
         }.distinctUntilChanged()
         val ids = connections.connections.map { list -> list.map { it.id }.toSet() }.distinctUntilChanged()
         scope.launch {
-            combine(ids, wanted) { set, want -> set to want }.collectLatest { (set, want) ->
+            combine(ids, wanted, held) { set, want, off -> Triple(set, want, off) }.collectLatest { (set, want, off) ->
                 pruneRemovedConnections(set)
                 if (want) {
-                    syncWatchers(set)
+                    syncWatchers(set - off)
                 } else {
                     if (!paused.value) delay(WATCH_LINGER_MS) // brief app switches should not tear the streams down
                     syncWatchers(emptySet())
@@ -259,7 +262,9 @@ class DefaultAgentHub(
     }
 
     override suspend fun refresh(connectionId: String?) {
-        val targets = if (connectionId != null) listOf(connectionId) else connections.connections.value.map { it.id }
+        // Refreshing one machine is the user asking for it again; a refresh-all leaves disconnected ones alone.
+        if (connectionId != null) release(connectionId)
+        val targets = if (connectionId != null) listOf(connectionId) else connections.connections.value.map { it.id }.filter { it !in held.value }
         coroutineScope {
             targets.map { id ->
                 async {
@@ -282,6 +287,16 @@ class DefaultAgentHub(
 
     override fun setPaused(paused: Boolean) {
         this.paused.value = paused
+    }
+
+    override suspend fun hold(connectionId: String) {
+        held.update { it + connectionId }
+        val job = synchronized(watchJobs) { watchJobs.remove(connectionId) }
+        job?.cancelAndJoin()
+    }
+
+    override fun release(connectionId: String) {
+        held.update { it - connectionId }
     }
 
     // ═══════════════════════════════════════ conversations ═══════════════════════════════════════

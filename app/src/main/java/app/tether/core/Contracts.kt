@@ -253,6 +253,16 @@ interface AgentHub {
     /** Stops every machine watch stream until un-paused (the notification's "Disconnect"). */
     fun setPaused(paused: Boolean) {}
 
+    /**
+     * Stops watching one machine (and so re-opening its SSH link) after the user disconnected it.
+     * Returns once its watch stream is gone. Lifted by [release] or [refresh] of that machine;
+     * a refresh of every machine skips held ones.
+     */
+    suspend fun hold(connectionId: String) {}
+
+    /** Lifts [hold]: the machine is watched (and connected) again. */
+    fun release(connectionId: String) {}
+
     /** While true, keeps per-machine watch streams open even with no UI collecting (background service). */
     fun setBackgroundWatch(enabled: Boolean)
 

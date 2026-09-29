@@ -233,12 +233,17 @@ class NativeAgentsTest {
         override suspend fun listProjects(connectionId: String): List<ProjectSummary> = emptyList()
         override suspend fun listSessions(connectionId: String, cwd: String?, limit: Int): List<SessionSummary> = emptyList()
         override suspend fun loadTranscript(connectionId: String, sessionId: String): List<String> = emptyList()
-        override suspend fun listRuns(connectionId: String): List<RunInfo> = current
+        override suspend fun listRuns(connectionId: String): List<RunInfo> = current.also { listCalls.incrementAndGet() }
         override suspend fun startRun(connectionId: String, request: StartRunRequest): RunInfo = error("unused")
         override suspend fun writeInput(ref: RunRef, jsonLines: List<String>) = Unit
         override suspend fun readInput(ref: RunRef): List<String> = emptyList()
         override fun tail(ref: RunRef, fromOffset: Long): Flow<TailLine> = emptyFlow()
-        override fun watch(connectionId: String): Flow<List<RunInfo>> = snapshots
+        val watchCalls = java.util.concurrent.atomic.AtomicInteger()
+        val listCalls = java.util.concurrent.atomic.AtomicInteger()
+        override fun watch(connectionId: String): Flow<List<RunInfo>> = flow {
+            watchCalls.incrementAndGet()
+            snapshots.collect { emit(it) }
+        }
         override suspend fun stopRun(ref: RunRef) = Unit
         override suspend fun deleteRun(ref: RunRef) = Unit
         override suspend fun listDir(connectionId: String, path: String?): DirListing = error("unused")
@@ -276,6 +281,29 @@ class NativeAgentsTest {
             val a = hub.agents.value.single()
             assertEquals(RunStatus.IDLE, a.run.status)
             assertEquals(RunKind.NATIVE, a.run.kind)
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun disconnectedMachineStaysUnwatchedUntilAskedForAgain() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val remote = FakeRemote(MutableSharedFlow(replay = 1), emptyList())
+            val hub = DefaultAgentHub(remote, FakeSsh(), Conns(), Settings(), scope)
+            scope.launch { hub.agents.collect { } } // an observer keeps the machine watch open
+            withTimeout(5_000) { while (remote.watchCalls.get() == 0) kotlinx.coroutines.delay(20) }
+
+            hub.hold(CONN) // the user taps Disconnect
+            hub.refresh() // e.g. Home opening: must not reach a disconnected machine
+            kotlinx.coroutines.delay(1_500) // longer than the first watch retry backoff
+            assertEquals(1, remote.watchCalls.get())
+            assertEquals(0, remote.listCalls.get())
+
+            hub.refresh(CONN) // refreshing that machine asks for it again
+            assertEquals(1, remote.listCalls.get())
+            withTimeout(5_000) { while (remote.watchCalls.get() < 2) kotlinx.coroutines.delay(20) }
         } finally {
             scope.cancel()
         }
