@@ -2065,7 +2065,7 @@ def trust_folder(cwd):
     if entry.get("hasTrustDialogAccepted") is True:
         return
     entry["hasTrustDialogAccepted"] = True
-    write_json_atomic(CLAUDE_JSON, data)
+    write_json_preserving(CLAUDE_JSON, data)
 
 
 def read_json_object(path, label):
@@ -2082,7 +2082,7 @@ def read_json_object(path, label):
     return data
 
 
-def write_json_atomic(path, data):
+def write_json_preserving(path, data):
     """Writes a temp file next to path, then os.replace, keeping path's permissions."""
     try:
         mode = os.stat(path).st_mode & 0o777
@@ -2150,7 +2150,7 @@ def settle_mcp_servers(cwd, names, enable):
     cur = data.get(key) if isinstance(data.get(key), list) else []
     data[key] = cur + [n for n in names if n not in cur]
     os.makedirs(d, exist_ok=True)
-    write_json_atomic(path, data)
+    write_json_preserving(path, data)
 
 
 def read_request():
