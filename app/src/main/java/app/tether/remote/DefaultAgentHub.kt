@@ -28,6 +28,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.coroutineScope
@@ -101,6 +102,8 @@ class DefaultAgentHub(
     private val openConversations = MutableStateFlow(0)
     private val watchJobs = HashMap<String, Job>()
     private val paused = MutableStateFlow(false)
+    /** Machines the user disconnected: no watch stream (which would reopen SSH) until [release]. */
+    private val held = MutableStateFlow<Set<String>>(emptySet())
 
     private val sessions = object : LinkedHashMap<RunRef, ConvSession>(16, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<RunRef, ConvSession>): Boolean =
@@ -114,10 +117,10 @@ class DefaultAgentHub(
         }.distinctUntilChanged()
         val ids = connections.connections.map { list -> list.map { it.id }.toSet() }.distinctUntilChanged()
         scope.launch {
-            combine(ids, wanted) { set, want -> set to want }.collectLatest { (set, want) ->
+            combine(ids, wanted, held) { set, want, off -> Triple(set, want, off) }.collectLatest { (set, want, off) ->
                 pruneRemovedConnections(set)
                 if (want) {
-                    syncWatchers(set)
+                    syncWatchers(set - off)
                 } else {
                     if (!paused.value) delay(WATCH_LINGER_MS) // brief app switches should not tear the streams down
                     syncWatchers(emptySet())
@@ -260,7 +263,9 @@ class DefaultAgentHub(
     }
 
     override suspend fun refresh(connectionId: String?) {
-        val targets = if (connectionId != null) listOf(connectionId) else connections.connections.value.map { it.id }
+        // Refreshing one machine is the user asking for it again; a refresh-all leaves disconnected ones alone.
+        if (connectionId != null) release(connectionId)
+        val targets = if (connectionId != null) listOf(connectionId) else connections.connections.value.map { it.id }.filter { it !in held.value }
         coroutineScope {
             targets.map { id ->
                 async {
@@ -283,6 +288,16 @@ class DefaultAgentHub(
 
     override fun setPaused(paused: Boolean) {
         this.paused.value = paused
+    }
+
+    override suspend fun hold(connectionId: String) {
+        held.update { it + connectionId }
+        val job = synchronized(watchJobs) { watchJobs.remove(connectionId) }
+        job?.cancelAndJoin()
+    }
+
+    override fun release(connectionId: String) {
+        held.update { it - connectionId }
     }
 
     // ═══════════════════════════════════════ conversations ═══════════════════════════════════════
@@ -313,9 +328,7 @@ class DefaultAgentHub(
 
     // ─────────────── native background agents: transcript followed live + job state ───────────────
 
-    private class NativeSession(val ref: RunRef) {
-        val lock = Any()
-        var reducer = StreamReducer()
+    private class NativeSession(val ref: RunRef, val lock: Any = Any(), var reducer: StreamReducer = StreamReducer()) {
         @Volatile var loadedOnce = false
         @Volatile var caughtUp = false
         @Volatile var error: String? = null
@@ -422,7 +435,8 @@ class DefaultAgentHub(
             title = run?.title?.takeIf { it.isNotBlank() } ?: base.title ?: cwd?.let { projectNameOf(it) },
             cwd = cwd,
             sessionId = run?.sessionId ?: base.sessionId,
-            model = base.model ?: run?.model,
+            // The agent's flags hold the current choice; the transcript only the model that last replied.
+            model = run?.model ?: base.model,
             permissionMode = run?.permissionMode ?: base.permissionMode,
             pendingPermissions = run?.pending?.takeIf { status == RunStatus.AWAITING_PERMISSION }?.let { p ->
                 listOf(
@@ -728,19 +742,21 @@ class DefaultAgentHub(
         return res
     }
 
-    override suspend fun continueNative(ref: RunRef, text: String): RunRef {
+    override suspend fun continueNative(ref: RunRef, text: String, model: String?, permissionMode: String?): RunRef {
         val msg = text.trim()
         if (msg.isEmpty()) return ref
         val s = nativeSessions[ref]
         val before = currentRun(ref)
         // A terminal session is not touched: the reply starts a background copy, which the screen then follows.
         val terminal = before?.terminal == true
-        val busy = before?.alive == true && before.status == RunStatus.WORKING
+        // A new model / mode restarts the agent with this message, so nothing is queued behind a turn.
+        val restart = !terminal && (model != null || permissionMode != null)
+        val busy = !restart && before?.alive == true && before.status == RunStatus.WORKING
         val key = if (terminal) null else s?.let { synchronized(it.lock) { it.reducer.addOptimisticUser(msg, 0, queued = busy) } }
         s?.bump()
         if (!busy && !terminal) updateRun(ref) { it.copy(status = RunStatus.WORKING, nativeState = "working", nativeStatus = "busy", detail = if (it.alive) "Reading your message…" else "Continuing…", updatedAt = System.currentTimeMillis()) }
         val info = try {
-            remote.replyNative(ref, msg)
+            remote.replyNative(ref, msg, model.takeIf { restart }, permissionMode.takeIf { restart })
         } catch (e: Throwable) {
             if (s != null && key != null) {
                 synchronized(s.lock) { s.reducer.removeOptimistic(key) }
@@ -755,6 +771,12 @@ class DefaultAgentHub(
             throw e
         }
         val next = RunRef(ref.connectionId, info.runId)
+        if (next != ref && s != null) {
+            // Claude continued under a new id, whose transcript replays this same history. Start the new
+            // agent's screen from what is already shown (sharing the reducer and its lock) and let its
+            // pump rebuild off-screen and swap in at the caught-up marker, instead of reloading from empty.
+            nativeSessions.putIfAbsent(next, NativeSession(next, s.lock, s.reducer).apply { loadedOnce = true; caughtUp = true })
+        }
         mergeRun(ref.connectionId, if (info.status == RunStatus.IDLE) info.copy(status = RunStatus.WORKING, nativeState = "working", nativeStatus = "busy") else info)
         return next
     }
@@ -932,13 +954,17 @@ class DefaultAgentHub(
     }
 
     override suspend fun setPermissionMode(ref: RunRef, mode: String) {
-        if (ref.isNative) throw RemoteException("A background agent takes its approvals and settings on the computer.")
+        if (ref.isNative) {
+            mergeRun(ref.connectionId, remote.setNativeMode(ref, mode))
+            return
+        }
         control(ref, "mode", buildJsonObject { put("subtype", "set_permission_mode"); put("mode", mode) })
         updateRun(ref) { it.copy(permissionMode = mode) }
     }
 
     override suspend fun setModel(ref: RunRef, model: String) {
-        if (ref.isNative) throw RemoteException("A background agent takes its approvals and settings on the computer.")
+        // A background agent changes model by restarting with the next message (continueNative).
+        if (ref.isNative) throw RemoteException("A background agent switches model with your next message.")
         control(ref, "model", buildJsonObject { put("subtype", "set_model"); put("model", model) })
     }
 

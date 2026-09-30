@@ -14,10 +14,6 @@ Start Claude Code agents on your own computers, watch them work, and approve wha
 
 **[⬇️ Download the APK](https://github.com/iwm911/Tether/releases/latest)** &nbsp;·&nbsp; [🌐 Website](https://iwm911.github.io/Tether/) &nbsp;·&nbsp; [🔒 Privacy](PRIVACY.md)
 
-<br>
-<img src="docs/assets/hero.png" width="900" alt="Illustration of Tether: the Home screen with an agent waiting for approval, a conversation showing a code diff and the approval panel, and the notification shade with Allow, Deny and Tell Claude buttons">
-<br><sub>Illustration of the app's screens</sub>
-
 </div>
 
 ---
@@ -128,6 +124,8 @@ WireGuard works well for reaching it from outside your home network.
    away. It'll tell you when Claude needs you.
 
 Tether updates itself from GitHub Releases, and every update is verified before it installs.
+It checks in the background about twice a day and sends a notification when a new version is out
+(with an Update button; turn it off in Settings › Notifications › New Tether versions).
 
 ## 🔒 Security & privacy
 
@@ -235,7 +233,8 @@ tools/publish_update.sh release --code N --name X.Y.Z --notes "What's new"
 
 Builds the signed APK and creates GitHub release `vX.Y.Z` on the current pushed commit, with the APK
 and an `update.json` manifest (version code + SHA-256). Needs the `gh` CLI and `keystore.properties`.
-Installed apps offer the update on their next check. `tools/publish_update.sh debug` publishes a
+Installed apps offer the update on their next check (launch, or the twice-daily background check,
+which also posts a notification). `tools/publish_update.sh debug` publishes a
 pre-release that only debug builds pick up.
 
 </details>

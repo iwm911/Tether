@@ -12,10 +12,13 @@ import app.tether.core.ConversationState
 import app.tether.core.NoticeKind
 import app.tether.core.PermissionDecision
 import app.tether.core.PermissionMode
+import app.tether.core.FallbackModels
 import app.tether.core.RunRef
 import app.tether.core.NativeTimelineEntry
 import app.tether.core.SlashCommand
 import app.tether.core.isNative
+import app.tether.core.nativeId
+import app.tether.remote.NativeAgents
 import app.tether.core.RunStatus
 import app.tether.core.StartRunRequest
 import app.tether.ui.components.projectName
@@ -147,6 +150,12 @@ data class ChatUiState(
     val permissionMode: String?,
     /** Effective model, including an optimistic value while a model change is in flight. */
     val model: String?,
+    /**
+     * Background agent: a model (or, while it's stopped, a mode) picked on the phone that the next
+     * message applies by restarting it under the new settings. Null when nothing is waiting.
+     */
+    val nativeNextModel: String? = null,
+    val nativeNextMode: String? = null,
 ) {
     val status: RunStatus get() = conversation.status
     /** Claude Code's own background agent (read-mostly: reply continues it, approvals happen on the computer). */
@@ -168,6 +177,9 @@ private data class LocalChatState(
     val carried: List<ChatItem> = emptyList(),
     /** A native reply (stop + resume on the machine) is in flight. */
     val replying: Boolean = false,
+    /** Background agent settings waiting for the next message (see [ChatUiState.nativeNextModel]). */
+    val nativeNextModel: String? = null,
+    val nativeNextMode: String? = null,
     val removing: Boolean = false,
     val stopping: Boolean = false,
 )
@@ -218,8 +230,10 @@ class ChatViewModel(private val container: AppContainer, initialRef: RunRef) : V
             removing = l.removing,
             stopping = l.stopping,
             respondingIds = l.respondingIds,
-            permissionMode = l.pendingMode ?: c.permissionMode,
-            model = l.pendingModel ?: c.model,
+            permissionMode = l.nativeNextMode ?: l.pendingMode ?: c.permissionMode,
+            model = l.nativeNextModel ?: l.pendingModel ?: c.model,
+            nativeNextModel = l.nativeNextModel,
+            nativeNextMode = l.nativeNextMode,
         )
     }
         .flowOn(Dispatchers.Default)
@@ -315,11 +329,15 @@ class ChatViewModel(private val container: AppContainer, initialRef: RunRef) : V
         if (local.value.replying) return
         val (text, attachments) = composer.take() ?: return
         val r = refFlow.value
+        val model = local.value.nativeNextModel
+        val mode = local.value.nativeNextMode
         local.update { it.copy(replying = true) }
         viewModelScope.launch {
             try {
-                val next = container.agents.continueNative(r, text)
+                val next = container.agents.continueNative(r, text, model, mode)
+                if (model != null || mode != null) local.update { it.copy(nativeNextModel = null, nativeNextMode = null) }
                 if (next != r) refFlow.value = next // claude continued it under a new id: follow it
+                if (r.nativeId?.startsWith(NativeAgents.TERMINAL_PREFIX) == true) say("Continued in a background copy · the terminal session is untouched")
             } catch (ce: CancellationException) {
                 throw ce
             } catch (t: Throwable) {
@@ -452,6 +470,12 @@ class ChatViewModel(private val container: AppContainer, initialRef: RunRef) : V
     }
 
     fun setMode(mode: PermissionMode) {
+        val nativeRun = conv.value.nativeRun
+        if (refFlow.value.isNative && nativeRun?.alive != true) {
+            // A stopped agent has no terminal to Shift+Tab: the mode rides along with the next message.
+            local.update { it.copy(nativeNextMode = mode.cli.takeIf { m -> m != (conv.value.permissionMode ?: PermissionMode.DEFAULT.cli) }) }
+            return
+        }
         val base = conv.value.permissionMode
         if (mode.cli == (local.value.pendingMode ?: base)) return
         local.update { it.copy(pendingMode = mode.cli, pendingModeBase = base) }
@@ -469,6 +493,12 @@ class ChatViewModel(private val container: AppContainer, initialRef: RunRef) : V
     }
 
     fun setModel(model: String) {
+        if (refFlow.value.isNative) {
+            // Claude Code switches a background agent's model only on a restart, which the next message does.
+            val same = modelLabel(model, FallbackModels) == modelLabel(conv.value.model, FallbackModels)
+            local.update { it.copy(nativeNextModel = model.takeIf { !same }) }
+            return
+        }
         val base = conv.value.model
         if (model == (local.value.pendingModel ?: base)) return
         local.update { it.copy(pendingModel = model, pendingModelBase = base) }

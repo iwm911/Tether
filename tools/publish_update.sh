@@ -34,6 +34,12 @@ AAPT=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)aapt2
 BADGE=$("$AAPT" dump badging "$APK" | sed -n 1p)
 VC=$(sed -E "s/.*versionCode='([0-9]+)'.*/\1/" <<<"$BADGE")
 VN=$(sed -E "s/.*versionName='([^']+)'.*/\1/" <<<"$BADGE")
+# Installed apps only offer a version whose code is higher than theirs: refuse one that isn't higher
+# than the latest published release's, which nobody could receive.
+if [ "$VARIANT" = release ]; then
+  LATEST=$(gh release download --pattern update.json --output - 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["versionCode"])' 2>/dev/null || true)
+  [ -n "$LATEST" ] && [ "$VC" -le "$LATEST" ] && { echo "versionCode $VC is not higher than the latest release ($LATEST) — pass --code N with N > $LATEST" >&2; exit 1; }
+fi
 [ -z "$NOTES" ] && NOTES=$(git log -1 --pretty=%s 2>/dev/null || echo "")
 TAG="v$VN"; PRE=(); [ "$VARIANT" = debug ] && { TAG="v${VN%-debug}-debug.$VC"; PRE=(--prerelease); }
 git fetch --quiet origin

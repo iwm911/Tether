@@ -28,8 +28,10 @@ object Notifications {
     const val CHANNEL_APPROVALS = "approvals"
     const val CHANNEL_UPDATES = "updates"
     const val CHANNEL_WATCH = "watch"
+    const val CHANNEL_APP_UPDATES = "app_updates"
 
     const val WATCH_NOTIFICATION_ID = 0x7E7E0001
+    const val APP_UPDATE_NOTIFICATION_ID = 0x7E7E0002
 
     const val ACTION_ALLOW = "app.tether.action.ALLOW"
     const val ACTION_DISCONNECT_ALL = "app.tether.action.DISCONNECT_ALL"
@@ -70,7 +72,11 @@ object Notifications {
             enableVibration(false)
             setSound(null, null)
         }
-        nm.createNotificationChannels(listOf(approvals, updates, watch))
+        val appUpdates = NotificationChannel(CHANNEL_APP_UPDATES, "New Tether versions", NotificationManager.IMPORTANCE_DEFAULT).apply {
+            description = "A new version of Tether is ready to install"
+            setShowBadge(true)
+        }
+        nm.createNotificationChannels(listOf(approvals, updates, watch, appUpdates))
     }
 
     /** POST_NOTIFICATIONS granted (33+) and notifications not blocked for the app. */
@@ -288,6 +294,29 @@ object Notifications {
         NotificationManagerCompat.from(context).notify(id, notification)
     }
 
+    /**
+     * A new Tether release is out. Tapping opens Home (with its update banner); Update opens the app
+     * and starts the install there — Android's install confirmation can't appear from the background.
+     */
+    @SuppressLint("MissingPermission")
+    fun showAppUpdate(context: Context, versionName: String, notes: String) {
+        if (!canPost(context)) return
+        val text = notes.trim().ifEmpty { "Tap to update" }
+        val notification = NotificationCompat.Builder(context, CHANNEL_APP_UPDATES)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setColor(ACCENT)
+            .setContentTitle("Tether $versionName is available")
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setCategory(NotificationCompat.CATEGORY_RECOMMENDATION)
+            .setAutoCancel(true)
+            .setContentIntent(openApp(context, null, APP_UPDATE_NOTIFICATION_ID))
+            .addAction(0, "Update", installUpdate(context))
+            .build()
+        NotificationManagerCompat.from(context).notify(APP_UPDATE_NOTIFICATION_ID, notification)
+    }
+
     fun cancel(context: Context, id: Int) {
         NotificationManagerCompat.from(context).cancel(id)
     }
@@ -305,6 +334,14 @@ object Notifications {
             }
         }
         return PendingIntent.getActivity(context, requestCode, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+    }
+
+    private fun installUpdate(context: Context): PendingIntent {
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            action = MainActivity.ACTION_INSTALL_UPDATE
+        }
+        return PendingIntent.getActivity(context, APP_UPDATE_NOTIFICATION_ID + 1, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
     }
 
     fun agentTitle(a: AgentSummary): String =

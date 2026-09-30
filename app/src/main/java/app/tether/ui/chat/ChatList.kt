@@ -54,6 +54,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -159,6 +160,19 @@ internal fun ChatList(
     LaunchedEffect(listState) {
         snapshotFlow { follow && !dragged && listState.canScrollBackward }.collectLatest { should ->
             if (should) listState.scrollToItem(0)
+        }
+    }
+
+    // A new row is inserted at index 0, below the row the list keeps anchored, so it lands below the
+    // fold and the effect above only catches up a frame later. A live run hides that behind its
+    // "Working…" footer (the anchor stays the footer); a background agent has none and adds whole
+    // rows in bursts, which made the list jump on every one. Re-pin within the same frame instead.
+    val newestKey = items.lastOrNull()?.key
+    val pinnedNewest = remember { arrayOf(newestKey) }
+    SideEffect {
+        if (newestKey != pinnedNewest[0]) {
+            pinnedNewest[0] = newestKey
+            if (follow && !dragged) listState.requestScrollToItem(0)
         }
     }
 

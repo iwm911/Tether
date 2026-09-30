@@ -65,6 +65,7 @@ internal class MachinesViewModel(private val container: AppContainer) : ViewMode
     fun test(connection: Connection) {
         testJob?.cancel()
         _test.value = MachineTestUi(connection, TestUi(running = true))
+        container.agents.release(connection.id)
         testJob = viewModelScope.launch {
             val result = runPacedTest(
                 block = { onProgress -> container.ssh.test(connection, null, onProgress) },
@@ -86,6 +87,7 @@ internal class MachinesViewModel(private val container: AppContainer) : ViewMode
 
     fun disconnect(connection: Connection) {
         viewModelScope.launch {
+            container.agents.hold(connection.id) // else the watch stream reconnects straight away
             runCatching { container.ssh.disconnect(connection.id) }
             _messages.tryEmit("Disconnected from ${connection.name}")
         }

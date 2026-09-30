@@ -86,6 +86,7 @@ class MachineViewModel(private val container: AppContainer, val connectionId: St
 
     init {
         if (container.connections.get(connectionId) != null) {
+            container.agents.release(connectionId) // opening a machine connects it again
             loadProbe()
             loadProjects()
             loadSessions()
@@ -164,6 +165,7 @@ class MachineViewModel(private val container: AppContainer, val connectionId: St
         local.update { it.copy(disconnecting = true) }
         viewModelScope.launch {
             val name = state.value.connection?.name ?: "machine"
+            container.agents.hold(connectionId) // else the watch stream reconnects straight away
             attempt { container.ssh.disconnect(connectionId) }
                 .onSuccess { messages.trySend("Disconnected from $name") }
                 .onFailure { messages.trySend("Couldn't disconnect — ${it.humanMessage()}") }

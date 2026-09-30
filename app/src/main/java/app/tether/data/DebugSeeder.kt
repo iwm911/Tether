@@ -127,6 +127,7 @@ object DebugSeeder {
         showThinking = o.bool("showThinking") ?: s.showThinking,
         notifyPermissions = o.bool("notifyPermissions") ?: s.notifyPermissions,
         notifyCompletion = o.bool("notifyCompletion") ?: s.notifyCompletion,
+        notifyAppUpdates = o.bool("notifyAppUpdates") ?: s.notifyAppUpdates,
         backgroundWatch = o.bool("backgroundWatch") ?: s.backgroundWatch,
         haptics = o.bool("haptics") ?: s.haptics,
         codeFontScale = (o["codeFontScale"] as? JsonPrimitive)?.floatOrNull ?: s.codeFontScale,

@@ -110,8 +110,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.tether.LocalAppContainer
 import app.tether.core.ChatItem
+import app.tether.core.FallbackModels
 import app.tether.core.LinkState
 import app.tether.core.ModelOption
+import app.tether.core.PermissionMode
 import app.tether.core.PermissionDecision
 import app.tether.core.RateLimitInfo
 import app.tether.core.RunRef
@@ -225,6 +227,10 @@ fun AgentScreen(ref: RunRef, onBack: () -> Unit, onOpenMachine: (String) -> Unit
     var bottomPx by remember { mutableIntStateOf(0) }
     val bottomDp = with(density) { bottomPx.toDp() }
     BackHandler(enabled = rawView) { rawView = false }
+    // A terminal session is watch-only; the composer shows only once the user opts into a background copy.
+    val terminal = native && conv.nativeRun?.terminal == true
+    var copyDraft by rememberSaveable(state.ref) { mutableStateOf(false) }
+    BackHandler(enabled = terminal && copyDraft && !rawView) { copyDraft = false }
 
     val onRespond: (String, PermissionDecision) -> Unit = remember(vm) { { id, d -> vm.respond(id, d) } }
     val respondingIds = state.respondingIds
@@ -383,8 +389,10 @@ fun AgentScreen(ref: RunRef, onBack: () -> Unit, onOpenMachine: (String) -> Unit
                     onFetchQuestion = if (native) ({ vm.fetchQuestion() }) else null,
                 )
             }
-            // 0 = live composer, 1 = ended, 3 = native composer (always available; queues while busy)
+            // 0 = live composer, 1 = ended, 3 = native composer (always available; queues while busy),
+            // 4 = terminal session: watch-only until the user chooses to continue in a background copy
             val dockMode = when {
+                terminal && !copyDraft -> 4
                 native -> 3
                 state.ended -> 1
                 else -> 0
@@ -397,16 +405,24 @@ fun AgentScreen(ref: RunRef, onBack: () -> Unit, onOpenMachine: (String) -> Unit
                 },
                 label = "composerOrEnded",
             ) { mode ->
-                if (mode == 3) {
+                if (mode == 4) {
+                    TerminalWatchDock(machineName = state.machineName, onContinue = { copyDraft = true })
+                } else if (mode == 3) {
                     val run = conv.nativeRun
-                    val terminal = run?.terminal == true
                     val nativeWorking = !terminal && (conv.status == RunStatus.WORKING || conv.status == RunStatus.STARTING)
                     val alive = run?.alive == true
+                    Column {
+                    if (terminal) {
+                        TerminalCopyNotice(
+                            terminalBusy = conv.status == RunStatus.WORKING || conv.status == RunStatus.STARTING,
+                            onCancel = { copyDraft = false },
+                        )
+                    }
                     Composer(
                         state = vm.composer,
                         onSend = vm::send,
                         placeholder = when {
-                            terminal -> "Continue in a background copy…"
+                            terminal -> "Message for the copy…"
                             nativeWorking -> "Add a message — Claude reads it next…"
                             else -> "Reply to Claude…"
                         },
@@ -414,8 +430,24 @@ fun AgentScreen(ref: RunRef, onBack: () -> Unit, onOpenMachine: (String) -> Unit
                         sending = state.replying,
                         working = nativeWorking && alive,
                         onStop = vm::interrupt,
+                        // Mode: Shift+Tab in the agent's terminal right away (or with the next message
+                        // while it's stopped). Model: Claude Code only switches it on a restart, so the
+                        // next message restarts the agent under it. A terminal session's copy has neither.
+                        permissionMode = if (terminal) null else state.permissionMode,
+                        onCycleMode = if (terminal) null else vm::cycleMode,
+                        onSelectMode = if (terminal) null else vm::setMode,
+                        model = if (terminal) null else state.model,
+                        onSelectModel = if (terminal) null else vm::setModel,
                         hint = when {
-                            terminal -> "Open in a terminal on your computer · replying starts a background copy"
+                            terminal -> null // TerminalCopyNotice above says it
+                            state.nativeNextModel != null || state.nativeNextMode != null -> {
+                                val what = listOfNotNull(
+                                    state.nativeNextModel?.let { modelLabel(it, FallbackModels) },
+                                    state.nativeNextMode?.let { m -> PermissionMode.fromCli(m)?.label?.let { "$it mode" } },
+                                ).joinToString(" · ")
+                                if (nativeWorking && alive) "Your next message stops this turn and restarts on $what"
+                                else "Your next message restarts the agent on $what"
+                            }
                             conv.status == RunStatus.AWAITING_PERMISSION -> "Answer Claude's request above first"
                             nativeWorking && alive -> "Messages queue while Claude works · ■ interrupts"
                             !alive -> "Resumes this background agent"
@@ -425,6 +457,7 @@ fun AgentScreen(ref: RunRef, onBack: () -> Unit, onOpenMachine: (String) -> Unit
                         allowAttachments = false,
                         onError = { msg -> scope.launch { snackbar.showSnackbar(msg) } },
                     )
+                    }
                 } else if (mode == 1) {
                     EndedCard(
                         failed = conv.status == RunStatus.FAILED,
