@@ -57,6 +57,7 @@ import androidx.compose.material.icons.rounded.BugReport
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ErrorOutline
+import androidx.compose.material.icons.rounded.Extension
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.History
@@ -380,6 +381,45 @@ fun NewAgentScreen(
                 }
             },
             dismissButton = { TextButton(onClick = vm::dismissTrust) { Text("Cancel") } },
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            shape = RoundedCornerShape(24.dp),
+        )
+    }
+
+    state.mcpPrompt?.let { p ->
+        AlertDialog(
+            onDismissRequest = vm::dismissMcp,
+            icon = { Icon(Icons.Rounded.Extension, null, tint = TetherTheme.colors.info) },
+            title = { Text(if (p.servers.size == 1) "Enable this MCP server?" else "Enable these MCP servers?") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(Space.sm)) {
+                    Text(
+                        "This folder's .mcp.json lists MCP servers Claude Code hasn't been told about on ${conn?.name ?: "this machine"} yet. Claude would ask on the computer and wait there.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Text(
+                        p.servers.joinToString("\n"),
+                        style = TetherTheme.type.monoSmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(TetherTheme.colors.codeBg)
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                    )
+                    Text(
+                        "MCP servers may run code or access system resources. Your choice is saved for this folder, the same as answering Claude's prompt on the computer.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { haptics.confirm(); vm.answerMcp(enable = true) }) {
+                    Text("Enable and start", fontWeight = FontWeight.SemiBold)
+                }
+            },
+            dismissButton = { TextButton(onClick = { vm.answerMcp(enable = false) }) { Text("Start without") } },
             containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
             shape = RoundedCornerShape(24.dp),
         )

@@ -5,6 +5,7 @@ import app.tether.core.ClaudeRemote
 import app.tether.core.ConnectionRepository
 import app.tether.core.DirListing
 import app.tether.core.ExecResult
+import app.tether.core.McpChoice
 import app.tether.core.NativeStartResult
 import app.tether.core.NativeTimelineEntry
 import app.tether.core.isNative
@@ -32,6 +33,8 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.io.IOException
@@ -260,18 +263,23 @@ class HelperClaudeRemote internal constructor(
         return decode(out, "background agent list") { NativeAgents.parseList(it).map(NativeAgents::toRunInfo) }
     }
 
-    override suspend fun startNative(connectionId: String, request: StartRunRequest, trust: Boolean): NativeStartResult {
+    override suspend fun startNative(connectionId: String, request: StartRunRequest, trust: Boolean, mcp: McpChoice?): NativeStartResult {
         val body = buildJsonObject {
             put("cwd", request.cwd)
             put("prompt", request.prompt.orEmpty())
             request.model?.let { put("model", it) }
             request.permissionMode?.let { put("permissionMode", it) }
             put("trust", trust)
+            mcp?.let { put("mcp", it.wire) }
         }.toString().toByteArray(Charsets.UTF_8)
         val out = helper(connectionId, claudeArgs(connectionId) + "native-start", stdin = body, timeoutMs = 120_000)
         val line = lastJsonLine(out) ?: throw RemoteException("The machine sent no answer.")
         val o = RemoteJson.parseObject(line)
         if (o?.str("error") == "untrusted") return NativeStartResult.Untrusted(o.str("cwd") ?: request.cwd)
+        if (o?.str("error") == "mcp") {
+            val servers = o.arr("servers")?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.orEmpty()
+            return NativeStartResult.McpApproval(o.str("cwd") ?: request.cwd, servers)
+        }
         o?.str("error")?.let { throw RemoteException(it) }
         val dto = decode(out, "background agent") { NativeAgents.parseOne(it) }
         return NativeStartResult.Started(nativeRunRef(connectionId, dto.id))

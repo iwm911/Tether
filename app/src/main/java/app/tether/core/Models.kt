@@ -204,7 +204,12 @@ sealed interface NativeStartResult {
     data class Started(val ref: RunRef) : NativeStartResult
     /** Claude Code does not trust [cwd] yet; retry with trust = true to mark it trusted. */
     data class Untrusted(val cwd: String) : NativeStartResult
+    /** [cwd] has project MCP servers (.mcp.json) Claude Code would ask about; retry with a [McpChoice]. */
+    data class McpApproval(val cwd: String, val servers: List<String>) : NativeStartResult
 }
+
+/** Answer to Claude Code's "new MCP servers found in this project" question. */
+enum class McpChoice(val wire: String) { ENABLE("enable"), SKIP("skip") }
 
 @Serializable
 data class RunInfo(

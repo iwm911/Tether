@@ -14,6 +14,7 @@ import app.tether.AppContainer
 import app.tether.core.Connection
 import app.tether.core.ImageAttachment
 import app.tether.core.LinkState
+import app.tether.core.McpChoice
 import app.tether.core.PermissionMode
 import app.tether.core.ProjectSummary
 import app.tether.core.RunRef
@@ -67,6 +68,8 @@ data class NewAgentUiState(
     val background: Boolean = false,
     /** Claude Code does not trust this folder yet: ask before marking it trusted. */
     val trustPrompt: String? = null,
+    /** The folder has project MCP servers Claude Code would ask about: enable or skip them first. */
+    val mcpPrompt: NativeStartResult.McpApproval? = null,
 ) {
     /** Background is not offered when continuing a session (the live run carries the history). */
     val effectiveBackground: Boolean get() = background && resume == null
@@ -93,6 +96,7 @@ private data class Form(
     val resume: ResumeInfo? = null,
     val background: Boolean = false,
     val trustPrompt: String? = null,
+    val mcpPrompt: NativeStartResult.McpApproval? = null,
 )
 
 class NewAgentViewModel(
@@ -131,6 +135,7 @@ class NewAgentViewModel(
             locked = f.locked(),
             background = f.background,
             trustPrompt = f.trustPrompt,
+            mcpPrompt = f.mcpPrompt,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), NewAgentUiState(connections = container.connections.connections.value))
 
@@ -361,8 +366,11 @@ class NewAgentViewModel(
         else -> null
     }
 
-    /** Native background agent: `claude --bg` on the machine; [trust] marks the folder trusted first. */
-    private fun startBackground(s: NewAgentUiState, trust: Boolean) {
+    /**
+     * Native background agent: `claude --bg` on the machine; [trust] marks the folder trusted first,
+     * [mcp] answers Claude's project MCP server question (else the agent would wait on it at the keyboard).
+     */
+    private fun startBackground(s: NewAgentUiState, trust: Boolean, mcp: McpChoice? = null) {
         val conn = s.connectionId ?: return
         val cwd = s.cwd ?: return
         val request = StartRunRequest(
@@ -371,9 +379,9 @@ class NewAgentViewModel(
             model = s.model.takeIf { it != "default" && it.isNotBlank() },
             permissionMode = s.mode.cli.takeIf { it != PermissionMode.DEFAULT.cli },
         )
-        form.update { it.copy(starting = true, error = null, trustPrompt = null) }
+        form.update { it.copy(starting = true, error = null, trustPrompt = null, mcpPrompt = null) }
         viewModelScope.launch {
-            attempt { container.agents.startNative(conn, request, trustFolder = trust) }
+            attempt { container.agents.startNative(conn, request, trustFolder = trust, mcp = mcp) }
                 .onSuccess { res ->
                     when (res) {
                         is NativeStartResult.Started -> {
@@ -382,6 +390,7 @@ class NewAgentViewModel(
                             events.trySend(NewAgentEvent.Started(res.ref))
                         }
                         is NativeStartResult.Untrusted -> form.update { it.copy(starting = false, trustPrompt = res.cwd) }
+                        is NativeStartResult.McpApproval -> form.update { it.copy(starting = false, mcpPrompt = res) }
                     }
                 }
                 .onFailure { e -> form.update { it.copy(starting = false, error = e.humanMessage()) } }
@@ -396,6 +405,15 @@ class NewAgentViewModel(
     }
 
     fun dismissTrust() = form.update { it.copy(trustPrompt = null) }
+
+    /** The user chose whether the folder's project MCP servers run; record it for Claude Code and start. */
+    fun answerMcp(enable: Boolean) {
+        val s = state.value
+        if (s.starting) return
+        startBackground(s, trust = false, mcp = if (enable) McpChoice.ENABLE else McpChoice.SKIP)
+    }
+
+    fun dismissMcp() = form.update { it.copy(mcpPrompt = null) }
 
     fun start() {
         val s = state.value

@@ -9,6 +9,7 @@ import app.tether.core.ConnectionRepository
 import app.tether.core.ConversationState
 import app.tether.core.ImageAttachment
 import app.tether.core.LinkState
+import app.tether.core.McpChoice
 import app.tether.core.NativeStartResult
 import app.tether.core.NativeTimelineEntry
 import app.tether.core.PermissionDecision
@@ -728,8 +729,8 @@ class DefaultAgentHub(
     override suspend fun previewRewind(connectionId: String, sessionId: String, messageId: String, cwd: String, sourceRunId: String?): app.tether.core.RewindResult =
         remote.rewindFiles(connectionId, sessionId, messageId, cwd, dryRun = true, runId = sourceRunId?.takeIf { !it.startsWith(app.tether.core.NATIVE_RUN_PREFIX) })
 
-    override suspend fun startNative(connectionId: String, request: StartRunRequest, trustFolder: Boolean): NativeStartResult {
-        val res = remote.startNative(connectionId, request, trustFolder)
+    override suspend fun startNative(connectionId: String, request: StartRunRequest, trustFolder: Boolean, mcp: McpChoice?): NativeStartResult {
+        val res = remote.startNative(connectionId, request, trustFolder, mcp)
         if (res is NativeStartResult.Started) {
             try {
                 refresh(connectionId)
