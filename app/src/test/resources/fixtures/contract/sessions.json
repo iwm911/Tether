@@ -1,0 +1,180 @@
+{
+ "sessions": [
+  {
+   "sessionId": "ffff6666-6666-4666-8666-666666666666",
+   "short": "ffff6666",
+   "cwd": "/home/user/proj",
+   "name": "crashed one",
+   "intent": null,
+   "state": "failed",
+   "waitingFor": null,
+   "pending": null,
+   "process": "retired",
+   "heldBy": "none",
+   "terminalPid": null,
+   "startedAt": 1790848800000,
+   "updatedAt": 1790879362548,
+   "lastText": null,
+   "tokens": null,
+   "model": null,
+   "permissionMode": null,
+   "inFlight": {
+    "tasks": 0,
+    "queued": 0,
+    "kinds": []
+   },
+   "children": [],
+   "gitBranch": null
+  },
+  {
+   "sessionId": "aaaa1111-1111-4111-8111-111111111111",
+   "short": "aaaa1111",
+   "cwd": "/home/user/proj",
+   "name": "builder",
+   "intent": "build it",
+   "state": "working",
+   "waitingFor": null,
+   "pending": null,
+   "process": "live",
+   "heldBy": "daemon",
+   "terminalPid": null,
+   "startedAt": 1790870000000,
+   "updatedAt": 1790879362547,
+   "lastText": "Building now.",
+   "tokens": 1200,
+   "model": "haiku",
+   "permissionMode": null,
+   "inFlight": {
+    "tasks": 1,
+    "queued": 0,
+    "kinds": [
+     "shell"
+    ]
+   },
+   "children": [
+    {
+     "id": "12",
+     "href": "https://github.com/x/y/pull/12",
+     "kind": "pr"
+    }
+   ],
+   "gitBranch": "main"
+  },
+  {
+   "sessionId": "bbbb2222-2222-4222-8222-222222222222",
+   "short": "bbbb2222",
+   "cwd": "/home/user/proj",
+   "name": "asker",
+   "intent": "ask me",
+   "state": "needs_you",
+   "waitingFor": "input needed",
+   "pending": {
+    "toolUseId": "q-3fb11048ef02e2f4",
+    "toolName": "AskUserQuestion",
+    "summary": "Which color?",
+    "inputJson": "{\"questions\": [{\"question\": \"Which color?\", \"header\": \"Color\", \"options\": [{\"label\": \"Red\", \"description\": \"\"}, {\"label\": \"Blue\", \"description\": \"\"}], \"multiSelect\": false}], \"multiSelectKnown\": true}",
+    "kind": "question"
+   },
+   "process": "live",
+   "heldBy": "daemon",
+   "terminalPid": null,
+   "startedAt": 1790870000000,
+   "updatedAt": 1790879362547,
+   "lastText": null,
+   "tokens": null,
+   "model": null,
+   "permissionMode": null,
+   "inFlight": {
+    "tasks": 0,
+    "queued": 0,
+    "kinds": []
+   },
+   "children": [],
+   "gitBranch": "main"
+  },
+  {
+   "sessionId": "cccc3333-3333-4333-8333-333333333333",
+   "short": "cccc3333",
+   "cwd": "/home/user/proj",
+   "name": "old job",
+   "intent": "old job",
+   "state": "done",
+   "waitingFor": null,
+   "pending": null,
+   "process": "retired",
+   "heldBy": "none",
+   "terminalPid": null,
+   "startedAt": 1790870000000,
+   "updatedAt": 1790879362547,
+   "lastText": "PONG",
+   "tokens": null,
+   "model": "sonnet",
+   "permissionMode": "acceptEdits",
+   "inFlight": {
+    "tasks": 0,
+    "queued": 0,
+    "kinds": []
+   },
+   "children": [],
+   "gitBranch": "main"
+  },
+  {
+   "sessionId": "eeee5555-5555-4555-8555-555555555555",
+   "short": "eeee5555",
+   "cwd": "/home/user/other",
+   "name": "in a terminal",
+   "intent": "in a terminal",
+   "state": "done",
+   "waitingFor": null,
+   "pending": null,
+   "process": "retired",
+   "heldBy": "none",
+   "terminalPid": null,
+   "startedAt": 1790848800000,
+   "updatedAt": 1790879357547,
+   "lastText": null,
+   "tokens": null,
+   "model": null,
+   "permissionMode": null,
+   "inFlight": {
+    "tasks": 0,
+    "queued": 0,
+    "kinds": []
+   },
+   "children": [],
+   "gitBranch": "main"
+  },
+  {
+   "sessionId": "dddd4444-4444-4444-8444-444444444444",
+   "short": "dddd4444",
+   "cwd": "/home/user/other",
+   "name": "the past",
+   "intent": "plain old session",
+   "state": "done",
+   "waitingFor": null,
+   "pending": null,
+   "process": "retired",
+   "heldBy": "none",
+   "terminalPid": null,
+   "startedAt": 1790848800000,
+   "updatedAt": 1790875762547,
+   "lastText": "Hello from the past.",
+   "tokens": null,
+   "model": "claude-opus-5-5",
+   "permissionMode": "plan",
+   "inFlight": {
+    "tasks": 0,
+    "queued": 0,
+    "kinds": []
+   },
+   "children": [
+    {
+     "id": "7",
+     "href": "https://github.com/x/y/pull/7",
+     "kind": "pr"
+    }
+   ],
+   "gitBranch": "main"
+  }
+ ]
+}

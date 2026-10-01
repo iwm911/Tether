@@ -131,6 +131,7 @@ internal fun ChatItemContent(
         is ChatItem.Permission -> Unit
         is ChatItem.TurnSummary -> TurnSummaryView(item, modifier)
         is ChatItem.Notice -> NoticeView(item, modifier)
+        is ChatItem.Peer -> PeerView(item, modifier)
     }
 }
 

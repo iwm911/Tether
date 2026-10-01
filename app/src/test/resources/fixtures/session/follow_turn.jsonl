@@ -1,0 +1,15 @@
+{"e":"line","line":{"parentUuid":null,"isSidechain":false,"type":"user","message":{"role":"user","content":"Reply with exactly: PONG-ONE."},"uuid":"u-1","timestamp":"2026-10-01T17:15:06.000Z","cwd":"/home/user/tether-exp/live","sessionId":"7b9f8c4c-6ac7-4d5a-9111-003abd24390e"}}
+{"e":"line","line":{"parentUuid":"u-1","isSidechain":false,"type":"assistant","message":{"id":"msg_1","model":"claude-haiku-4-5-20251001","role":"assistant","content":[{"type":"text","text":"PONG-ONE"}],"usage":{"input_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":100,"output_tokens":3}},"uuid":"a-1","timestamp":"2026-10-01T17:15:08.000Z","cwd":"/home/user/tether-exp/live","sessionId":"7b9f8c4c-6ac7-4d5a-9111-003abd24390e"}}
+{"e":"state","session":{"sessionId":"7b9f8c4c-6ac7-4d5a-9111-003abd24390e","short":"7b9f8c4c","cwd":"/home/user/tether-exp/live","name":"probe","state":"idle","process":"live","heldBy":"daemon","startedAt":1000,"updatedAt":2000,"model":"haiku","permissionMode":"acceptEdits"}}
+{"e":"caughtUp","offset":4096}
+{"e":"state","session":{"sessionId":"7b9f8c4c-6ac7-4d5a-9111-003abd24390e","short":"7b9f8c4c","cwd":"/home/user/tether-exp/live","name":"probe","state":"working","process":"live","heldBy":"daemon","startedAt":1000,"updatedAt":3000,"model":"haiku","permissionMode":"acceptEdits"}}
+{"e":"line","line":{"parentUuid":"a-1","isSidechain":false,"type":"user","message":{"role":"user","content":"Say hello world."},"uuid":"u-2","timestamp":"2026-10-01T17:16:00.000Z","cwd":"/home/user/tether-exp/live","sessionId":"7b9f8c4c-6ac7-4d5a-9111-003abd24390e"}}
+{"e":"status","verb":"Improvising…","elapsedS":3,"tokens":120}
+{"e":"draft","text":"Hel"}
+{"e":"draft","text":"Hello wor"}
+{"e":"status","verb":"Improvising…","elapsedS":5,"tokens":240}
+{"e":"line","line":{"parentUuid":"u-2","isSidechain":false,"type":"assistant","message":{"id":"msg_2","model":"claude-haiku-4-5-20251001","role":"assistant","content":[{"type":"text","text":"Hello **world**!"}],"usage":{"input_tokens":12,"output_tokens":5}},"uuid":"a-2","timestamp":"2026-10-01T17:16:06.000Z","cwd":"/home/user/tether-exp/live","sessionId":"7b9f8c4c-6ac7-4d5a-9111-003abd24390e"}}
+{"e":"draft","text":"Hello world!"}
+{"e":"draftClear"}
+{"e":"status"}
+{"e":"state","session":{"sessionId":"7b9f8c4c-6ac7-4d5a-9111-003abd24390e","short":"7b9f8c4c","cwd":"/home/user/tether-exp/live","name":"probe","state":"idle","process":"live","heldBy":"daemon","startedAt":1000,"updatedAt":4000,"lastText":"Hello world!","model":"haiku","permissionMode":"acceptEdits"}}

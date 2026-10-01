@@ -13,7 +13,12 @@ import kotlinx.serialization.json.longOrNull
 import java.time.Instant
 
 /** A failure the remote side explained in a human sentence (helper `{"error": …}`, missing python…). */
-class RemoteException(message: String, cause: Throwable? = null) : Exception(message, cause)
+class RemoteException(
+    message: String,
+    cause: Throwable? = null,
+    /** Helper error code (`ENODAEMON`, `EHELD`… see [app.tether.core.SessionErrorCodes]) when it sent one. */
+    val code: String? = null,
+) : Exception(message, cause)
 
 /** Optional capability of a [app.tether.core.ClaudeRemote]: transcript lines of the session a run resumed. */
 interface RunHistorySource {

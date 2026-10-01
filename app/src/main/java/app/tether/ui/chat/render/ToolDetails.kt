@@ -1,5 +1,6 @@
 package app.tether.ui.chat.render
 
+import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
@@ -542,6 +543,14 @@ private fun TaskDetail(item: ChatItem.ToolCall, p: ToolParsed, showThinking: Boo
         }
     }
 
+    LocalSubagentLinks.current[item.toolUseId]?.let { open ->
+        app.tether.ui.components.SecondaryButton(
+            "Open subagent transcript",
+            onClick = open,
+            icon = androidx.compose.material.icons.Icons.AutoMirrored.Rounded.OpenInNew,
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
     val children = item.children
     val rule = c.clay.copy(alpha = 0.5f)
     if (children.isNotEmpty() || item.status.isActive) {

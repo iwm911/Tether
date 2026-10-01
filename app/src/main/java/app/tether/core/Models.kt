@@ -431,6 +431,21 @@ sealed interface ChatItem {
     ) : ChatItem
 
     data class Notice(override val key: String, val text: String, val kind: NoticeKind) : ChatItem
+
+    /**
+     * A message between Claude Code sessions (one-session model): [incoming] = a
+     * `<cross-session-message>` from another session, else this session's own `SendMessage`.
+     */
+    data class Peer(
+        override val key: String,
+        val incoming: Boolean,
+        /** Sender (incoming) or recipient (outgoing) display name, when known. */
+        val peerName: String?,
+        /** Sender / recipient address (`uds:…`, a name, a session id). */
+        val peer: String?,
+        val text: String,
+        val at: Long? = null,
+    ) : ChatItem
 }
 
 /** Preview / result of restoring files to how they were before a message (Claude Code checkpoints). */
@@ -488,6 +503,8 @@ data class ConversationState(
     val kind: RunKind = RunKind.TETHER,
     /** For a native background agent: its latest dashboard record (state, detail, subagents, timeline). */
     val nativeRun: RunInfo? = null,
+    /** One-session model (daemon): the session this conversation shows, plus draft / peers / tasks…; null for runs. */
+    val live: SessionLive? = null,
 )
 
 // ───────────────────────────── Settings ─────────────────────────────

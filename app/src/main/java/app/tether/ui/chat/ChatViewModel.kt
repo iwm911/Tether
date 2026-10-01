@@ -126,6 +126,7 @@ internal fun ChatItem.withKey(newKey: String): ChatItem = when (this) {
     is ChatItem.Permission -> copy(key = newKey)
     is ChatItem.TurnSummary -> copy(key = newKey)
     is ChatItem.Notice -> copy(key = newKey)
+    is ChatItem.Peer -> copy(key = newKey)
 }
 
 // ───────────────────────────── Agent conversation ─────────────────────────────

@@ -1,0 +1,64 @@
+{
+ "proto_mismatch": {
+  "ok": false,
+  "error": "proto mismatch (server=1, client=99) — background service and CLI versions differ; restart claude",
+  "code": "EPROTO",
+  "serverProto": 1,
+  "serverVersion": "2.1.287"
+ },
+ "bad_auth_reply": {
+  "ok": false,
+  "error": "reply rejected: the presented daemon control key doesn't match — retry, and restart the Claude Code daemon if this persists",
+  "code": "EAUTH"
+ },
+ "no_auth_dispatch": {
+  "ok": false,
+  "error": "dispatch rejected: this client didn't present the daemon control key",
+  "code": "EAUTH"
+ },
+ "unknown_short_reply": {
+  "ok": false,
+  "error": "job not found — it may have already exited",
+  "code": "ENOJOB"
+ },
+ "unknown_short_has": {
+  "ok": true,
+  "op": "has",
+  "alive": false,
+  "present": false,
+  "ready": false
+ },
+ "unknown_short_subscribe": {
+  "ok": false,
+  "error": "job not found — it may have already exited",
+  "code": "ENOJOB"
+ },
+ "unknown_short_kill": {
+  "ok": false,
+  "error": "job not found — it may have already exited",
+  "code": "ENOJOB"
+ },
+ "await_ack_unknown": {
+  "ok": false,
+  "error": "background service didn't acknowledge in time — retry",
+  "code": "ETIMEOUT"
+ },
+ "unknown_op": {
+  "ok": false,
+  "error": "malformed request: Invalid discriminator value. Expected 'ping' | 'nudge' | 'yield' | 'lease' | 'leases' | 'await-ack' | 'dispatch' | 'list' | 'has' | 'kill' | 'reply' | 'subscribe' | 'attach' | 'resize' | 'ensure-spare' | 'permission-response' | 'respawn-stale' | 'shutdown'",
+  "code": "EUNKNOWN"
+ },
+ "ping": {
+  "ok": true,
+  "op": "ping",
+  "version": "2.1.287",
+  "proto": 1
+ },
+ "has_live": {
+  "ok": true,
+  "op": "has",
+  "alive": true,
+  "present": true,
+  "ready": true
+ }
+}

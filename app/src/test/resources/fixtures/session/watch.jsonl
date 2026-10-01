@@ -1,0 +1,7 @@
+{"snapshot":[{"sessionId":"7b9f8c4c-6ac7-4d5a-9111-003abd24390e","short":"7b9f8c4c","cwd":"/home/user/tether-exp/live","name":"probe","state":"working","process":"live","heldBy":"daemon","startedAt":1000,"updatedAt":2000},{"sessionId":"dddddddd-1111-4222-8333-444444444444","cwd":"/home/user/proj","name":"desk","state":"working","process":"live","heldBy":"terminal","terminalPid":4242,"startedAt":1000,"updatedAt":1500}]}
+{"hb":1790875200000}
+{"changed":[{"sessionId":"7b9f8c4c-6ac7-4d5a-9111-003abd24390e","short":"7b9f8c4c","cwd":"/home/user/tether-exp/live","name":"probe","state":"needs_you","waitingFor":"permission","pending":{"kind":"permission","toolUseId":"toolu_A","toolName":"Bash","summary":"ls","inputJson":"{\"command\":\"ls\"}"},"process":"live","heldBy":"daemon","startedAt":1000,"updatedAt":3000}],"removed":[]}
+{"changed":[{"sessionId":"7b9f8c4c-6ac7-4d5a-9111-003abd24390e","short":"7b9f8c4c","cwd":"/home/user/tether-exp/live","name":"probe","state":"working","process":"live","heldBy":"daemon","startedAt":1000,"updatedAt":4000}],"removed":["dddddddd-1111-4222-8333-444444444444"]}
+{"changed":[{"sessionId":"7b9f8c4c-6ac7-4d5a-9111-003abd24390e","short":"7b9f8c4c","cwd":"/home/user/tether-exp/live","name":"probe","state":"idle","lastText":"PONG","process":"live","heldBy":"daemon","startedAt":1000,"updatedAt":5000}],"removed":[]}
+{"something":"from a newer helper"}
+not json at all

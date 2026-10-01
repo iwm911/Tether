@@ -13,16 +13,32 @@ State lives in ~/.tether/runs/<runId>/:
     pid          process-group leader (runner)     exit       claude's exit status (when it ended)
     runner.sh    the detached bash runner          .state.json incremental parse cache (byte offsets)
 
+Sessions (protocol 2.0.0, docs/plans/one-session-daemon.md) -- <sid> is a session id or its 8-hex short:
+    sessions [--cwd P] [--limit N] [--before MS]   {"sessions": [Session]} newest first
+    watch [--cwd P] [--limit N]  {"snapshot": [Session]}, then {"changed": [Session], "removed": [sid]}, {"hb": ms}
+    follow <sid> [--agent ID] [--from OFFSET]      follow events: line (+offset), draft, draftClear, status, state,
+                                 peer, subagent, task, todos, caughtUp {offset}
+    new                          stdin {cwd, prompt, model?, permissionMode?, images?, trust?, name?} -> Session
+    send <sid>                   stdin {text, images?} -> {ok, woke} (a retired session is resumed under its own id)
+    key <sid>                    stdin {keys: ["shift-tab"|"esc"|"enter"|"up"|"down"|"left"|"right"|"tab"|"space"|"1".."9"|{text}]}
+    answer <sid>                 stdin {decision: allow|allow_always|deny, message?} -> Session
+    ask <sid>                    stdin {answers: [{choices: [i…], other}]} -> Session
+    interrupt <sid>              Esc -> Session
+    stop <sid> | rm <sid>        {"ok": true}
+  Errors carry "code": ENODAEMON EAUTH EPROTO EHELD ENOSESSION EUNTRUSTED ETIMEOUT EDAEMON.
+  `follow`, `send` and `stop` with a Tether run id ("r…") and `sessions --legacy` / `watch --legacy` are the
+  previous protocol, kept until the app no longer calls them.
+
 Commands
     version                      {"version": HELPER_VERSION}
-    probe                        host / claude / python facts
+    probe                        host / claude / python facts (+ daemon: {running, proto, version, auth})
     projects                     [ProjectSummary]
-    sessions [--cwd P] [--limit N]   [SessionSummary]
+    sessions --legacy [--cwd P] [--limit N]   [SessionSummary]
     transcript <sessionId>       raw transcript lines (filtered for size)
     history <runId>              transcript lines of a resumed session written before the run began
     start                        stdin: StartRunRequest JSON  ->  RunInfo
     runs                         [RunInfo]
-    watch                        a [RunInfo] line on every change, {"hb": ms} every 15 s
+    watch --legacy               a [RunInfo] line on every change, {"hb": ms} every 15 s
     follow <runId> <offset>      raw out.jsonl bytes from offset, complete lines only, until the reader goes
     send <runId>                 stdin: JSONL appended to in.jsonl (flock)
     input <runId>                in.jsonl lines (image payloads stripped)
@@ -47,6 +63,9 @@ Commands
     native-logs <id>             {text}: `claude logs <id>` with ANSI stripped
     native-follow <id>           the agent's transcript lines (as `transcript`), then new ones as they are written
   `watch` also emits {"native": [NativeAgent]} lines whenever the native list changes.
+  The Claude Code daemon (control socket, proto 1):
+    daemon-status                {running, proto, version, auth: ok|needs_login|unknown, pid?, error?, code?}
+Errors from daemon calls carry "code": ENODAEMON | EAUTH | EPROTO | ENOSESSION | ETIMEOUT | EDAEMON ...
 Global option: --claude PATH (explicit claude binary).
 """
 
@@ -67,7 +86,7 @@ import subprocess
 import sys
 import time
 
-HELPER_VERSION = "1.10.0"
+HELPER_VERSION = "2.0.0"
 
 HOME = os.path.expanduser("~")
 TETHER_DIR = os.path.join(HOME, ".tether")
@@ -415,6 +434,7 @@ def cmd_probe(opts):
         "helperReady": True,
         "problem": problem,
         "plan": claude_plan(),
+        "daemon": dict((k, v) for k, v in daemon_status().items() if k in ("running", "proto", "version", "auth")),
     })
 
 
@@ -551,8 +571,9 @@ def count_messages(path, size):
 class SessionIndex(object):
     """Per-transcript facts cached by (size, mtime) in ~/.tether/cache/sessions.json."""
 
-    def __init__(self):
-        self.path = os.path.join(CACHE_DIR, "sessions.json")
+    def __init__(self, name="sessions.json", count=True):
+        self.path = os.path.join(CACHE_DIR, name)
+        self.count = count  # False: skip message counts (they read up to 8 MB; `watch` re-checks every second)
         self.data = read_json(self.path, {}) or {}
         if self.data.get("v") != STATE_VERSION:
             self.data = {"v": STATE_VERSION, "files": {}}
@@ -587,7 +608,7 @@ class SessionIndex(object):
             "firstPrompt": head.get("firstPrompt"), "firstAt": head.get("firstAt"),
             "customTitle": titles.get("customTitle"), "aiTitle": titles.get("aiTitle"),
             "lastPrompt": titles.get("lastPrompt"), "summary": titles.get("summary"),
-            "messages": count_messages(path, size),
+            "messages": count_messages(path, size) if self.count else 0,
         }
         self.files[key] = info
         self.dirty = True
@@ -802,15 +823,16 @@ def slim_line(o):
     return o
 
 
-def transcript_line_out(raw, before_ms=None):
-    """One raw transcript line -> the (slimmed) JSON line the app renders, or None to skip it."""
-    if b'"isSidechain":true' in raw:
+def transcript_line_out(raw, before_ms=None, sidechain_ok=False):
+    """One raw transcript line -> the (slimmed) JSON line the app renders, or None to skip it. sidechain_ok keeps
+    sidechain lines (a subagent's own transcript is all sidechain)."""
+    if not sidechain_ok and b'"isSidechain":true' in raw:
         return None
     o = parse_line(raw)
     if not o:
         return None
     t = o.get("type")
-    if t not in KEEP_TYPES or o.get("isSidechain"):
+    if t not in KEEP_TYPES or (o.get("isSidechain") and not sidechain_ok):
         return None
     if before_ms is not None and t in ("user", "assistant", "system"):
         ts = iso_to_ms(o.get("timestamp"))
@@ -2796,9 +2818,9 @@ def parse_question_screen(lines):
     return {"question": qtext, "options": options, "multiSelect": multi, "tabs": tabs}
 
 
-def read_questions_from_tui(opts, agent_id):
+def read_questions_from_tui(opts, agent_id, tui_factory=None):
     """Renders the agent's screen, walking the question tabs with → (answers nothing)."""
-    tui = Tui(opts, agent_id)
+    tui = tui_factory() if tui_factory else Tui(opts, agent_id)
     sc = Screen(40, 120)
     fed = 0
     found = []
@@ -2976,14 +2998,14 @@ def goto_question(tui, qs, target, seen=None):
     return tui.qcur == target
 
 
-def ensure_multi(opts, agent_id, st):
+def ensure_multi(opts, agent_id, st, tui_factory=None):
     qs = question_block(st)
     if not qs:
         c = read_json(qcache_path(agent_id), {}) or {}
         if isinstance(c.get("questions"), list) and c.get("questions") and c.get("status_at") == st.get("updatedAt"):
             qs = c["questions"]
             return qs, [bool(q.get("multiSelect")) for q in qs]
-        qs = read_questions_from_tui(opts, agent_id)
+        qs = read_questions_from_tui(opts, agent_id, tui_factory)
         if not qs:
             return None, None
         try:
@@ -2998,7 +3020,7 @@ def ensure_multi(opts, agent_id, st):
     multi = cached_multi(agent_id, key)
     if multi is None or len(multi) != len(qs):
         seen = {}
-        tui = Tui(opts, agent_id)
+        tui = tui_factory() if tui_factory else Tui(opts, agent_id)
         try:
             for i in range(len(qs)):
                 goto_question(tui, qs, i, seen)
@@ -3046,48 +3068,10 @@ def cmd_native_ask(opts, agent_id):
         raise HelperError("The pending prompt isn't a question.")
     questions = [dict(q, multiSelect=bool(multi[i]) if multi and i < len(multi) else bool(q.get("multiSelect")))
                  for i, q in enumerate(qs)]
-    if len(answers) != len(questions):
-        raise HelperError("Answer every question (%d)." % len(questions))
-    plan = []
-    for q, a in zip(questions, answers):
-        opts_n = len(q.get("options") or [])
-        multi = bool(q.get("multiSelect"))
-        other = a.get("other") if isinstance(a, dict) else None
-        choices = [c for c in (a.get("choices") or []) if isinstance(c, int) and 0 <= c < opts_n] if isinstance(a, dict) else []
-        if isinstance(other, str) and other.strip() and not multi:
-            plan.append(("other", opts_n, other.strip().replace("\n", " ")))
-        elif multi:
-            if not choices:
-                raise HelperError("Pick at least one option for: %s" % (q.get("question") or "question"))
-            plan.append(("multi", opts_n, sorted(set(choices))))
-        else:
-            if len(choices) != 1:
-                raise HelperError("Pick one option for: %s" % (q.get("question") or "question"))
-            plan.append(("single", opts_n, choices[0]))
+    plan = question_plan(questions, answers)
     tui = Tui(opts, agent_id)
     try:
-        if not goto_question(tui, qs, 0):
-            raise HelperError("Couldn't find the first question on the machine's screen.")
-        for i, (kind, opts_n, val) in enumerate(plan):
-            if i and not goto_question(tui, qs, i):
-                raise HelperError("Lost track of the questions on the machine's screen.")
-            if kind == "single":
-                tui.send(str(val + 1).encode(), 1.0)
-            elif kind == "other":
-                tui.send(str(opts_n + 1).encode(), 0.8)
-                tui.send(b"\x1b[200~" + val.encode("utf-8") + b"\x1b[201~", 1.0)
-                tui.send(b"\r", 1.0)
-            else:
-                for c in val:
-                    tui.send(str(c + 1).encode(), 0.35)
-                tui.send(b"\x1b[C", 1.0)
-        if len(questions) > 1 or any(k == "multi" for k, _n, _v in plan):
-            # Review screen → "1. Submit answers" — only press it when it is actually showing.
-            for _ in range(3):
-                if "Submitanswers" in tui.text(max(0, tui.mark() - 6000)):
-                    tui.send(b"1", 1.0)
-                    break
-                tui.send(b"\x1b[C", 0.9)
+        press_answers(tui, qs, questions, plan)
     finally:
         tui.close()
     deadline = time.time() + 6.0
@@ -3416,6 +3400,2353 @@ def cmd_ls(opts, path=None):
     emit({"path": p, "parent": parent, "entries": entries})
 
 
+# ───────────────────────────────────────── Claude Code daemon client ─────────────────────────────────────────
+#
+# The Claude Code daemon (`claude daemon`, 2.1.286, proto 1) owns every background session. Its control
+# socket speaks one JSON request line -> one JSON reply line; `subscribe` keeps streaming JSON lines and
+# `attach` keeps streaming the session's terminal after its reply line. Same-uid peers only.
+
+DAEMON_PROTO = 1
+DAEMON_CONNECT_TIMEOUT = 3.0
+DAEMON_REPLY_TIMEOUT = 10.0
+SHORT_RE = re.compile(r"^[a-f0-9]{8}$")
+UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+DAEMON_SOURCES = ("shell", "slash", "fleet", "spare", "respawn")
+
+# Daemon error codes -> the helper protocol's codes. Anything unlisted becomes EDAEMON (the daemon's own
+# code stays in "daemonCode").
+DAEMON_CODE_MAP = {
+    "EAUTH": "EAUTH",
+    "EPROTO": "EPROTO",
+    "ENOJOB": "ENOSESSION",
+    "ETIMEOUT": "ETIMEOUT",
+    "ENOCONN": "ENODAEMON",
+}
+
+# Daemon frame codec: 4-byte big-endian payload length, 1-byte kind (0 data, 1 ctrl JSON), payload. NOTE:
+# verified live on 2.1.286/2.1.287, control-socket `attach` is NOT framed: after its JSON reply line the
+# socket carries raw pty bytes both ways (DaemonAttach below). The codec is the daemon's internal
+# worker-pty framing, kept (and unit-tested) in case a later proto frames attach.
+FRAME_HEADER = 5
+FRAME_DATA = 0
+FRAME_CTRL = 1
+FRAME_MAX = 1024 * 1024
+
+
+class DaemonError(HelperError):
+    """A daemon failure with a protocol error code (ENODAEMON, EAUTH, EPROTO, ENOSESSION, ETIMEOUT, EDAEMON,
+    ...). daemon_code is the daemon's own code, when it sent one."""
+
+    def __init__(self, message, code="EDAEMON", daemon_code=None):
+        HelperError.__init__(self, message)
+        self.code = code
+        self.daemon_code = daemon_code
+
+
+def daemon_error_from_reply(reply, op=None):
+    """DaemonError for a {ok:false, error, code} reply."""
+    if not isinstance(reply, dict):
+        return DaemonError("The Claude Code daemon sent an unreadable reply.", "EDAEMON")
+    dcode = reply.get("code") if isinstance(reply.get("code"), str) else None
+    msg = reply.get("error") if isinstance(reply.get("error"), str) and reply.get("error") else None
+    if not msg:
+        msg = "The Claude Code daemon refused %s." % (op or "the request")
+    if dcode == "EPROTO":
+        msg = ("This machine's Claude Code daemon speaks protocol %s (version %s); Tether speaks %d. "
+               "Update Claude Code or Tether." % (reply.get("serverProto"), reply.get("serverVersion"), DAEMON_PROTO))
+    return DaemonError(msg, DAEMON_CODE_MAP.get(dcode, "EDAEMON"), dcode)
+
+
+def claude_config_dir():
+    d = os.environ.get("CLAUDE_CONFIG_DIR")
+    return os.path.abspath(os.path.expanduser(d)) if d else os.path.join(HOME, ".claude")
+
+
+def daemon_runtime_root():
+    """/tmp/cc-daemon-<uid> (Termux: $PREFIX/tmp/cc-daemon-<uid>)."""
+    base = "/tmp"
+    if os.environ.get("TERMUX_VERSION") and os.environ.get("PREFIX"):
+        base = os.path.join(os.environ["PREFIX"], "tmp")
+    return os.path.join(base, "cc-daemon-%d" % os.getuid())
+
+
+def daemon_socket_hash(config_dir=None):
+    """The daemon names its runtime dir after sha256(resolved config dir)[:8]."""
+    import hashlib
+    p = os.path.abspath(config_dir or claude_config_dir())
+    return hashlib.sha256(p.encode("utf-8")).hexdigest()[:8]
+
+
+def daemon_lock():
+    """~/.claude/daemon.lock: {pid, version, startedAt, origin, ...} or None."""
+    d = read_json(os.path.join(claude_config_dir(), "daemon.lock"), None)
+    return d if isinstance(d, dict) else None
+
+
+def unix_socket_inodes(path):
+    """Inodes of listening unix sockets bound at path (Linux /proc/net/unix), or None off Linux."""
+    text = read_text("/proc/net/unix", None)
+    if text is None:
+        return None
+    out = set()
+    for line in text.splitlines()[1:]:
+        parts = line.split()
+        if len(parts) >= 8 and parts[7] == path:
+            out.add(parts[6])
+    return out
+
+
+def pid_holds_socket(pid, path):
+    """True / False when /proc says whether pid has the socket bound at path open, None when unknown."""
+    inodes = unix_socket_inodes(path)
+    if inodes is None or not pid:
+        return None
+    fd_dir = "/proc/%d/fd" % int(pid)
+    try:
+        fds = os.listdir(fd_dir)
+    except OSError:
+        return None
+    for fd in fds:
+        try:
+            link = os.readlink(os.path.join(fd_dir, fd))
+        except OSError:
+            continue
+        if link.startswith("socket:[") and link[8:-1] in inodes:
+            return True
+    return False
+
+
+def find_daemon_socket():
+    """Path of this user's daemon control socket, or None. The daemon puts it at
+    /tmp/cc-daemon-<uid>/<sha256(config dir)[:8]>/control.sock; when that is missing (another config dir
+    resolution), glob, preferring the socket held by the daemon.lock pid, then the newest."""
+    root = daemon_runtime_root()
+    expected = os.path.join(root, daemon_socket_hash(), "control.sock")
+    if os.path.exists(expected):
+        return expected
+    found = [p for p in glob.glob(os.path.join(root, "*", "control.sock")) if os.path.exists(p)]
+    if not found:
+        return None
+    if len(found) > 1:
+        lock = daemon_lock() or {}
+        pid = lock.get("pid") if isinstance(lock.get("pid"), int) else None
+        if pid:
+            held = [p for p in found if pid_holds_socket(pid, p)]
+            if held:
+                return held[0]
+        found.sort(key=lambda p: -mtime_ms(p))
+    return found[0]
+
+
+def daemon_control_key():
+    """The hex control key the daemon checks on dispatch / reply / attach / permission-response, or None."""
+    k = read_text(os.path.join(claude_config_dir(), "daemon", "control.key"), None)
+    k = k.strip() if k else None
+    return k or None
+
+
+def new_nonce():
+    return "%08x" % random.getrandbits(32)
+
+
+class LineBuffer(object):
+    """Splits a byte stream into complete lines; the rest waits for more bytes."""
+
+    def __init__(self):
+        self.buf = b""
+
+    def feed(self, data):
+        self.buf += data
+        out = []
+        while True:
+            i = self.buf.find(b"\n")
+            if i < 0:
+                return out
+            out.append(self.buf[:i])
+            self.buf = self.buf[i + 1:]
+
+
+def decode_json_line(raw):
+    """A reply line -> dict; DaemonError(EDAEMON) on anything else."""
+    try:
+        obj = json.loads(raw.decode("utf-8", "replace") if isinstance(raw, bytes) else raw)
+    except ValueError:
+        raise DaemonError("The Claude Code daemon sent an unreadable reply.", "EDAEMON")
+    if not isinstance(obj, dict):
+        raise DaemonError("The Claude Code daemon sent an unreadable reply.", "EDAEMON")
+    return obj
+
+
+def encode_frame(kind, payload):
+    """One attach frame: 4-byte BE length, 1-byte kind (0 data, 1 ctrl JSON), payload."""
+    if isinstance(payload, dict):
+        payload = json.dumps(payload, separators=(",", ":"))
+    if not isinstance(payload, bytes):
+        payload = payload.encode("utf-8")
+    n = len(payload)
+    return bytes(bytearray([(n >> 24) & 255, (n >> 16) & 255, (n >> 8) & 255, n & 255, kind & 255])) + payload
+
+
+class FrameDecoder(object):
+    """Incremental attach-frame decoder. feed(bytes) -> [(kind, payload)] where payload is bytes for data
+    frames and a dict for ctrl frames. Raises DaemonError(EDAEMON) on a malformed stream."""
+
+    def __init__(self):
+        self.buf = b""
+
+    def feed(self, data):
+        self.buf += data
+        out = []
+        while len(self.buf) >= FRAME_HEADER:
+            b = bytearray(self.buf[:FRAME_HEADER])
+            n = (b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]
+            kind = b[4]
+            if n > FRAME_MAX:
+                raise DaemonError("attach frame too large (%d bytes)" % n, "EDAEMON")
+            if len(self.buf) < FRAME_HEADER + n:
+                break
+            payload = self.buf[FRAME_HEADER:FRAME_HEADER + n]
+            self.buf = self.buf[FRAME_HEADER + n:]
+            if kind == FRAME_DATA:
+                out.append((FRAME_DATA, payload))
+            elif kind == FRAME_CTRL:
+                try:
+                    out.append((FRAME_CTRL, json.loads(payload.decode("utf-8"))))
+                except ValueError:
+                    raise DaemonError("attach sent a bad ctrl frame", "EDAEMON")
+            else:
+                raise DaemonError("attach sent an unknown frame kind %d" % kind, "EDAEMON")
+        return out
+
+
+class DaemonConn(object):
+    """One connection to the control socket (each request opens its own: the daemon ends the stream after
+    a one-shot reply)."""
+
+    def __init__(self, path=None, timeout=DAEMON_CONNECT_TIMEOUT):
+        self.path = path or find_daemon_socket()
+        if not self.path:
+            raise DaemonError("The Claude Code daemon is not running on this machine.", "ENODAEMON")
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(timeout)
+        try:
+            self.sock.connect(self.path)
+        except socket.timeout:
+            self.close()
+            raise DaemonError("The Claude Code daemon did not accept a connection in time.", "ETIMEOUT")
+        except (OSError, IOError) as e:
+            self.close()
+            if getattr(e, "errno", None) in (errno.ENOENT, errno.ECONNREFUSED, errno.ENOTSOCK):
+                raise DaemonError("The Claude Code daemon is not running on this machine.", "ENODAEMON")
+            raise DaemonError("Couldn't reach the Claude Code daemon: %s" % e, "ENODAEMON")
+        self.lines = LineBuffer()
+        self.pending = []
+
+    def close(self):
+        try:
+            self.sock.close()
+        except (OSError, IOError, AttributeError):
+            pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+    def send(self, obj):
+        data = (json.dumps(obj, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+        try:
+            self.sock.sendall(data)
+        except (OSError, IOError) as e:
+            raise DaemonError("Couldn't talk to the Claude Code daemon: %s" % e, "ENODAEMON")
+
+    def recv(self, timeout):
+        """Raw bytes, b"" at EOF. Raises DaemonError(ETIMEOUT)."""
+        self.sock.settimeout(timeout)
+        try:
+            return self.sock.recv(65536)
+        except socket.timeout:
+            raise DaemonError("The Claude Code daemon did not answer in time.", "ETIMEOUT")
+        except (OSError, IOError) as e:
+            if getattr(e, "errno", None) in (errno.ECONNRESET, errno.EPIPE):
+                return b""
+            raise DaemonError("Couldn't talk to the Claude Code daemon: %s" % e, "ENODAEMON")
+
+    def read_line(self, timeout=DAEMON_REPLY_TIMEOUT):
+        """The next JSON line as a dict, or None at EOF."""
+        deadline = time.time() + timeout
+        while not self.pending:
+            left = deadline - time.time()
+            if left <= 0:
+                raise DaemonError("The Claude Code daemon did not answer in time.", "ETIMEOUT")
+            data = self.recv(left)
+            if not data:
+                if self.lines.buf.strip():
+                    tail, self.lines.buf = self.lines.buf, b""
+                    return decode_json_line(tail)
+                return None
+            self.pending.extend(l for l in self.lines.feed(data) if l.strip())
+        return decode_json_line(self.pending.pop(0))
+
+    def take_buffered(self):
+        """Bytes already read past the reply line (start of a stream)."""
+        rest = b"\n".join(self.pending) + (b"\n" if self.pending else b"") + self.lines.buf
+        self.pending = []
+        self.lines.buf = b""
+        return rest
+
+
+def daemon_request(req, timeout=DAEMON_REPLY_TIMEOUT, path=None, retry_starting=True):
+    """Send one request, return its ok reply dict. Raises DaemonError mapped to the protocol codes.
+    Retries ESTARTING / ERESPAWNING (daemon adopting its workers after a restart or self-upgrade) for up to ~8 s,
+    as the CLI does."""
+    req = dict(req)
+    req.setdefault("proto", DAEMON_PROTO)
+    tries = 40 if retry_starting else 1
+    while True:
+        with DaemonConn(path) as c:
+            c.send(req)
+            reply = c.read_line(timeout)
+        if reply is None:
+            raise DaemonError("The Claude Code daemon closed the connection without answering.", "EDAEMON")
+        if reply.get("ok") is True:
+            return reply
+        tries -= 1
+        if reply.get("code") in ("ESTARTING", "ERESPAWNING") and tries > 0:
+            time.sleep(0.2)
+            continue
+        raise daemon_error_from_reply(reply, req.get("op"))
+
+
+def need_key():
+    k = daemon_control_key()
+    if not k:
+        raise DaemonError("The Claude Code daemon control key (~/.claude/daemon/control.key) is missing.", "EAUTH")
+    return k
+
+
+def daemon_ping(path=None):
+    """{ok, op, version, proto}; EPROTO when the daemon speaks another protocol."""
+    r = daemon_request({"op": "ping"}, timeout=5, path=path)
+    if r.get("proto") != DAEMON_PROTO:
+        raise DaemonError("This machine's Claude Code daemon speaks protocol %s (version %s); Tether speaks %d. "
+                          "Update Claude Code or Tether." % (r.get("proto"), r.get("version"), DAEMON_PROTO), "EPROTO")
+    return r
+
+
+def daemon_list():
+    """The daemon's live job records: [{short, nonce, sessionId, pid, cwd, state, tempo, detail, needs,
+    intent, name, source, cliVersion, startedAt, createdAt, outcome?, dying?}]."""
+    jobs = daemon_request({"op": "list"}).get("jobs")
+    return jobs if isinstance(jobs, list) else []
+
+
+def daemon_has(short):
+    """{alive, present, ready}."""
+    return daemon_request({"op": "has", "short": short})
+
+
+def daemon_dispatch(d, timeout_ms=5000):
+    """Dispatch a launch spec over the socket. The daemon waits for the worker's ack itself (up to
+    timeout_ms, capped at 30 s) and answers {ok, op:"dispatch", short, pid, messagingSock, via}."""
+    d = dict(d)
+    d.setdefault("nonce", new_nonce())
+    req = {"op": "dispatch", "d": d, "timeoutMs": int(timeout_ms), "auth": need_key()}
+    r = daemon_request(req, timeout=timeout_ms / 1000.0 + 5)
+    r.setdefault("nonce", d["nonce"])
+    return r
+
+
+def daemon_await_ack(short, nonce=None, timeout_ms=5000):
+    req = {"op": "await-ack", "short": short, "timeoutMs": int(timeout_ms)}
+    if nonce:
+        req["nonce"] = nonce
+    return daemon_request(req, timeout=timeout_ms / 1000.0 + 5)
+
+
+def daemon_reply(short, text, next_turn=False):
+    """Type text into a live worker (bracketed paste + Enter, or the rendezvous socket when it is blocked /
+    next_turn). ENOSESSION when the worker is retired: dispatch a resume with the same short first."""
+    req = {"op": "reply", "short": short, "text": text, "auth": need_key()}
+    if next_turn:
+        req["nextTurn"] = True
+    return daemon_request(req)
+
+
+def daemon_kill(short, signal_name=None, evict=False):
+    req = {"op": "kill", "short": short}
+    if signal_name:
+        req["signal"] = signal_name
+    if evict:
+        req["evict"] = True
+    return daemon_request(req)
+
+
+def daemon_resize(short, cols, rows, attach_id=None):
+    req = {"op": "resize", "short": short, "cols": int(cols), "rows": int(rows)}
+    if attach_id:
+        req["attachId"] = attach_id
+    return daemon_request(req)
+
+
+def daemon_subscribe(short, tail=None, timeout=None, path=None):
+    """Generator of subscribe events: {"type":"snapshot", record, streamTail:[str]} first, then
+    {"type":"stream", line:str} (raw pty text), {"type":"state", patch:{}}, {"type":"settled", outcome}.
+    Ends when the daemon closes the stream (after "settled"). timeout: max seconds of silence (None =
+    forever) before DaemonError(ETIMEOUT)."""
+    req = {"proto": DAEMON_PROTO, "op": "subscribe", "short": short}
+    if tail is not None:
+        req["tail"] = int(tail)
+    c = DaemonConn(path)
+    try:
+        c.send(req)
+        first = c.read_line(DAEMON_REPLY_TIMEOUT)
+        if first is None:
+            raise DaemonError("The Claude Code daemon closed the subscription without answering.", "EDAEMON")
+        if first.get("ok") is False:
+            raise daemon_error_from_reply(first, "subscribe")
+        yield first
+        while True:
+            ev = c.read_line(timeout if timeout is not None else 10 ** 9)
+            if ev is None:
+                return
+            yield ev
+    finally:
+        c.close()
+
+
+class DaemonAttach(object):
+    """A live `attach` (like `claude attach`): the reply dict in .reply ({ok, op, decModes, via, booting,
+    tempo, state, cached, stale, workerCliVersion}), then the session's terminal as RAW bytes (unframed),
+    starting with a repaint. Keys go back raw with send_keys() (e.g. b"\x1b[Z" Shift+Tab, b"\x1b" Esc).
+    close() detaches; the session keeps running."""
+
+    def __init__(self, short, cols=120, rows=40, caps=None, attach_id=None, path=None):
+        self.short = short
+        self.conn = DaemonConn(path)
+        req = {"proto": DAEMON_PROTO, "op": "attach", "short": short, "auth": need_key(),
+               "cols": int(cols), "rows": int(rows),
+               "caps": caps if caps is not None else {"terminal": None, "mux": None, "ssh": True}}
+        if attach_id:
+            req["attachId"] = attach_id
+        try:
+            self.conn.send(req)
+            reply = self.conn.read_line(DAEMON_REPLY_TIMEOUT)
+            if reply is None:
+                raise DaemonError("The Claude Code daemon closed the attach without answering.", "EDAEMON")
+            if reply.get("ok") is not True:
+                raise daemon_error_from_reply(reply, "attach")
+        except Exception:
+            self.conn.close()
+            raise
+        self.reply = reply
+        self.backlog = self.conn.take_buffered()
+
+    def read(self, timeout=1.0):
+        """Terminal bytes available within timeout (b"" when none arrived); None at EOF."""
+        if self.backlog:
+            out, self.backlog = self.backlog, b""
+            return out
+        try:
+            r, _w, _x = select.select([self.conn.sock], [], [], timeout)
+        except (OSError, IOError, ValueError):
+            return None
+        if not r:
+            return b""
+        try:
+            data = self.conn.recv(1.0)
+        except DaemonError:
+            return None
+        return data if data else None
+
+    def send_keys(self, data):
+        if not isinstance(data, bytes):
+            data = data.encode("utf-8")
+        try:
+            self.conn.sock.sendall(data)
+        except (OSError, IOError) as e:
+            raise DaemonError("The attached session went away: %s" % e, "ENOSESSION")
+
+    def close(self):
+        self.conn.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+
+def daemon_prompt_spec(cwd, prompt, flags=None, session_id=None, source="fleet", name=None, env=None,
+                       cols=None, rows=None):
+    """Launch spec for a NEW session: `claude --session-id <uuid> [flags] -- <prompt>` under the daemon."""
+    import uuid
+    sid = session_id or str(uuid.uuid4())
+    flags = list(flags or [])
+    args = ["--session-id", sid] + flags + (["--", prompt] if prompt else [])
+    d = {"proto": DAEMON_PROTO, "short": sid[:8], "sessionId": sid, "createdAt": now_ms(), "source": source,
+         "cwd": cwd, "launch": {"mode": "prompt", "args": args}, "env": dict(env or {}), "isolation": "none",
+         "respawnFlags": flags, "seed": {"intent": prompt or ""}}
+    if name:
+        d["seed"]["name"] = name
+    if cols and rows:
+        d["cols"], d["rows"] = int(cols), int(rows)
+    return d
+
+
+def daemon_resume_spec(session_id, cwd, flags=None, transcript_path=None, source="fleet", intent="", env=None,
+                       cols=None, rows=None):
+    """Launch spec that wakes an existing session under its own id (fork:false): same short, same transcript."""
+    flags = list(flags or [])
+    launch = {"mode": "resume", "sessionId": session_id, "fork": False, "flagArgs": flags}
+    if transcript_path:
+        launch["transcriptPath"] = transcript_path
+    d = {"proto": DAEMON_PROTO, "short": session_id[:8], "sessionId": session_id, "createdAt": now_ms(),
+         "source": source, "cwd": cwd, "launch": launch, "env": dict(env or {}), "isolation": "none",
+         "respawnFlags": flags, "seed": {"intent": intent or ""}}
+    if cols and rows:
+        d["cols"], d["rows"] = int(cols), int(rows)
+    return d
+
+
+def claude_auth_status():
+    """"ok" when Claude Code has credentials here, "needs_login" when it has none, "unknown" when they may
+    live in an OS keychain we can't see."""
+    if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
+        return "ok"
+    if file_size(os.path.join(claude_config_dir(), ".credentials.json")) > 0:
+        return "ok"
+    data = read_json(CLAUDE_JSON, {}) or {}
+    if isinstance(data.get("oauthAccount"), dict) or data.get("primaryApiKey"):
+        return "unknown" if platform.system() == "Darwin" else "ok"
+    return "needs_login" if platform.system() != "Darwin" else "unknown"
+
+
+def daemon_status():
+    """{running, proto, version, auth, socket?, pid?, error?, code?} — never raises."""
+    out = {"running": False, "proto": None, "version": None, "auth": claude_auth_status()}
+    try:
+        r = daemon_ping()
+        out.update({"running": True, "proto": r.get("proto"), "version": r.get("version")})
+    except DaemonError as e:
+        out.update({"error": str(e), "code": e.code})
+        if e.code == "EPROTO":
+            out["running"] = True
+    lock = daemon_lock()
+    if lock and isinstance(lock.get("pid"), int):
+        out["pid"] = lock["pid"]
+    if out["running"] and not daemon_control_key():
+        out["keyMissing"] = True
+    return out
+
+
+def cmd_daemon_status(opts):
+    emit(daemon_status())
+
+
+# ───────────────────────────────────────── sessions: the one-session model (HELPER_VERSION 2) ─────────────────────────────────────────
+#
+# One kind of thing, a session, keyed by its session id (short = first 8 hex). Sources: the daemon's job dirs
+# (~/.claude/jobs/<short>/state.json), the session registry (~/.claude/sessions/<pid>.json: kind bg|interactive),
+# the daemon's live job records (`list`), and transcripts in ~/.claude/projects with no job at all. Every write
+# goes through the daemon control socket; Tether never runs `claude` for these (decision 1), except to start the
+# daemon itself when it is not running.
+
+import collections
+import shutil
+import unicodedata
+
+TASKS_DIR = os.path.join(HOME, ".claude", "tasks")
+REMOVED_PATH = os.path.join(TETHER_DIR, "removed_sessions.json")
+SESSIONS_LIMIT = 60
+WATCH_LIMIT = 200
+FOLLOW_TAIL_CHUNKS = 100000  # the daemon keeps <= 256 KB of pty output per job; ask for all of it
+KEY_COLS, KEY_ROWS = 120, 40  # pty size while the helper is attached to press keys
+AGENT_ID_RE = re.compile(r"^[0-9A-Za-z_-]{1,64}$")
+# respawnFlags that make sense again on a wake (a resume): everything else (the first prompt, -n, -w, ...) is
+# a launch-time choice and must not be replayed.
+RESUME_VALUE_FLAGS = ("--model", "--permission-mode", "--agent", "--effort", "--fallback-model", "--add-dir",
+                      "--settings", "--mcp-config", "--allowedTools", "--allowed-tools", "--disallowedTools",
+                      "--disallowed-tools", "--append-system-prompt")
+RESUME_BOOL_FLAGS = ("--dangerously-skip-permissions", "--strict-mcp-config", "--verbose")
+
+
+def coded_error(message, code):
+    """A HelperError carrying a protocol code (EHELD, ENOSESSION, EUNTRUSTED, ...)."""
+    return DaemonError(message, code)
+
+
+def is_session_arg(v):
+    """A session id (uuid) or short (8 hex): the new protocol. Tether run ids ("r…") are the old one."""
+    v = (v or "").strip().lower()
+    return bool(UUID_RE.match(v) or SHORT_RE.match(v))
+
+
+def resume_flags(flags):
+    """The respawnFlags worth replaying on a wake (--model, --permission-mode, ...)."""
+    out = []
+    if not isinstance(flags, list):
+        return out
+    i = 0
+    while i < len(flags):
+        f = flags[i]
+        if not isinstance(f, str):
+            i += 1
+            continue
+        name = f.split("=", 1)[0]
+        if name in RESUME_VALUE_FLAGS:
+            if "=" in f:
+                out.append(f)
+            elif i + 1 < len(flags) and isinstance(flags[i + 1], str):
+                out += [f, flags[i + 1]]
+                i += 1
+        elif f in RESUME_BOOL_FLAGS:
+            out.append(f)
+        i += 1
+    return out
+
+
+# ── sources ──
+
+def job_states():
+    """short -> state.json of every daemon job dir that has one (spares have none)."""
+    out = {}
+    try:
+        names = os.listdir(JOBS_DIR)
+    except OSError:
+        return out
+    for n in names:
+        if not NATIVE_ID_RE.match(n):
+            continue
+        st = read_json(os.path.join(JOBS_DIR, n, "state.json"), None)
+        if isinstance(st, dict):
+            out[n] = st
+    return out
+
+
+def registry_entries():
+    """Live entries of ~/.claude/sessions/<pid>.json (dead pids skipped)."""
+    out = []
+    try:
+        names = os.listdir(CLAUDE_SESSIONS)
+    except OSError:
+        return out
+    for n in names:
+        if not n.endswith(".json"):
+            continue
+        r = read_json(os.path.join(CLAUDE_SESSIONS, n), None)
+        if not isinstance(r, dict):
+            continue
+        pid = r.get("pid") if isinstance(r.get("pid"), int) else None
+        if pid is None:
+            try:
+                pid = int(n[:-5])
+            except ValueError:
+                continue
+        if not pid_alive(pid, r.get("procStart")):
+            continue
+        r["pid"] = pid
+        out.append(r)
+    return out
+
+
+def daemon_records():
+    """short -> the daemon's job record, or None when the daemon can't be asked."""
+    try:
+        return dict((j["short"], j) for j in daemon_list() if isinstance(j, dict) and isinstance(j.get("short"), str))
+    except DaemonError:
+        return None
+
+
+def record_live(rec):
+    return bool(rec) and not rec.get("dying") and not rec.get("outcome")
+
+
+def read_removed():
+    v = read_json(REMOVED_PATH, {}) or {}
+    return v if isinstance(v, dict) else {}
+
+
+class Sources(object):
+    """One read of everything a Session is built from."""
+
+    def __init__(self, daemon=True, jobs=None, registry=None, records=None):
+        self.jobs = job_states() if jobs is None else jobs
+        self.registry = registry_entries() if registry is None else registry
+        self.daemon = (daemon_records() if daemon else None) if records is None else records
+        self.removed = read_removed()
+        self._runners = None
+
+    def runner_pids(self):
+        if self._runners is None:
+            self._runners = tether_runner_pids()
+        return self._runners
+
+    def slots(self):
+        """sessionId -> {sid, jobs:[(short, st)], rec, term, bg} for every session the daemon or a terminal knows."""
+        by = {}
+
+        def slot(sid):
+            return by.setdefault(sid, {"sid": sid, "jobs": [], "rec": None, "term": None, "bg": None})
+
+        for short, st in self.jobs.items():
+            sid = st.get("sessionId")
+            if isinstance(sid, str) and UUID_RE.match(sid):
+                slot(sid)["jobs"].append((short, st))
+        for short, rec in (self.daemon or {}).items():
+            sid = rec.get("sessionId")
+            if not (isinstance(sid, str) and UUID_RE.match(sid)):
+                continue
+            if rec.get("source") == "spare" and short not in self.jobs:
+                continue  # a pre-warmed worker waiting for its first dispatch: not a session yet
+            s = slot(sid)
+            if s["rec"] is None or (record_live(rec) and not record_live(s["rec"])):
+                s["rec"] = rec
+        for r in self.registry:
+            sid = r.get("sessionId")
+            if not (isinstance(sid, str) and UUID_RE.match(sid)):
+                continue
+            if r.get("kind") == "interactive":
+                if self._runners is not None or os.path.isdir(RUNS_DIR):
+                    if parent_pid(r["pid"]) in self.runner_pids():
+                        continue  # a Tether live run's `claude -p`: listed by `runs`
+                slot(sid)["term"] = r
+            elif r.get("kind") == "bg" and sid in by:
+                by[sid]["bg"] = r
+        return by
+
+
+# ── transcript facts (cached by size + mtime) ──
+
+def scan_tail_facts(data):
+    """lastText, model, permissionMode, PR links from the end of a transcript."""
+    f = {"lastText": None, "model": None, "permissionMode": None, "prs": []}
+    for raw in iter_lines_bytes(data):
+        if b'"permission-mode"' in raw:
+            o = parse_line(raw)
+            if o and o.get("type") == "permission-mode" and isinstance(o.get("permissionMode"), str):
+                f["permissionMode"] = o["permissionMode"]
+        elif b'"pr-link"' in raw:
+            o = parse_line(raw)
+            if o and o.get("type") == "pr-link" and o.get("prUrl"):
+                pr = {"id": str(o.get("prNumber") or ""), "href": o["prUrl"], "kind": "pr"}
+                if pr not in f["prs"]:
+                    f["prs"].append(pr)
+        elif b'"assistant"' in raw and b'"isSidechain":true' not in raw:
+            o = parse_line(raw)
+            msg = o.get("message") if o and o.get("type") == "assistant" and isinstance(o.get("message"), dict) else None
+            if not msg or o.get("isSidechain"):
+                continue
+            if isinstance(msg.get("model"), str) and not msg["model"].startswith("<"):
+                f["model"] = msg["model"]
+            parts = [b.get("text") for b in (msg.get("content") or []) if isinstance(b, dict)
+                     and b.get("type") == "text" and isinstance(b.get("text"), str) and b["text"].strip()]
+            if parts:
+                f["lastText"] = one_line("\n".join(parts), LAST_TEXT_CAP)
+    return f
+
+
+class TranscriptFacts(object):
+    """Head facts (SessionIndex) + tail facts per transcript, cached by (size, mtime)."""
+
+    def __init__(self):
+        self.index = SessionIndex("sessions_v2.json", count=False)
+        self.path = os.path.join(CACHE_DIR, "session_tails.json")
+        data = read_json(self.path, {}) or {}
+        self.tails = data.get("files") if isinstance(data.get("files"), dict) and data.get("v") == 1 else {}
+        self.dirty = False
+
+    def info(self, path, st):
+        return self.index.info(path, st)
+
+    def tail(self, path, st):
+        cur = self.tails.get(path)
+        size, mt = st.st_size, int(st.st_mtime * 1000)
+        if cur and cur.get("size") == size and cur.get("mtime") == mt:
+            return cur
+        facts = scan_tail_facts(read_tail(path, TAIL_BYTES))
+        if cur and cur.get("size", 0) <= size:
+            for k in ("lastText", "model", "permissionMode"):
+                if facts.get(k) is None:
+                    facts[k] = cur.get(k)
+            facts["prs"] = (cur.get("prs") or []) + [p for p in facts["prs"] if p not in (cur.get("prs") or [])]
+        facts.update(size=size, mtime=mt)
+        self.tails[path] = facts
+        self.dirty = True
+        return facts
+
+    def save(self):
+        self.index.save()
+        if not self.dirty:
+            return
+        for k in list(self.tails.keys()):
+            if not os.path.exists(k):
+                del self.tails[k]
+        try:
+            ensure_dir(CACHE_DIR)
+            write_json_atomic(self.path, {"v": 1, "files": self.tails})
+            self.dirty = False
+        except (OSError, IOError):
+            pass
+
+
+def all_transcripts(want_cwd=None):
+    """[(path, sid, stat)] of top-level transcripts, newest first (one project dir when want_cwd is given)."""
+    files = []
+    if not os.path.isdir(CLAUDE_PROJECTS):
+        return files
+    if want_cwd:
+        d = os.path.join(CLAUDE_PROJECTS, project_dir_name(want_cwd))
+        if os.path.isdir(d):
+            files.extend(list_session_files(d))
+    else:
+        try:
+            names = os.listdir(CLAUDE_PROJECTS)
+        except OSError:
+            names = []
+        for name in names:
+            d = os.path.join(CLAUDE_PROJECTS, name)
+            if os.path.isdir(d):
+                files.extend(list_session_files(d))
+    files.sort(key=lambda t: t[2].st_mtime, reverse=True)
+    return files
+
+
+def transcript_for(sid, st=None):
+    """Transcript path of a session: the job's linkScanPath when it is a real transcript, else a glob."""
+    p = (st or {}).get("linkScanPath")
+    if isinstance(p, str) and p.endswith(sid + ".jsonl") and p.startswith(CLAUDE_PROJECTS + os.sep) and os.path.isfile(p):
+        return p
+    return find_transcript(sid)
+
+
+# ── the Session object ──
+
+def best_job(slot):
+    """(short, state.json) of the job that speaks for this session: the live record's, else the newest."""
+    rec = slot.get("rec")
+    jobs = slot.get("jobs") or []
+    if rec:
+        for short, st in jobs:
+            if short == rec.get("short"):
+                return short, st
+    if jobs:
+        return max(jobs, key=lambda j: iso_to_ms(j[1].get("updatedAt")) or 0)
+    if rec:
+        return rec.get("short"), {}
+    return None, {}
+
+
+def session_state(held, live, st, rec, term, bg):
+    if held == "terminal":
+        return {"busy": "working", "waiting": "needs_you"}.get((term or {}).get("status"), "idle")
+    if live:
+        tempo = (rec or {}).get("tempo") or st.get("tempo")
+        status = (bg or {}).get("status")
+        if tempo == "blocked" or status == "waiting":
+            return "needs_you"
+        if tempo == "active" or status == "busy":
+            return "working"
+        if ((rec or {}).get("state") or st.get("state")) in ("starting", "resuming"):
+            return "working"
+        return "idle"
+    end = (rec or {}).get("outcome") or st.get("state")
+    if end in ("failed", "crashed", "error"):
+        return "failed"
+    return "done"
+
+
+def session_dialog(short, st, reg, tpath, cwd):
+    """pending {kind:"dialog", ...} for a blocking startup / session dialog (decision 5). Filled in by H4b."""
+    return None
+
+
+def session_pending(short, st, reg, tpath, cwd):
+    """What a needs_you session is waiting for: a question, a tool permission, or a dialog."""
+    wf = (reg or {}).get("waitingFor")
+    q = question_pending(short, st) if short else None
+    if q:
+        return dict(q, kind="question")
+    if wf in (None, "permission prompt") and tpath:
+        pt = pending_tool_use(tpath, cwd)
+        if pt:
+            return dict(pt, kind="question" if pt.get("toolName") == "AskUserQuestion" else "permission")
+    d = session_dialog(short, st, reg, tpath, cwd)
+    if d:
+        return d
+    return None
+
+
+def make_session(slot, facts=None, tfile=None):
+    """The protocol's Session object for one slot. tfile = (path, stat) when the caller already found it."""
+    sid = slot["sid"]
+    short, st = best_job(slot)
+    st = st or {}
+    rec, term, bg = slot.get("rec"), slot.get("term"), slot.get("bg")
+    if term and term.get("parkedJobId"):
+        term = None  # parked into a background job: the daemon holds it now
+    path = tfile[0] if tfile else transcript_for(sid, st)
+    tst = tfile[1] if tfile else None
+    if path and tst is None:
+        try:
+            tst = os.stat(path)
+        except OSError:
+            path = None
+    info, tail = {}, {}
+    if path and tst is not None:
+        facts = facts or TranscriptFacts()
+        info = facts.info(path, tst)
+        tail = facts.tail(path, tst)
+    live = record_live(rec)
+    held = "terminal" if term else ("daemon" if live else "none")
+    state = session_state(held, live, st, rec, term, bg)
+    reg = term or bg or {}
+    cwd = info.get("cwd") or st.get("cwd") or (rec or {}).get("cwd") or reg.get("cwd") or \
+        (decode_dir_name(os.path.basename(os.path.dirname(path))) if path else HOME)
+    waiting = reg.get("waitingFor") if isinstance(reg.get("waitingFor"), str) else None
+    if state == "needs_you" and not waiting:
+        waiting = one_line((rec or {}).get("needs") or st.get("needs"), 240) or None
+    if state != "needs_you":
+        waiting = None
+    flags = st.get("respawnFlags")
+    reg_name = reg.get("name") if reg.get("nameSource") not in (None, "derived") else None
+    name = st.get("name") or (rec or {}).get("name") or reg_name or info.get("customTitle") or info.get("aiTitle") or \
+        (session_title(info) if info else None) or sid[:8]
+    in_flight = st.get("inFlight") if isinstance(st.get("inFlight"), dict) else {}
+    output = st.get("output") if isinstance(st.get("output"), dict) else {}
+    jd = os.path.join(JOBS_DIR, short) if short and NATIVE_ID_RE.match(short) else None
+    updated = max([0, iso_to_ms(st.get("updatedAt")) or 0, mtime_ms(path) if path else 0,
+                   mtime_ms(os.path.join(jd, "state.json")) if jd else 0] +
+                  [v for v in (reg.get("updatedAt"), reg.get("statusUpdatedAt")) if isinstance(v, (int, float))])
+    started = (rec or {}).get("createdAt") or iso_to_ms(st.get("createdAt")) or info.get("firstAt") or \
+        reg.get("startedAt") or (int(tst.st_mtime * 1000) if tst is not None else None) or updated
+    children = st.get("children") if isinstance(st.get("children"), list) else None
+    if not children:
+        children = tail.get("prs") or []
+    return {
+        "sessionId": sid,
+        "short": sid[:8],
+        "cwd": cwd,
+        "name": one_line(name, 160),
+        "intent": one_line(st.get("intent") or (rec or {}).get("intent") or info.get("firstPrompt"), 240) or None,
+        "state": state,
+        "waitingFor": waiting,
+        "pending": session_pending(short, st, reg, path, cwd) if state == "needs_you" else None,
+        "process": "live" if (live or term) else "retired",
+        "heldBy": held,
+        "terminalPid": term.get("pid") if term else None,
+        "startedAt": int(started or 0),
+        "updatedAt": int(updated or started or 0),
+        "lastText": trim(output.get("result"), LAST_TEXT_CAP) if isinstance(output.get("result"), str) else tail.get("lastText"),
+        "tokens": st.get("tokens") if isinstance(st.get("tokens"), int) else None,
+        "model": flag_value(flags, "--model") or tail.get("model"),
+        # The daemon mirrors Shift+Tab into the job's respawn flags at once (the transcript only gets a
+        # permission-mode line on the next turn), and a wake resumes with them: they win unless a
+        # terminal holds the session.
+        "permissionMode": (tail.get("permissionMode") or flag_value(flags, "--permission-mode")) if held == "terminal"
+        else (flag_value(flags, "--permission-mode") or tail.get("permissionMode")),
+        "inFlight": {"tasks": in_flight.get("tasks") if isinstance(in_flight.get("tasks"), int) else 0,
+                     "queued": in_flight.get("queued") if isinstance(in_flight.get("queued"), int) else 0,
+                     "kinds": [k for k in (in_flight.get("kinds") or []) if isinstance(k, str)]},
+        "children": [c for c in children if isinstance(c, dict)],
+        "gitBranch": info.get("gitBranch"),
+    }
+
+
+def build_sessions(src, facts, want_cwd=None, limit=SESSIONS_LIMIT, before=None):
+    """Sessions newest first: every job / terminal session plus transcripts with no job."""
+    if want_cwd:
+        want_cwd = os.path.normpath(os.path.abspath(os.path.expanduser(want_cwd)))
+    slots = src.slots()
+    files = all_transcripts(want_cwd)
+    by_file = {}
+    for path, sid, st in files:
+        if sid not in by_file or st.st_size > by_file[sid][1].st_size:
+            by_file[sid] = (path, st)
+    cands = []
+    for sid, slot in slots.items():
+        tf = by_file.get(sid)
+        if tf is None and want_cwd:
+            tf = None  # the job may live in another project dir: found below by transcript_for
+        cands.append((slot, tf))
+    for sid, tf in by_file.items():
+        if sid in slots:
+            continue
+        gone = src.removed.get(sid)
+        if gone is not None and gone == tf[1].st_size:
+            continue  # removed with `rm`; shows again only if the transcript grows (resumed elsewhere)
+        cands.append(({"sid": sid, "jobs": [], "rec": None, "term": None, "bg": None}, tf))
+
+    def rough(c):
+        slot, tf = c
+        t = int(tf[1].st_mtime * 1000) if tf else 0
+        for short, st in slot["jobs"]:
+            t = max(t, iso_to_ms(st.get("updatedAt")) or 0)
+        return t
+
+    cands.sort(key=rough, reverse=True)
+    out = []
+    for slot, tf in cands:
+        if len(out) >= limit:
+            break
+        live = record_live(slot.get("rec")) or slot.get("term")
+        if before is not None and not live and rough((slot, tf)) >= before:
+            continue
+        try:
+            s = make_session(slot, facts, tf)
+        except (OSError, IOError, ValueError, KeyError, TypeError):
+            continue
+        if want_cwd and os.path.normpath(s["cwd"]) != want_cwd:
+            continue
+        if before is not None and s["updatedAt"] >= before:
+            continue
+        out.append(s)
+    out.sort(key=lambda s: s["updatedAt"], reverse=True)
+    return out
+
+
+def int_opt(opts, name, default=None):
+    v = opts.get(name)
+    if v is None or v == "":
+        return default
+    try:
+        return int(v)
+    except ValueError:
+        raise HelperError("--%s needs a number." % name)
+
+
+def cmd_sessions_v2(opts):
+    facts = TranscriptFacts()
+    out = build_sessions(Sources(), facts, opts.get("cwd"), max(1, int_opt(opts, "limit", SESSIONS_LIMIT)),
+                         int_opt(opts, "before"))
+    facts.save()
+    emit({"sessions": out})
+
+
+# ── resolving one session ──
+
+class SessionRef(object):
+    """Everything about one session: ids, its job, its registry entry, its transcript, its Session object."""
+
+    def __init__(self, arg, src=None):
+        arg = (arg or "").strip().lower()
+        if not is_session_arg(arg):
+            raise HelperError("Invalid session id.")
+        self.src = src or Sources()
+        slots = self.src.slots()
+        sid = arg if UUID_RE.match(arg) else None
+        if sid is None:
+            for s in slots.values():
+                if s["sid"].startswith(arg) or any(short == arg for short, _st in s["jobs"]) or \
+                        (s.get("rec") or {}).get("short") == arg:
+                    sid = s["sid"]
+                    break
+        if sid is None:
+            hits = glob.glob(os.path.join(glob.escape(CLAUDE_PROJECTS), "*", arg + "*.jsonl"))
+            sids = set(os.path.basename(p)[:-6] for p in hits if UUID_RE.match(os.path.basename(p)[:-6]))
+            if len(sids) == 1:
+                sid = sids.pop()
+        if sid is None:
+            raise coded_error("No session %s on this machine." % arg, "ENOSESSION")
+        self.sid = sid
+        self.slot = slots.get(sid) or {"sid": sid, "jobs": [], "rec": None, "term": None, "bg": None}
+        self.job_short, self.st = best_job(self.slot)
+        self.st = self.st or {}
+        self.tpath = transcript_for(sid, self.st)
+        if not self.tpath and not self.slot["jobs"] and not self.slot.get("rec") and not self.slot.get("term"):
+            raise coded_error("No session %s on this machine." % arg, "ENOSESSION")
+
+    @property
+    def short(self):
+        """The daemon short to talk to: the live record's, else the session's own."""
+        rec = self.slot.get("rec")
+        if record_live(rec):
+            return rec["short"]
+        return self.sid[:8]
+
+    def session(self, facts=None):
+        return make_session(self.slot, facts)
+
+    def held_by_terminal(self):
+        t = self.slot.get("term")
+        return bool(t) and not t.get("parkedJobId")
+
+    def live(self):
+        return record_live(self.slot.get("rec"))
+
+    def refresh(self):
+        return SessionRef(self.sid)
+
+
+def session_now(sid):
+    """A fresh Session for sid."""
+    return SessionRef(sid).session()
+
+
+def require_not_held(ref):
+    if ref.held_by_terminal():
+        raise coded_error("This session is open in a terminal on this machine. Type /bg there to continue it here.",
+                          "EHELD")
+
+
+def cmd_watch_v2(opts):
+    try:
+        signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+    except (AttributeError, ValueError):
+        pass
+    gone = ReaderGone()
+    want_cwd = opts.get("cwd")
+    limit = max(1, int_opt(opts, "limit", WATCH_LIMIT))
+    facts = TranscriptFacts()
+    last = None  # sid -> json
+    last_sig = None
+    last_build = 0.0
+    last_emit = time.time()
+    last_save = time.time()
+    records = None
+    last_records = 0.0
+    while True:
+        t = time.time()
+        sig = watch_signature(want_cwd)
+        if t - last_records >= 5 or sig != last_sig:
+            records = daemon_records()
+            last_records = t
+        if sig != last_sig or t - last_build >= 10 or last is None:
+            last_sig = sig
+            last_build = t
+            src = Sources(daemon=False, records=records if records is not None else {})
+            sessions = build_sessions(src, facts, want_cwd, limit)
+            cur = collections.OrderedDict((s["sessionId"], json.dumps(s, ensure_ascii=False, separators=(",", ":")))
+                                          for s in sessions)
+            if last is None:
+                sys.stdout.write('{"snapshot":[%s]}\n' % ",".join(cur.values()))
+                sys.stdout.flush()
+                last_emit = t
+            else:
+                changed = [v for k, v in cur.items() if last.get(k) != v]
+                removed = [k for k in last if k not in cur]
+                if changed or removed:
+                    sys.stdout.write('{"changed":[%s],"removed":%s}\n' % (",".join(changed), json.dumps(removed)))
+                    sys.stdout.flush()
+                    last_emit = t
+            last = cur
+        if t - last_save > 60:
+            facts.save()
+            last_save = t
+        if t - last_emit >= 15:
+            sys.stdout.write('{"hb":%d}\n' % now_ms())
+            sys.stdout.flush()
+            last_emit = t
+        if gone.wait(1.0):
+            facts.save()
+            return
+
+
+def watch_signature(want_cwd=None):
+    """Cheap change detector: stat() of job states, registry entries and transcripts (no parsing)."""
+    sig = []
+    for d in (JOBS_DIR,):
+        try:
+            names = sorted(os.listdir(d))
+        except OSError:
+            names = []
+        for n in names:
+            p = os.path.join(d, n, "state.json")
+            sig.append((n, mtime_ms(p), file_size(p)))
+    try:
+        for n in sorted(os.listdir(CLAUDE_SESSIONS)):
+            if n.endswith(".json"):
+                sig.append((n, mtime_ms(os.path.join(CLAUDE_SESSIONS, n))))
+    except OSError:
+        pass
+    for path, _sid, st in all_transcripts(want_cwd and os.path.abspath(os.path.expanduser(want_cwd))):
+        sig.append((path, st.st_size, int(st.st_mtime * 1000)))
+    sig.append(("removed", mtime_ms(REMOVED_PATH)))
+    return sig
+
+
+# ── follow: the session's events ──
+
+class WideScreen(Screen):
+    """Screen where East Asian wide characters take two cells, as in a real terminal."""
+
+    def _put(self, ch):
+        w = 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+        if self.c + w > self.cols:
+            self.c = 0
+            self._lf()
+        self.grid[self.r][self.c] = ch
+        if w == 2 and self.c + 1 < self.cols:
+            self.grid[self.r][self.c + 1] = ""
+        self.c += w
+
+
+PARTIAL_ESC_RE = re.compile(r"\x1b(?:\[[0-9;?<=>]*[ -/]*|\][^\x07\x1b]*|[()])?$")
+SPINNER_RE = re.compile(u"^\\s{0,4}[·✢✳✶✻✽*∗]\\s+(\\S[^()…]*…)\\s*(?:\\((.*?)\\)?)?\\s*$")
+MESSAGE_GLYPHS = (u"●", u"⏺")  # ● (Linux) / ⏺ (macOS)
+TOOL_LINE_RE = re.compile(r"^[A-Za-z_][\w.:-]*\(.*\)?\s*$|.*\(ctrl\+o to expand\)\s*$")
+LIST_START_RE = re.compile(u"^(?:[-*+•]\\s|\\d+[.)]\\s|#|>|\\||```|⎿)")
+
+
+def parse_spinner(paren):
+    """(elapsedS, tokens) from the spinner's "(12s · ↓ 1.2k tokens · thinking)" part."""
+    el = tok = None
+    if paren:
+        m = re.search(r"(?:(\d+)h\s*)?(?:(\d+)m\s*)?(\d+)s\b", paren)
+        if m:
+            el = int(m.group(1) or 0) * 3600 + int(m.group(2) or 0) * 60 + int(m.group(3))
+        m = re.search(u"[↓↑]\\s*([\\d.,]+)\\s*([kKmM]?)\\s*tokens", paren)
+        if m:
+            try:
+                n = float(m.group(1).replace(",", ""))
+                tok = int(round(n * {"k": 1000, "m": 1000000}.get(m.group(2).lower(), 1)))
+            except ValueError:
+                tok = None
+    return el, tok
+
+
+def soft_wrapped(prev_raw, nxt, width):
+    """True when nxt continues prev_raw's line: prev was near full width and nxt's first word would not have fit."""
+    if width < 40 or not nxt.strip() or not prev_raw.strip():
+        return False
+    t = nxt.strip()
+    if LIST_START_RE.match(t):
+        return False
+    word = t.split()[0]
+    n = len(prev_raw.rstrip())
+    return n >= width * 0.6 and n + 1 + len(word) > width - 1
+
+
+def is_rule(line):
+    t = line.strip()
+    return len(t) > 20 and set(t) <= set(u"─━ ")
+
+
+def input_box_top(lines):
+    """Index of the rule above the prompt box (── / ❯ / ──) at the bottom of the screen, or None."""
+    for i in range(len(lines) - 1, 0, -1):
+        if lines[i].lstrip().startswith(u"❯"):
+            j = i - 1
+            while j >= 0 and not lines[j].strip():
+                j -= 1
+            return j if j >= 0 and is_rule(lines[j]) else None
+    return None
+
+
+def screen_draft(lines, working=False):
+    """(draft text or None, status {verb, elapsedS, tokens} or None) from a rendered screen: the in-progress
+    reply is the block after the last ● above the spinner line; soft-wrapped lines are joined again.
+    While some replies stream (numbered lists) the CLI drops the spinner: with working=True (the session
+    is mid-turn) the prompt box's top rule anchors the block instead."""
+    spin = None
+    for i in range(len(lines) - 1, -1, -1):
+        if SPINNER_RE.match(lines[i]):
+            spin = i
+            break
+    status = None
+    if spin is None:
+        spin = input_box_top(lines) if working else None
+        if spin is None:
+            return None, None
+    else:
+        m = SPINNER_RE.match(lines[spin])
+        el, tok = parse_spinner(m.group(2))
+        status = {"verb": m.group(1).strip(), "elapsedS": el, "tokens": tok}
+    start = None
+    for i in range(spin - 1, -1, -1):
+        t = lines[i].lstrip()
+        if t.startswith(MESSAGE_GLYPHS):
+            start = i
+            break
+        if t.startswith(u"❯") or is_rule(t):
+            break  # the prompt echo or a rule: nothing streamed since
+    if start is None:
+        return None, status
+    block = lines[start:spin]
+    while block and not block[-1].strip():
+        block.pop()
+    if not block:
+        return None, status
+    first = block[0]
+    gi = len(first) - len(first.lstrip())
+    indent = gi + 2
+    rows = [first[gi + 1:].lstrip()]
+    for l in block[1:]:
+        lead = len(l) - len(l.lstrip())
+        rows.append(l[min(lead, indent):])
+    if TOOL_LINE_RE.match(rows[0].strip()) and (len(rows) == 1 or any(r.lstrip().startswith(u"⎿") for r in rows)):
+        return None, status  # a tool call (● Bash(ls) / ⎿ output), not a reply
+    if any(r.lstrip().startswith(u"⎿") for r in rows[:2]):
+        return None, status
+    width = max(len(l.rstrip()) for l in lines) if lines else 0
+    out, raws = [], []
+    for raw, text in zip(block, rows):
+        if out and soft_wrapped(raws[-1], text, width) and out[-1].strip():
+            out[-1] = out[-1].rstrip() + " " + text.strip()
+        else:
+            out.append(text.rstrip())
+        raws.append(raw)
+    text = "\n".join(out).strip("\n")
+    return (text or None), status
+
+
+class ScreenTracker(object):
+    """Replays the subscribe stream into a big virtual screen (the renderer positions absolutely from the top,
+    so a grid larger than the real pty renders the same) and cuts drafts / status from it."""
+
+    def __init__(self, rows=150, cols=400):
+        self.rows, self.cols = rows, cols
+        self.reset()
+
+    def reset(self):
+        self.screen = WideScreen(self.rows, self.cols)
+        self.pending = ""
+        self.dirty = True
+
+    def feed(self, text):
+        if not text:
+            return
+        text = self.pending + text
+        m = PARTIAL_ESC_RE.search(text)
+        if m and m.start() < len(text):
+            self.pending = text[m.start():]
+            text = text[:m.start()]
+        else:
+            self.pending = ""
+        self.screen.feed(text)
+        self.dirty = True
+
+    def feed_tail(self, chunks):
+        """The snapshot's ring tail: start at the last full repaint (2J / alt screen) when there is one."""
+        raw = "".join(c for c in chunks if isinstance(c, str))
+        cut = max(raw.rfind("\x1b[2J"), raw.rfind("\x1b[?1049h"))
+        self.reset()
+        self.feed(raw[cut:] if cut > 0 else raw)
+
+    def read(self, working=False):
+        self.dirty = False
+        return screen_draft(self.screen.lines(), working)
+
+
+def text_key(s):
+    """Letters and digits only: what survives markdown rendering on the screen."""
+    return re.sub(r"[\W_]+", "", s or "", flags=re.U).lower()
+
+
+TN_FIELDS = ("task-id", "tool-use-id", "output-file", "status", "summary")
+PEER_RE = re.compile(r'<cross-session-message\s+([^>]*)>\n?(.*?)\n?</cross-session-message>', re.S)
+ATTR_RE = re.compile(r'([\w-]+)="([^"]*)"')
+TASK_STATUS = {"completed": "completed", "failed": "failed", "killed": "killed", "stopped": "killed",
+               "cancelled": "killed", "canceled": "killed", "error": "failed", "running": "running"}
+
+
+def tag_value(text, tag):
+    m = re.search(r"<%s>(.*?)</%s>" % (re.escape(tag), re.escape(tag)), text, re.S)
+    return m.group(1).strip() if m else None
+
+
+def peer_session_id(src):
+    """uds:/run/user/1000/cc-socks/<pid>.sock -> that live session's id, when the registry has it."""
+    m = re.search(r"/(\d+)\.sock$", src or "")
+    if not m:
+        return None
+    r = read_json(os.path.join(CLAUDE_SESSIONS, "%s.json" % m.group(1)), None)
+    sid = r.get("sessionId") if isinstance(r, dict) else None
+    return sid if isinstance(sid, str) and UUID_RE.match(sid) else None
+
+
+class TranscriptEvents(object):
+    """Turns transcript lines into follow events: line, peer, task, todos (subagent status is tracked here and
+    emitted by the follower)."""
+
+    def __init__(self, sid, tpath=None, sidechain_ok=False):
+        self.sid = sid
+        self.tpath = tpath
+        self.sidechain_ok = sidechain_ok
+        self.tool_uses = {}  # tool_use id -> (name, input)
+        self.results = set()  # tool_use ids with a result
+        self.tasks = {}  # taskId -> last task event
+        self.peers = set()
+        self.notified = set()  # agent task ids that reported completion
+        self.landed = collections.deque(maxlen=6)  # text_key of the newest assistant texts
+        self.todowrite = None
+
+    def task_output_path(self, task_id):
+        if not self.tpath:
+            return None
+        slug = os.path.basename(os.path.dirname(self.tpath))
+        return "/tmp/claude-%d/%s/%s/tasks/%s.output" % (os.getuid(), slug, self.sid, task_id)
+
+    def feed(self, raw, offset):
+        """Events for one raw transcript line. 'line' events are (raw JSON string, end offset) tuples."""
+        o = parse_line(raw)
+        if not o:
+            return []
+        evs = []
+        s = transcript_line_out(raw, sidechain_ok=self.sidechain_ok)
+        if s is not None:
+            evs.append(("line", s, offset))
+        t = o.get("type")
+        if t == "queue-operation" and o.get("operation") == "enqueue" and isinstance(o.get("content"), str):
+            evs += self.special_text(o["content"], iso_to_ms(o.get("timestamp")))
+        elif t == "user":
+            content = (o.get("message") or {}).get("content") if isinstance(o.get("message"), dict) else None
+            if isinstance(content, str):
+                evs += self.special_text(content, iso_to_ms(o.get("timestamp")))
+            elif isinstance(content, list):
+                for b in content:
+                    if isinstance(b, dict) and b.get("type") == "tool_result" and b.get("tool_use_id"):
+                        evs += self.tool_result(b, o.get("toolUseResult"))
+                    elif isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str):
+                        evs += self.special_text(b["text"], iso_to_ms(o.get("timestamp")))
+        elif t == "assistant" and (self.sidechain_ok or not o.get("isSidechain")):
+            msg = o.get("message") if isinstance(o.get("message"), dict) else {}
+            for b in msg.get("content") or []:
+                if not isinstance(b, dict):
+                    continue
+                if b.get("type") == "tool_use" and b.get("id"):
+                    inp = b.get("input") if isinstance(b.get("input"), dict) else {}
+                    self.tool_uses[b["id"]] = (b.get("name"), inp)
+                    if b.get("name") == "TodoWrite" and isinstance(inp.get("todos"), list):
+                        self.todowrite = [{"id": str(i + 1), "subject": one_line(x.get("content") or x.get("subject"), 300) or "",
+                                           "status": x.get("status") if x.get("status") in ("pending", "in_progress", "completed") else "pending"}
+                                          for i, x in enumerate(inp["todos"]) if isinstance(x, dict)]
+                        evs.append({"e": "todos", "listId": self.sid, "items": self.todowrite})
+                elif b.get("type") == "text" and isinstance(b.get("text"), str) and b["text"].strip():
+                    self.landed.append(text_key(b["text"]))
+                    evs.append(("landed",))
+        return evs
+
+    def special_text(self, text, at):
+        evs = []
+        if "<cross-session-message" in text:
+            for m in PEER_RE.finditer(text):
+                attrs = dict(ATTR_RE.findall(m.group(1)))
+                body = m.group(2).strip()
+                key = (attrs.get("from"), body)
+                if key in self.peers:
+                    continue
+                self.peers.add(key)
+                evs.append({"e": "peer", "dir": "in", "from": attrs.get("from") or "", "fromName": attrs.get("from-name") or "",
+                            "fromSessionId": peer_session_id(attrs.get("from")), "text": body, "at": at or 0})
+        if "<task-notification>" in text:
+            for chunk in text.split("<task-notification>")[1:]:
+                ev = self.notification(chunk.split("</task-notification>")[0])
+                if ev:
+                    evs.append(ev)
+        return evs
+
+    def notification(self, body):
+        tid = tag_value(body, "task-id")
+        if not tid:
+            return None
+        status = TASK_STATUS.get((tag_value(body, "status") or "").lower(), "completed")
+        tuid = tag_value(body, "tool-use-id") or ""
+        prev = self.tasks.get(tid) or {}
+        summary = one_line(tag_value(body, "summary"), 300) or prev.get("summary") or ""
+        kind = prev.get("kind") or self.kind_of(tuid) or ("agent" if summary.startswith("Agent ") else
+                                                          "shell" if summary.startswith("Background command") else
+                                                          "monitor" if summary.startswith("Monitor") else "other")
+        ev = {"e": "task", "taskId": tid, "toolUseId": tuid or prev.get("toolUseId") or "", "kind": kind,
+              "status": status, "summary": summary,
+              "outputFile": tag_value(body, "output-file") or prev.get("outputFile") or self.task_output_path(tid) or ""}
+        if kind == "agent" and status != "running":
+            self.notified.add(tid)
+        if prev == ev:
+            return None
+        self.tasks[tid] = ev
+        return ev
+
+    def kind_of(self, tool_use_id):
+        name = (self.tool_uses.get(tool_use_id) or (None, None))[0]
+        return {"Bash": "shell", "Monitor": "monitor", "Agent": "agent", "Task": "agent"}.get(name)
+
+    def tool_result(self, b, tur):
+        tid = b["tool_use_id"]
+        self.results.add(tid)
+        name, inp = self.tool_uses.get(tid) or (None, {})
+        inp = inp or {}
+        task_id = kind = None
+        if isinstance(tur, dict):
+            if isinstance(tur.get("backgroundTaskId"), str):
+                task_id = tur["backgroundTaskId"]
+                kind = {"Monitor": "monitor"}.get(name, "shell" if name in (None, "Bash") else "other")
+            elif (tur.get("isAsync") or tur.get("status") == "async_launched") and isinstance(tur.get("agentId"), str):
+                task_id, kind = tur["agentId"], "agent"
+            elif name == "Monitor":
+                for k in ("taskId", "monitorId", "id"):
+                    if isinstance(tur.get(k), str):
+                        task_id, kind = tur[k], "monitor"
+                        break
+        if not task_id:
+            return []
+        text = b.get("content")
+        if isinstance(text, list):
+            text = " ".join(x.get("text") or "" for x in text if isinstance(x, dict))
+        m = re.search(r"written to:\s*(\S+?\.output)", text or "")
+        summary = one_line(inp.get("description") or inp.get("command") or inp.get("prompt") or
+                           (tur.get("description") if isinstance(tur, dict) else None), 300) or ""
+        ev = {"e": "task", "taskId": task_id, "toolUseId": tid, "kind": kind, "status": "running",
+              "summary": summary, "outputFile": (m.group(1) if m else None) or self.task_output_path(task_id) or ""}
+        if self.tasks.get(task_id, {}).get("status") not in (None, "running"):
+            return []  # already finished (a notification came first)
+        self.tasks[task_id] = ev
+        return [ev]
+
+
+def read_task_list(list_id):
+    """[{id, subject, status}] of ~/.claude/tasks/<listId>/<n>.json, in id order."""
+    d = os.path.join(TASKS_DIR, list_id)
+    items = []
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return None
+    for n in names:
+        if not n.endswith(".json") or n.startswith("."):
+            continue
+        t = read_json(os.path.join(d, n), None)
+        if not isinstance(t, dict) or t.get("status") == "deleted":
+            continue
+        items.append({"id": str(t.get("id") or n[:-5]), "subject": one_line(t.get("subject"), 300) or "",
+                      "status": t.get("status") if t.get("status") in ("pending", "in_progress", "completed") else "pending"})
+
+    def order(x):
+        try:
+            return (0, int(x["id"]))
+        except ValueError:
+            return (1, x["id"])
+
+    items.sort(key=order)
+    return items
+
+
+def task_list_signature(list_id):
+    d = os.path.join(TASKS_DIR, list_id)
+    try:
+        return tuple(sorted((n, mtime_ms(os.path.join(d, n)), file_size(os.path.join(d, n))) for n in os.listdir(d)
+                            if n.endswith(".json")))
+    except OSError:
+        return None
+
+
+def subagents_dir(tpath, sid):
+    return os.path.join(os.path.dirname(tpath), sid, "subagents") if tpath else None
+
+
+def read_subagents(tpath, sid):
+    """agentId -> meta ({agentType, description, toolUseId, model, requestShape}) of the session's subagents."""
+    d = subagents_dir(tpath, sid)
+    out = {}
+    try:
+        names = os.listdir(d) if d else []
+    except OSError:
+        return out
+    for n in names:
+        if n.startswith("agent-") and n.endswith(".meta.json"):
+            meta = read_json(os.path.join(d, n), None)
+            if isinstance(meta, dict):
+                out[n[len("agent-"):-len(".meta.json")]] = meta
+    return out
+
+
+class Follower(object):
+    """`follow <sid>`: history, caughtUp, then live events until the reader goes."""
+
+    TICK = 0.2
+
+    def __init__(self, ref, from_offset=0, out=None, gone=None):
+        self.ref = ref
+        self.sid = ref.sid
+        self.out = out or sys.stdout
+        self.gone = gone or ReaderGone()
+        self.tpath = ref.tpath
+        self.pos = max(0, from_offset or 0)
+        self.tev = TranscriptEvents(self.sid, self.tpath)
+        self.subagents = {}  # agentId -> last emitted event
+        self.metas = {}
+        self.sub = None
+        self.sub_lines = LineBuffer()
+        self.screen = ScreenTracker()
+        self.draft = None
+        self.status = None
+        self.clear_at = None
+        self.last_render = 0.0
+        self.session_json = None
+        self.working = False  # the session is mid-turn (state "working"): lets drafts anchor without a spinner
+        self.state_dirty = True
+        self.next_state = 0.0
+        self.next_live_check = 0.0
+        self.next_poll = 0.0
+        self.todo_sig = None
+        self.todo_items = None
+        self.state_sig = None
+        self.state_min = 0.0
+        self.facts = TranscriptFacts()
+
+    # ── output ──
+    def write(self, s):
+        self.out.write(s)
+        self.out.write("\n")
+
+    def flush(self):
+        self.out.flush()
+
+    def emit(self, obj):
+        self.write(json.dumps(obj, ensure_ascii=False, separators=(",", ":")))
+
+    def emit_line(self, s, offset):
+        self.write('{"e":"line","line":%s,"offset":%d}' % (s, offset))
+
+    # ── transcript ──
+    def read_transcript(self, limit=None):
+        """New complete lines from self.pos -> (events, consumed)."""
+        evs = []
+        if not self.tpath:
+            return evs
+        try:
+            with open(self.tpath, "rb") as f:
+                f.seek(self.pos)
+                data = f.read(limit) if limit else f.read()
+        except (OSError, IOError):
+            return evs
+        nl = data.rfind(b"\n")
+        if nl < 0:
+            return evs
+        start = self.pos
+        for raw in data[:nl + 1].split(b"\n")[:-1]:
+            start += len(raw) + 1
+            if raw.strip():
+                evs.extend(self.tev.feed(raw, start))
+        self.pos += nl + 1
+        return evs
+
+    def emit_events(self, evs):
+        for ev in evs:
+            if isinstance(ev, tuple):
+                if ev[0] == "line":
+                    self.emit_line(ev[1], ev[2])
+                elif ev[0] == "landed":
+                    self.on_landed()
+            else:
+                self.emit(ev)
+                if ev.get("e") == "task":
+                    self.update_subagents()
+
+    def history(self):
+        size = file_size(self.tpath) if self.tpath else -1
+        if self.pos > max(size, 0):
+            self.pos = 0  # replaced: start over
+        evs = self.read_transcript()
+        out = []
+        total = 0
+        for ev in evs:
+            if isinstance(ev, tuple):
+                if ev[0] == "line":
+                    s = '{"e":"line","line":%s,"offset":%d}' % (ev[1], ev[2])
+                else:
+                    continue
+            else:
+                s = json.dumps(ev, ensure_ascii=False, separators=(",", ":"))
+            out.append(s)
+            total += len(s) + 1
+        dropped = 0
+        while total > TRANSCRIPT_MAX_BYTES and len(out) > 1:
+            total -= len(out[0]) + 1
+            out.pop(0)
+            dropped += 1
+        if dropped:
+            out.insert(0, '{"e":"line","line":%s}' % json.dumps({"type": "tether-truncated", "droppedLines": dropped}))
+        for s in out:
+            self.write(s)
+
+    # ── subagents / todos ──
+    def subagent_event(self, aid, meta):
+        background = meta.get("requestShape") == "background"
+        tuid = meta.get("toolUseId") or ""
+        if background:
+            done = aid in self.tev.notified
+        else:
+            done = bool(tuid) and tuid in self.tev.results
+        name, inp = self.tev.tool_uses.get(tuid) or (None, {})
+        inp = inp or {}
+        return {"e": "subagent", "agentId": aid, "agentType": meta.get("agentType") or inp.get("subagent_type") or "",
+                "description": meta.get("description") or inp.get("description") or "", "toolUseId": tuid,
+                "model": meta.get("model") or inp.get("model") or "", "background": background,
+                "status": "done" if done else "running"}
+
+    def update_subagents(self, rescan=False, emit=True):
+        if rescan:
+            self.metas = read_subagents(self.tpath, self.sid)
+        for aid, meta in self.metas.items():
+            ev = self.subagent_event(aid, meta)
+            if self.subagents.get(aid) != ev:
+                self.subagents[aid] = ev
+                if emit:
+                    self.emit(ev)
+
+    def update_todos(self, force=False):
+        sig = task_list_signature(self.sid)
+        if sig is None and not force:
+            return
+        if sig == self.todo_sig and not force:
+            return
+        self.todo_sig = sig
+        items = read_task_list(self.sid) if sig is not None else None
+        if items is None:
+            items = self.tev.todowrite
+        if items is None or items == self.todo_items:
+            return
+        self.todo_items = items
+        self.emit({"e": "todos", "listId": self.sid, "items": items})
+
+    # ── state ──
+    def state_signature(self):
+        p = os.path.join(JOBS_DIR, self.ref.short, "state.json")
+        sig = [mtime_ms(p), file_size(p), file_size(self.tpath) if self.tpath else -1]
+        try:
+            sig.append(tuple(sorted((n, mtime_ms(os.path.join(CLAUDE_SESSIONS, n))) for n in os.listdir(CLAUDE_SESSIONS))))
+        except OSError:
+            pass
+        return sig
+
+    def update_state(self, now, force=False):
+        if not force and now < self.state_min:
+            return
+        sig = self.state_signature()
+        if not force and not self.state_dirty and sig == self.state_sig and now < self.next_state:
+            return
+        self.state_sig = sig
+        self.state_dirty = False
+        self.next_state = now + 5.0
+        self.state_min = now + 1.0
+        try:
+            self.ref = SessionRef(self.sid)
+        except HelperError:
+            return
+        if self.ref.tpath and self.ref.tpath != self.tpath and not self.tpath:
+            self.tpath = self.ref.tpath
+            self.tev.tpath = self.tpath
+        sess = self.ref.session(self.facts)
+        s = json.dumps(sess, ensure_ascii=False, separators=(",", ":"))
+        working = sess.get("state") == "working"
+        if working != self.working:
+            self.working = working
+            self.screen.dirty = True
+        if s != self.session_json:
+            self.session_json = s
+            self.write('{"e":"state","session":%s}' % s)
+
+    # ── the daemon's screen stream ──
+    def open_subscription(self):
+        try:
+            conn = DaemonConn()
+            conn.send({"proto": DAEMON_PROTO, "op": "subscribe", "short": self.ref.short, "tail": FOLLOW_TAIL_CHUNKS})
+        except DaemonError:
+            return
+        self.sub = conn
+        self.sub_lines = LineBuffer()
+
+    def close_subscription(self):
+        if self.sub:
+            self.sub.close()
+        self.sub = None
+        self.set_status(None)
+        if self.draft is not None:
+            self.clear_draft()
+
+    def read_subscription(self):
+        try:
+            data = self.sub.recv(1.0)
+        except DaemonError:
+            data = b""
+        if not data:
+            self.close_subscription()
+            self.state_dirty = True
+            return
+        for raw in self.sub_lines.feed(data):
+            if not raw.strip():
+                continue
+            try:
+                ev = decode_json_line(raw)
+            except DaemonError:
+                continue
+            t = ev.get("type")
+            if ev.get("ok") is False:
+                self.close_subscription()
+                self.state_dirty = True
+                return
+            if t == "snapshot":
+                self.screen.feed_tail(ev.get("streamTail") or [])
+            elif t == "stream":
+                self.screen.feed(ev.get("line") or "")
+            elif t == "state":
+                self.state_dirty = True
+            elif t == "settled":
+                self.close_subscription()
+                self.state_dirty = True
+                return
+
+    def set_status(self, st):
+        if st != self.status:
+            self.status = st
+            if st:
+                ev = {"e": "status", "verb": st["verb"]}
+                if st.get("elapsedS") is not None:
+                    ev["elapsedS"] = st["elapsedS"]
+                if st.get("tokens") is not None:
+                    ev["tokens"] = st["tokens"]
+                self.emit(ev)
+            else:
+                self.emit({"e": "status"})
+
+    def clear_draft(self):
+        self.draft = None
+        self.clear_at = None
+        self.emit({"e": "draftClear"})
+
+    def landed_draft(self, text):
+        k = text_key(text)
+        return bool(k) and any(k in l for l in self.tev.landed)
+
+    def on_landed(self):
+        if self.draft is not None:
+            self.clear_draft()
+
+    def render(self, now):
+        if not self.screen.dirty or now - self.last_render < 0.15:
+            return
+        self.last_render = now
+        text, st = self.screen.read(self.working)
+        self.set_status(st)
+        if text and not self.landed_draft(text):
+            self.clear_at = None
+            if text != self.draft:
+                self.draft = text
+                self.emit({"e": "draft", "text": text})
+        elif self.draft is not None:
+            if text and self.landed_draft(text):
+                self.clear_draft()
+            elif st is None and self.clear_at is None:
+                self.clear_at = now + 3.0  # the turn ended: give the transcript line a moment to land
+            elif st is not None:
+                self.clear_draft()
+
+    # ── main loop ──
+    def run(self):
+        self.metas = read_subagents(self.tpath, self.sid)
+        self.history()
+        self.update_subagents(emit=True)
+        self.update_todos(force=True)
+        self.update_state(time.time(), force=True)
+        self.write('{"e":"caughtUp","offset":%d}' % self.pos)
+        self.flush()
+        while True:
+            now = time.time()
+            if self.tpath is None and now >= self.next_poll:
+                self.tpath = transcript_for(self.sid, self.ref.st)
+                self.tev.tpath = self.tpath
+            if self.tpath:
+                if file_size(self.tpath) < self.pos:
+                    return  # replaced: the app re-follows from scratch
+                evs = self.read_transcript()
+                if evs:
+                    self.emit_events(evs)
+                    self.update_subagents()
+            if self.sub is None and now >= self.next_live_check:
+                self.next_live_check = now + 1.5
+                try:
+                    alive = daemon_has(self.ref.short).get("alive")
+                except DaemonError:
+                    alive = False
+                if alive and not self.ref.held_by_terminal():
+                    self.open_subscription()
+                    self.state_dirty = True
+            if now >= self.next_poll:
+                self.next_poll = now + 1.5
+                metas = read_subagents(self.tpath, self.sid)
+                if set(metas) != set(self.metas):
+                    self.metas = metas
+                self.update_subagents()
+                self.update_todos()
+            self.update_state(now)
+            self.render(now)
+            if self.clear_at is not None and now >= self.clear_at and self.draft is not None:
+                self.clear_draft()
+            self.flush()
+            if self.sub is not None:
+                try:
+                    r, _w, _x = select.select([self.sub.sock], [], [], self.TICK)
+                except (OSError, ValueError):
+                    r = []
+                    self.close_subscription()
+                if r:
+                    self.read_subscription()
+                if self.gone.wait(0):
+                    break
+            elif self.gone.wait(self.TICK):
+                break
+        if self.sub:
+            self.sub.close()
+
+
+def follow_agent(ref, agent_id, from_offset, out=None, gone=None):
+    """`follow <sid> --agent ID`: a subagent's transcript lines, caughtUp, then new lines."""
+    if not AGENT_ID_RE.match(agent_id or ""):
+        raise HelperError("Invalid agent id.")
+    d = subagents_dir(ref.tpath, ref.sid)
+    path = os.path.join(d, "agent-%s.jsonl" % agent_id) if d else None
+    if not path or not os.path.isfile(path):
+        raise coded_error("No subagent %s in this session." % agent_id, "ENOSESSION")
+    f = Follower(ref, from_offset, out, gone)
+    f.tpath = path
+    f.tev = TranscriptEvents(ref.sid, path, sidechain_ok=True)
+    f.history()
+    f.write('{"e":"caughtUp","offset":%d}' % f.pos)
+    f.flush()
+    while True:
+        if file_size(path) < f.pos:
+            return
+        for ev in f.read_transcript():
+            if isinstance(ev, tuple) and ev[0] == "line":
+                f.emit_line(ev[1], ev[2])
+        f.flush()
+        if f.gone.wait(0.3):
+            return
+
+
+def cmd_follow_v2(opts, arg):
+    try:
+        signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+    except (AttributeError, ValueError):
+        pass
+    ref = SessionRef(arg)
+    off = int_opt(opts, "from", 0)
+    if opts.get("agent"):
+        return follow_agent(ref, opts["agent"], off)
+    Follower(ref, off).run()
+
+
+# ── writes ──
+
+KEY_BYTES = {"shift-tab": b"\x1b[Z", "esc": b"\x1b", "enter": b"\r", "up": b"\x1b[A", "down": b"\x1b[B",
+             "right": b"\x1b[C", "left": b"\x1b[D", "tab": b"\t", "space": b" ", "backspace": b"\x7f"}
+
+
+def key_chunks(keys):
+    """The protocol's keys -> raw byte chunks to type."""
+    if not isinstance(keys, list) or not keys:
+        raise HelperError("No keys given.")
+    out = []
+    for k in keys:
+        if isinstance(k, dict) and isinstance(k.get("text"), str):
+            if k["text"]:
+                out.append(k["text"].encode("utf-8"))
+        elif isinstance(k, str) and k in KEY_BYTES:
+            out.append(KEY_BYTES[k])
+        elif isinstance(k, str) and len(k) == 1 and k in "123456789":
+            out.append(k.encode())
+        else:
+            raise HelperError("Unknown key: %s" % (json.dumps(k)[:40],))
+    return out
+
+
+def drain(att, seconds, quiet=None):
+    """Reads (and drops) the attached terminal for up to seconds; stops early after quiet seconds of silence."""
+    end = time.time() + seconds
+    last = time.time()
+    got = bytearray()
+    while time.time() < end:
+        d = att.read(0.05)
+        if d is None:
+            break
+        if d:
+            got.extend(d)
+            last = time.time()
+        elif quiet is not None and got and time.time() - last >= quiet:
+            break
+    return bytes(got)
+
+
+def press_keys(short, chunks, gap=0.15):
+    """Attaches to a live session like `claude attach`, types the chunks, detaches. The session keeps running."""
+    with DaemonAttach(short, cols=KEY_COLS, rows=KEY_ROWS) as att:
+        drain(att, 2.0, quiet=0.35)  # the repaint after attaching
+        for c in chunks:
+            att.send_keys(c)
+            drain(att, gap)
+        drain(att, 0.4)
+
+
+class DaemonTui(Tui):
+    """Tui over the daemon's attach (same interface as the `claude attach` pty: pump/send/mark/text/close)."""
+
+    def __init__(self, short, cols=KEY_COLS, rows=KEY_ROWS):
+        self.buf = bytearray()
+        self.att = DaemonAttach(short, cols=cols, rows=rows)
+        if not self.pump(10.0, until=u"❯".encode("utf-8")):
+            self.close()
+            raise HelperError("Couldn't open the session's terminal.")
+        self.pump(1.0)
+
+    def pump(self, seconds, until=None):
+        end = time.time() + seconds
+        while time.time() < end:
+            d = self.att.read(0.05)
+            if d is None:
+                return False
+            if d:
+                self.buf.extend(d)
+                if until is not None and until in self.buf:
+                    return True
+        return until is None
+
+    def send(self, data, wait=0.8):
+        self.att.send_keys(data)
+        self.pump(wait)
+
+    def close(self):
+        self.att.close()
+
+
+def ensure_daemon(opts):
+    """Starts the daemon the way the CLI does (`claude daemon run --origin transient`) when it is not running."""
+    try:
+        return daemon_ping()
+    except DaemonError as e:
+        if e.code != "ENODAEMON":
+            raise
+    claude, login_path = resolve_claude(opts.get("claude"))
+    if not claude:
+        raise coded_error("The Claude Code daemon is not running and Claude Code was not found to start it.", "ENODAEMON")
+    spawned_by = json.dumps({"label": "tether", "cwd": HOME, "pid": os.getpid()}, separators=(",", ":"))
+    try:
+        subprocess.Popen([claude, "daemon", "run", "--origin", "transient", "--spawned-by", spawned_by],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         cwd=HOME, env=claude_env(claude, login_path), start_new_session=True)
+    except OSError as e:
+        raise coded_error("Couldn't start the Claude Code daemon: %s" % e, "ENODAEMON")
+    deadline = time.time() + 20
+    while True:
+        try:
+            return daemon_ping()
+        except DaemonError as e:
+            if e.code != "ENODAEMON" or time.time() > deadline:
+                raise
+        time.sleep(0.5)
+
+
+def with_images(text, images):
+    """Appends uploaded image paths to the text the way a dropped file lands in a terminal."""
+    paths = []
+    for p in images or []:
+        if not isinstance(p, str) or not p.startswith("/"):
+            raise HelperError("Image paths must be absolute paths on this machine.")
+        if not os.path.isfile(p):
+            raise HelperError("The image %s is not on this machine." % p)
+        paths.append(p.replace("\\", "\\\\").replace(" ", "\\ "))
+    text = (text or "").strip()
+    if not paths:
+        return text
+    return (text + " " if text else "") + " ".join(paths)
+
+
+def wait_ready(short, seconds=20.0):
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        try:
+            if daemon_has(short).get("ready"):
+                return True
+        except DaemonError:
+            pass
+        time.sleep(0.3)
+    return False
+
+
+def reply_retrying(short, text, seconds=10.0):
+    deadline = time.time() + seconds
+    while True:
+        try:
+            return daemon_reply(short, text)
+        except DaemonError as e:
+            if e.code not in ("ENOSESSION", "EDAEMON") or time.time() > deadline:
+                raise
+        time.sleep(0.5)
+
+
+def wait_session(sid, pred, seconds):
+    """Polls the session until pred(Session) or timeout; returns the last Session."""
+    deadline = time.time() + seconds
+    s = None
+    while True:
+        try:
+            s = session_now(sid)
+        except HelperError:
+            s = None
+        if (s is not None and pred(s)) or time.time() > deadline:
+            return s
+        time.sleep(0.4)
+
+
+def cmd_new(opts):
+    req = read_request()
+    cwd = native_cwd(req.get("cwd"))
+    prompt = req.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise HelperError("A new session needs a first message.")
+    if req.get("trust") is True:
+        trust_folder(cwd)
+    if not folder_trusted(cwd):
+        raise coded_error("Claude Code does not trust %s yet." % cwd, "EUNTRUSTED")
+    model = setting_arg(req.get("model"), MODEL_ARG_RE, "model")
+    mode = setting_arg(req.get("permissionMode"), None, "permission mode")
+    flags = []
+    if model and model != "default":
+        flags += ["--model", model]
+    if mode and mode != "default":
+        flags += ["--permission-mode", mode]
+    text = with_images(prompt, req.get("images"))
+    ensure_daemon(opts)
+    images = bool(req.get("images"))
+    # With images the first message goes in like a reply (a paste, so the paths become attached images).
+    d = daemon_prompt_spec(cwd, None if images else text, flags=flags,
+                           name=one_line(req.get("name"), 80) if isinstance(req.get("name"), str) else None)
+    d["seed"]["intent"] = text
+    r = daemon_dispatch(d, timeout_ms=20000)
+    short, sid = r.get("short") or d["short"], d["sessionId"]
+    if images:
+        wait_ready(short)
+        reply_retrying(short, text)
+    deadline = time.time() + 8
+    while time.time() < deadline and not os.path.isfile(os.path.join(JOBS_DIR, short, "state.json")):
+        time.sleep(0.25)
+    try:
+        s = session_now(sid)
+    except HelperError:
+        s = make_session({"sid": sid, "jobs": [], "rec": {"short": short, "sessionId": sid, "cwd": cwd, "tempo": "active",
+                                                         "createdAt": d["createdAt"]}, "term": None, "bg": None})
+    # The daemon writes the respawn flags a moment later: report what was asked for meanwhile.
+    s["model"] = s["model"] or (model if model and model != "default" else None)
+    s["permissionMode"] = s["permissionMode"] or (mode if mode and mode != "default" else None)
+    emit(s)
+
+
+def wake(opts, ref):
+    """Brings a retired session back under its own id: dispatch resume with the same short, no fork."""
+    if not ref.tpath:
+        raise coded_error("This session has no transcript to continue.", "ENOSESSION")
+    st = ref.st or {}
+    info = scan_head(ref.tpath)
+    cwd = info.get("cwd") if info.get("cwd") and os.path.isdir(info["cwd"]) else None
+    if not cwd:
+        cwd = st.get("cwd") if isinstance(st.get("cwd"), str) and os.path.isdir(st["cwd"]) else None
+    if not cwd:
+        raise HelperError("The session's folder no longer exists on this machine.")
+    ensure_daemon(opts)
+    spec = daemon_resume_spec(ref.sid, cwd, flags=resume_flags(st.get("respawnFlags")), transcript_path=ref.tpath,
+                              intent=st.get("intent") or "")
+    if st.get("name"):
+        spec["seed"]["name"] = st["name"]
+    r = daemon_dispatch(spec, timeout_ms=25000)
+    short = r.get("short") or spec["short"]
+    try:
+        daemon_await_ack(short, r.get("nonce"), 15000)
+    except DaemonError as e:
+        if e.code != "ETIMEOUT":
+            raise
+    wait_ready(short)
+    return short
+
+
+def cmd_send_v2(opts, arg):
+    req = read_request()
+    text = with_images(req.get("text") if isinstance(req.get("text"), str) else "", req.get("images"))
+    if not text:
+        raise HelperError("Nothing to send.")
+    ref = SessionRef(arg)
+    require_not_held(ref)
+    if ref.live():
+        try:
+            daemon_reply(ref.short, text)
+            emit({"ok": True, "woke": False})
+            return
+        except DaemonError as e:
+            if e.code != "ENOSESSION":
+                raise
+    short = wake(opts, ref)
+    reply_retrying(short, text)
+    emit({"ok": True, "woke": True})
+
+
+def live_ref(arg):
+    ref = SessionRef(arg)
+    require_not_held(ref)
+    if not ref.live():
+        raise coded_error("This session isn't running. Send it a message to wake it.", "ENOSESSION")
+    return ref
+
+
+def cmd_key(opts, arg):
+    req = read_request()
+    chunks = key_chunks(req.get("keys"))
+    ref = live_ref(arg)
+    press_keys(ref.short, chunks)
+    emit({"ok": True})
+
+
+def cmd_answer(opts, arg):
+    req = read_request()
+    decision = req.get("decision")
+    if decision not in ("allow", "allow_always", "deny"):
+        raise HelperError("decision must be allow, allow_always or deny.")
+    ref = live_ref(arg)
+    s = ref.session()
+    if s["state"] != "needs_you":
+        raise HelperError("There is no pending approval any more.")
+    # "1" is always Yes, "2" the "don't ask again" variant; Esc always cancels (numbering of "No" varies).
+    press_keys(ref.short, [{"allow": b"1", "allow_always": b"2", "deny": b"\x1b"}[decision]])
+    msg = req.get("message")
+    if decision == "deny" and isinstance(msg, str) and msg.strip():
+        reply_retrying(ref.short, msg.strip())
+    emit(wait_session(ref.sid, lambda x: x["state"] != "needs_you", 6.0) or s)
+
+
+def question_plan(questions, answers):
+    """[(kind, n_options, value)] keystroke plan for AskUserQuestion answers ({choices:[i…], other})."""
+    if len(answers) != len(questions):
+        raise HelperError("Answer every question (%d)." % len(questions))
+    plan = []
+    for q, a in zip(questions, answers):
+        opts_n = len(q.get("options") or [])
+        multi = bool(q.get("multiSelect"))
+        other = a.get("other") if isinstance(a, dict) else None
+        choices = [c for c in (a.get("choices") or []) if isinstance(c, int) and 0 <= c < opts_n] if isinstance(a, dict) else []
+        if isinstance(other, str) and other.strip() and not multi:
+            plan.append(("other", opts_n, other.strip().replace("\n", " ")))
+        elif multi:
+            if not choices:
+                raise HelperError("Pick at least one option for: %s" % (q.get("question") or "question"))
+            plan.append(("multi", opts_n, sorted(set(choices))))
+        else:
+            if len(choices) != 1:
+                raise HelperError("Pick one option for: %s" % (q.get("question") or "question"))
+            plan.append(("single", opts_n, choices[0]))
+    return plan
+
+
+def press_answers(tui, qs, questions, plan):
+    """Types the plan into the question UI (single = digit; multi = digits + →; other = n+1, paste, Enter)."""
+    if not goto_question(tui, qs, 0):
+        raise HelperError("Couldn't find the first question on the machine's screen.")
+    for i, (kind, opts_n, val) in enumerate(plan):
+        if i and not goto_question(tui, qs, i):
+            raise HelperError("Lost track of the questions on the machine's screen.")
+        if kind == "single":
+            tui.send(str(val + 1).encode(), 1.0)
+        elif kind == "other":
+            tui.send(str(opts_n + 1).encode(), 0.8)
+            tui.send(b"\x1b[200~" + val.encode("utf-8") + b"\x1b[201~", 1.0)
+            tui.send(b"\r", 1.0)
+        else:
+            for c in val:
+                tui.send(str(c + 1).encode(), 0.35)
+            tui.send(b"\x1b[C", 1.0)
+    if len(questions) > 1 or any(k == "multi" for k, _n, _v in plan):
+        for _ in range(3):
+            if "Submitanswers" in tui.text(max(0, tui.mark() - 6000)):
+                tui.send(b"1", 1.0)
+                break
+            tui.send(b"\x1b[C", 0.9)
+
+
+def cmd_ask(opts, arg):
+    req = read_request()
+    answers = req.get("answers")
+    if not isinstance(answers, list) or not answers:
+        raise HelperError("No answers given.")
+    ref = live_ref(arg)
+    if ref.session()["state"] != "needs_you":
+        raise HelperError("Claude isn't waiting for an answer any more.")
+    short = ref.short
+    st = job_state(short)
+    factory = lambda: DaemonTui(short)  # noqa: E731
+    qs, multi = ensure_multi(opts, short, st, tui_factory=factory)
+    if not qs:
+        raise HelperError("The pending prompt isn't a question.")
+    questions = [dict(q, multiSelect=bool(multi[i]) if multi and i < len(multi) else bool(q.get("multiSelect")))
+                 for i, q in enumerate(qs)]
+    plan = question_plan(questions, answers)
+    tui = factory()
+    try:
+        press_answers(tui, qs, questions, plan)
+    finally:
+        tui.close()
+    s = wait_session(ref.sid, lambda x: x["state"] != "needs_you", 6.0)
+    if s is None or s["state"] == "needs_you":
+        raise HelperError("Claude is still waiting — the answer may not have gone through. Try again.")
+    emit(s)
+
+
+def cmd_interrupt(opts, arg):
+    ref = live_ref(arg)
+    press_keys(ref.short, [b"\x1b"])
+    emit(wait_session(ref.sid, lambda x: x["state"] != "working", 3.0) or ref.session())
+
+
+def wait_gone(short, field, seconds):
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        try:
+            if not daemon_has(short).get(field):
+                return True
+        except DaemonError:
+            return True
+        time.sleep(0.3)
+    return False
+
+
+def cmd_stop_v2(opts, arg):
+    ref = SessionRef(arg)
+    require_not_held(ref)
+    if ref.live():
+        try:
+            daemon_kill(ref.short)
+        except DaemonError as e:
+            if e.code != "ENOSESSION":
+                raise
+        wait_gone(ref.short, "alive", 12.0)
+    emit({"ok": True})
+
+
+def cmd_rm_v2(opts, arg):
+    ref = SessionRef(arg)
+    require_not_held(ref)
+    shorts = set(short for short, _st in ref.slot.get("jobs") or [])
+    rec = ref.slot.get("rec")
+    if rec:
+        shorts.add(rec["short"])
+    for short in sorted(shorts):
+        try:
+            daemon_kill(short, evict=True)
+        except DaemonError as e:
+            if e.code not in ("ENOSESSION", "ENODAEMON"):
+                raise
+        wait_gone(short, "present", 10.0)
+        jd = os.path.join(JOBS_DIR, short)
+        if NATIVE_ID_RE.match(short) and os.path.isdir(jd) and os.path.dirname(os.path.abspath(jd)) == os.path.abspath(JOBS_DIR):
+            shutil.rmtree(jd, ignore_errors=True)
+    if ref.tpath:
+        removed = read_removed()
+        removed[ref.sid] = file_size(ref.tpath)
+        try:
+            ensure_dir(TETHER_DIR)
+            write_json_atomic(REMOVED_PATH, removed)
+        except (OSError, IOError):
+            pass
+    emit({"ok": True})
+
+
 # ───────────────────────────────────────── main ─────────────────────────────────────────
 
 def parse_args(argv):
@@ -3424,7 +5755,7 @@ def parse_args(argv):
     i = 0
     while i < len(argv):
         a = argv[i]
-        if a in ("--claude", "--cwd", "--limit") and i + 1 < len(argv):
+        if a in ("--claude", "--cwd", "--limit", "--before", "--agent", "--from") and i + 1 < len(argv):
             opts[a[2:]] = argv[i + 1]
             i += 2
             continue
@@ -3452,7 +5783,10 @@ def main(argv):
     elif cmd == "projects":
         cmd_projects(opts)
     elif cmd == "sessions":
-        cmd_sessions(opts)
+        if "--legacy" in pos:
+            cmd_sessions(opts)
+        else:
+            cmd_sessions_v2(opts)
     elif cmd == "transcript":
         cmd_transcript(opts, need())
     elif cmd == "history":
@@ -3462,21 +5796,47 @@ def main(argv):
     elif cmd == "runs":
         cmd_runs(opts)
     elif cmd == "watch":
-        cmd_watch(opts)
+        if "--legacy" in pos:
+            cmd_watch(opts)
+        else:
+            cmd_watch_v2(opts)
     elif cmd == "follow":
-        cmd_follow(opts, need(), pos[2] if len(pos) > 2 else "0")
+        if is_session_arg(need()):
+            cmd_follow_v2(opts, arg)
+        else:
+            cmd_follow(opts, arg, pos[2] if len(pos) > 2 else "0")
     elif cmd == "send":
-        cmd_send(opts, need())
+        if is_session_arg(need()):
+            cmd_send_v2(opts, arg)
+        else:
+            cmd_send(opts, arg)
     elif cmd == "input":
         cmd_input(opts, need())
     elif cmd == "stop":
-        cmd_stop(opts, need())
+        if is_session_arg(need()):
+            cmd_stop_v2(opts, arg)
+        else:
+            cmd_stop(opts, arg)
+    elif cmd == "new":
+        cmd_new(opts)
+    elif cmd == "key":
+        cmd_key(opts, need())
+    elif cmd == "answer":
+        cmd_answer(opts, need())
+    elif cmd == "ask":
+        cmd_ask(opts, need())
+    elif cmd == "interrupt":
+        cmd_interrupt(opts, need())
+    elif cmd == "rm":
+        cmd_rm_v2(opts, need())
     elif cmd == "delete":
         cmd_delete(opts, need())
     elif cmd == "ls":
         cmd_ls(opts, arg)
     elif cmd == "commands":
         cmd_commands(opts)
+    elif cmd == "daemon-status":
+        cmd_daemon_status(opts)
     elif cmd == "rewind":
         cmd_rewind(opts)
     elif cmd == "native-list":
@@ -3515,7 +5875,12 @@ if __name__ == "__main__":
     try:
         main(sys.argv[1:])
     except HelperError as e:
-        emit({"error": str(e)})
+        err = {"error": str(e)}
+        if getattr(e, "code", None):
+            err["code"] = e.code
+        if getattr(e, "daemon_code", None):
+            err["daemonCode"] = e.daemon_code
+        emit(err)
         sys.exit(1)
     except KeyboardInterrupt:
         sys.exit(130)

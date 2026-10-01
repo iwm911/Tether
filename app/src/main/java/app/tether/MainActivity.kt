@@ -11,6 +11,7 @@ import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.tether.core.RunRef
+import app.tether.core.SessionRef
 import app.tether.ui.components.LocalHapticsEnabled
 import app.tether.ui.connections.HostKeyPromptHost
 import app.tether.ui.components.SafeLinks
@@ -25,6 +26,9 @@ class MainActivity : FragmentActivity() {
 
     /** Deep link from a notification: open this agent. Consumed by the nav host. */
     val pendingAgent = MutableStateFlow<RunRef?>(null)
+
+    /** Deep link from a session notification (one-session model): open this session. Consumed by the nav host. */
+    val pendingSession = MutableStateFlow<SessionRef?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
@@ -51,7 +55,7 @@ class MainActivity : FragmentActivity() {
                 TetherTheme(themeMode = settings.theme, dynamicColor = settings.dynamicColor) {
                     AppLockGate {
                         SafeLinks {
-                            TetherNavHost(pendingAgent = pendingAgent)
+                            TetherNavHost(pendingAgent = pendingAgent, pendingSession = pendingSession)
                             HostKeyPromptHost()
                         }
                     }
@@ -88,6 +92,12 @@ class MainActivity : FragmentActivity() {
             return
         }
         val c = intent?.getStringExtra(EXTRA_CONNECTION_ID) ?: return
+        intent.getStringExtra(EXTRA_SESSION_ID)?.let { sid ->
+            pendingSession.value = SessionRef(c, sid)
+            intent.removeExtra(EXTRA_CONNECTION_ID)
+            intent.removeExtra(EXTRA_SESSION_ID)
+            return
+        }
         val r = intent.getStringExtra(EXTRA_RUN_ID) ?: return
         pendingAgent.value = RunRef(c, r)
         intent.removeExtra(EXTRA_CONNECTION_ID)
@@ -97,6 +107,7 @@ class MainActivity : FragmentActivity() {
     companion object {
         const val EXTRA_CONNECTION_ID = "app.tether.extra.CONNECTION_ID"
         const val EXTRA_RUN_ID = "app.tether.extra.RUN_ID"
+        const val EXTRA_SESSION_ID = "app.tether.extra.SESSION_ID"
         const val ACTION_INSTALL_UPDATE = "app.tether.action.INSTALL_UPDATE"
     }
 }

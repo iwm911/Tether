@@ -96,6 +96,7 @@ private fun ChatItem.contentType(): Int = when (this) {
     is ChatItem.Permission -> 5
     is ChatItem.TurnSummary -> 6
     is ChatItem.Notice -> 7
+    is ChatItem.Peer -> 8
 }
 
 /** Vertical rhythm: prose breathes, tool rows stack tightly like the CLI. */
@@ -107,6 +108,7 @@ private fun ChatItem.verticalGap(): Dp = when (this) {
     is ChatItem.Permission -> 8.dp
     is ChatItem.TurnSummary -> 8.dp
     is ChatItem.Notice -> 8.dp
+    is ChatItem.Peer -> 10.dp
 }
 
 /**
@@ -433,4 +435,5 @@ private fun rawDescribe(item: ChatItem): Pair<String, String> = when (item) {
     is ChatItem.Permission -> "permission ${item.state.name.lowercase()}" to "${item.toolName} ${item.inputJson.take(200)}"
     is ChatItem.TurnSummary -> "result" to "success=${item.success} turns=${item.numTurns} ms=${item.durationMs} cost=${item.costUsd}" + (item.errorText?.let { " err=$it" } ?: "")
     is ChatItem.Notice -> "notice:${item.kind.name.lowercase()}" to item.text
+    is ChatItem.Peer -> (if (item.incoming) "peer:in" else "peer:out") to "${item.peerName ?: item.peer ?: "?"}: ${item.text}"
 }

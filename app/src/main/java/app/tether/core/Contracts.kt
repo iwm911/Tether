@@ -279,3 +279,79 @@ interface AgentHub {
     suspend fun nativeTimeline(ref: RunRef): List<NativeTimelineEntry> = emptyList()
     suspend fun nativeLogs(ref: RunRef): String = ""
 }
+
+// ───────────────────────────── One-session model (Claude Code daemon) ─────────────────────────────
+
+/**
+ * Helper calls of the one-session protocol (HELPER_VERSION 2.0.0, docs/plans/one-session-daemon.md).
+ * Failures throw with the helper's sentence; its error code (see [SessionErrorCodes]) rides along.
+ */
+interface SessionRemote {
+    suspend fun daemonStatus(connectionId: String): DaemonStatus
+    /** Newest first: daemon jobs + terminal sessions + transcripts with no job. */
+    suspend fun sessions(connectionId: String, cwd: String? = null, limit: Int? = null, before: Long? = null): List<Session>
+    /** `watch`: a snapshot, then changes and heartbeats, until the collector goes. */
+    fun watchSessions(connectionId: String): Flow<WatchMessage>
+    /** `follow`: history from [fromOffset] (transcript bytes), `CaughtUp`, then live events. */
+    fun follow(connectionId: String, sessionId: String, agentId: String? = null, fromOffset: Long = 0): Flow<FollowEvent>
+    /** Returns the new session; throws with code `EUNTRUSTED` when Claude Code does not trust the folder. */
+    suspend fun newSession(connectionId: String, request: NewSessionRequest): Session
+    /** Returns whether the session had to be woken (dispatch resume) first. Code `EHELD` while a terminal holds it. */
+    suspend fun send(connectionId: String, sessionId: String, text: String, images: List<String> = emptyList()): Boolean
+    suspend fun key(connectionId: String, sessionId: String, keys: List<SessionKey>)
+    suspend fun answer(connectionId: String, sessionId: String, decision: SessionDecision, message: String? = null): Session
+    suspend fun ask(connectionId: String, sessionId: String, answers: List<AskAnswer>): Session
+    suspend fun interrupt(connectionId: String, sessionId: String): Session
+    suspend fun stop(connectionId: String, sessionId: String)
+    suspend fun rm(connectionId: String, sessionId: String)
+    /** Copies an image to the machine (like a file dropped on the terminal); returns its absolute path there. */
+    suspend fun uploadImage(connectionId: String, image: ImageAttachment): String
+}
+
+/**
+ * The app-facing API of the one-session model: every Claude Code session on every machine,
+ * keyed by session id. Lives next to [AgentHub] until the old run model is removed (phase R).
+ */
+interface SessionHub {
+    /** Every session on every watched machine, most recently updated first. */
+    val sessions: StateFlow<List<Session>>
+    /** Per-machine watch errors (unreachable, no daemon…). */
+    val machineErrors: StateFlow<Map<String, String>>
+    /** Needs-you / turn-done / failed transitions seen on the watch streams. */
+    val events: SharedFlow<SessionEvent>
+
+    fun session(ref: SessionRef): Session?
+
+    /**
+     * Hot conversation of one session (or, with [agentId], one of its subagents, read-only) while
+     * collected: history then live events from `follow`, reduced into [ConversationState] with
+     * [ConversationState.live] set. Reconnects resume from the last transcript offset.
+     */
+    fun open(ref: SessionRef, agentId: String? = null): StateFlow<ConversationState>
+
+    /** One-shot `sessions` of one machine (or all), merged into [sessions]. */
+    suspend fun refresh(connectionId: String? = null)
+    /** Older sessions of a machine (paging past what the watch carries). */
+    suspend fun history(connectionId: String, cwd: String? = null, limit: Int = 60, before: Long? = null): List<Session>
+
+    suspend fun new(connectionId: String, request: NewSessionRequest, images: List<ImageAttachment> = emptyList()): NewSessionResult
+    /** Sends a message (wakes a retired session first). Returns whether it was woken. */
+    suspend fun send(ref: SessionRef, text: String, images: List<ImageAttachment> = emptyList()): Boolean
+    suspend fun key(ref: SessionRef, keys: List<SessionKey>)
+    suspend fun answer(ref: SessionRef, decision: SessionDecision, message: String? = null)
+    suspend fun ask(ref: SessionRef, answers: List<AskAnswer>)
+    /** Esc: interrupts the current turn, keeps the session. */
+    suspend fun interrupt(ref: SessionRef)
+    /** Retires the worker; the next message wakes it with the same id. */
+    suspend fun stop(ref: SessionRef)
+    /** Kills, evicts and deletes the job (the transcript stays). */
+    suspend fun remove(ref: SessionRef)
+
+    /** While true, keeps per-machine watch streams open with no UI collecting (background service). */
+    fun setBackgroundWatch(enabled: Boolean)
+    /** Stops every watch stream until un-paused (the notification's "Disconnect"). */
+    fun setPaused(paused: Boolean)
+    /** Stops watching one machine after the user disconnected it; lifted by [release] / [refresh] of it. */
+    suspend fun hold(connectionId: String)
+    fun release(connectionId: String)
+}

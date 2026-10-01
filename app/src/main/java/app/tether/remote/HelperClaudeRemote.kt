@@ -20,6 +20,14 @@ import app.tether.core.SessionSummary
 import app.tether.core.SshManager
 import app.tether.core.StartRunRequest
 import app.tether.core.TailLine
+import app.tether.core.DaemonStatus
+import app.tether.core.FollowEvent
+import app.tether.core.NewSessionRequest
+import app.tether.core.Session
+import app.tether.core.SessionDecision
+import app.tether.core.SessionKey
+import app.tether.core.SessionRemote
+import app.tether.core.WatchMessage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -51,7 +59,7 @@ class HelperClaudeRemote internal constructor(
     private val connections: ConnectionRepository,
     private val scope: CoroutineScope,
     helperSource: () -> ByteArray,
-) : ClaudeRemote, RunHistorySource {
+) : ClaudeRemote, RunHistorySource, SessionRemote {
 
     constructor(context: Context, ssh: SshManager, connections: ConnectionRepository, scope: CoroutineScope) :
         this(ssh, connections, scope, { context.applicationContext.assets.open(ASSET_NAME).use { it.readBytes() } })
@@ -136,8 +144,9 @@ class HelperClaudeRemote internal constructor(
             val home = ensureHelper(connectionId)
             val res: ExecResult = ssh.exec(connectionId, helperCommand(home, args), stdin, timeoutMs)
             if (res.ok) return res.stdout
-            val err = lastJsonLine(res.stdout)?.let { RemoteJson.parseObject(it)?.str("error") }
-            if (err != null) throw RemoteException(err)
+            val errObj = lastJsonLine(res.stdout)?.let { RemoteJson.parseObject(it) }
+            val err = errObj?.str("error")
+            if (err != null) throw RemoteException(err, code = errObj.str("code"))
             val missing = res.stderr.contains("No such file") || res.stderr.contains("can't open file")
             if (missing && attempt == 0) {
                 ready.remove(connectionId)
@@ -222,7 +231,7 @@ class HelperClaudeRemote internal constructor(
 
     override suspend fun listSessions(connectionId: String, cwd: String?, limit: Int): List<SessionSummary> {
         val args = buildList {
-            add("sessions")
+            add("sessions"); add("--legacy") // the old SessionSummary list (helper 2.x: `sessions` is the new Session list)
             add("--limit"); add(limit.coerceIn(1, 1000).toString())
             if (!cwd.isNullOrBlank()) { add("--cwd"); add(cwd) }
         }
@@ -422,7 +431,8 @@ class HelperClaudeRemote internal constructor(
         var runs: List<RunInfo>? = null
         var native: List<RunInfo>? = null
         var hold: kotlinx.coroutines.Job? = null
-        ssh.streamLines(connectionId, helperCommand(home, claudeArgs(connectionId) + "watch"))
+        // `watch --legacy`: the old RunInfo stream (helper 2.x: plain `watch` is the new Session stream).
+        ssh.streamLines(connectionId, helperCommand(home, claudeArgs(connectionId) + listOf("watch", "--legacy")))
             .collect { raw ->
                 lastLine.set(System.currentTimeMillis())
                 val line = raw.trim()
@@ -495,6 +505,145 @@ class HelperClaudeRemote internal constructor(
         return decode(out, "command list") { parseSlashCommands(RemoteJson.parseObject(it)?.arr("commands")) }
     }
 
+    // ═══════════════════════════════════════ SessionRemote (one-session model) ═══════════════════════════════════════
+
+    private fun body(s: String) = s.toByteArray(Charsets.UTF_8)
+
+    private fun sessionOf(out: String, what: String): Session = decode(out, what) { line ->
+        val el = RemoteJson.parseElement(line) ?: throw IOException("not JSON")
+        // A write may answer with the Session itself or wrap it as {"session": …}.
+        val target = (el as? JsonObject)?.get("session")?.takeIf { it is JsonObject } ?: el
+        SessionProtocol.decodeSession(target) ?: throw IOException("not a session")
+    }
+
+    override suspend fun daemonStatus(connectionId: String): DaemonStatus {
+        val out = helper(connectionId, claudeArgs(connectionId) + "daemon-status", timeoutMs = 30_000)
+        return decode(out, "daemon status") { SessionProtocol.parseDaemonStatus(it) ?: throw IOException("not a status") }
+    }
+
+    override suspend fun sessions(connectionId: String, cwd: String?, limit: Int?, before: Long?): List<Session> {
+        val out = sessionHelper(connectionId, SessionProtocol.sessionsArgs(cwd, limit, before))
+        return decode(out, "session list") { line ->
+            val o = RemoteJson.parseObject(line) ?: throw IOException("not an object")
+            if (o["sessions"] !is kotlinx.serialization.json.JsonArray) throw IOException("no sessions")
+            SessionProtocol.parseSessionList(line).map { it.copy(connectionId = connectionId) }
+        }
+    }
+
+    /**
+     * The bundled helper speaks the one-session protocol (HELPER_VERSION 2.x). A 1.x helper has
+     * commands of the same names (`watch`, `follow`, `send`) with the old meaning: never run them.
+     */
+    internal val speaksSessions: Boolean
+        get() = helperVersion.substringBefore('.').toIntOrNull()?.let { it >= SESSION_PROTOCOL_MAJOR } == true
+
+    private fun requireSessions() {
+        if (!speaksSessions) {
+            throw RemoteException("Tether's helper $helperVersion does not support sessions yet.", code = app.tether.core.SessionErrorCodes.EPROTO)
+        }
+    }
+
+    /** A one-session helper command (with `--claude` when the machine has a custom path). */
+    private suspend fun sessionHelper(connectionId: String, args: List<String>, stdin: String? = null, timeoutMs: Long = 60_000): String {
+        requireSessions()
+        return helper(connectionId, claudeArgs(connectionId) + args, stdin?.let(::body), timeoutMs)
+    }
+
+    override fun watchSessions(connectionId: String): Flow<WatchMessage> = channelFlow {
+        requireSessions()
+        val home = ensureHelper(connectionId)
+        val lastLine = AtomicLong(System.currentTimeMillis())
+        val watchdog = launch {
+            while (true) {
+                delay(5_000)
+                if (System.currentTimeMillis() - lastLine.get() > WATCH_STALL_MS) {
+                    throw IOException("Lost contact with the machine (no heartbeat).")
+                }
+            }
+        }
+        ssh.streamLines(connectionId, helperCommand(home, claudeArgs(connectionId) + "watch")).collect { raw ->
+            lastLine.set(System.currentTimeMillis())
+            when (val m = SessionProtocol.parseWatchLine(raw)) {
+                is WatchMessage.Snapshot -> send(WatchMessage.Snapshot(m.sessions.map { it.copy(connectionId = connectionId) }))
+                is WatchMessage.Changed -> send(m.copy(changed = m.changed.map { it.copy(connectionId = connectionId) }))
+                is WatchMessage.Heartbeat -> send(m)
+                null -> Unit
+            }
+        }
+        watchdog.cancel()
+        throw IOException("The machine closed the session stream.")
+    }
+
+    override fun follow(connectionId: String, sessionId: String, agentId: String?, fromOffset: Long): Flow<FollowEvent> = flow {
+        requireSessions()
+        val home = ensureHelper(connectionId)
+        val args = claudeArgs(connectionId) + SessionProtocol.followArgs(sessionId, agentId, fromOffset)
+        ssh.streamLines(connectionId, helperCommand(home, args)).collect { raw ->
+            when (val e = SessionProtocol.parseFollowLine(raw)) {
+                is FollowEvent.State -> emit(FollowEvent.State(e.session.copy(connectionId = connectionId)))
+                null -> Unit
+                else -> emit(e)
+            }
+        }
+        throw IOException("The machine closed the conversation stream.")
+    }
+
+    override suspend fun newSession(connectionId: String, request: NewSessionRequest): Session {
+        val out = sessionHelper(connectionId, listOf("new"), SessionProtocol.newBody(request), timeoutMs = 120_000)
+        return sessionOf(out, "new session").copy(connectionId = connectionId)
+    }
+
+    override suspend fun send(connectionId: String, sessionId: String, text: String, images: List<String>): Boolean {
+        val out = sessionHelper(connectionId, listOf("send", sessionId), SessionProtocol.sendBody(text, images), timeoutMs = 120_000)
+        val o = lastJsonLine(out)?.let { RemoteJson.parseObject(it) }
+        if (o?.bool("ok") != true) throw RemoteException("The message did not reach the session.")
+        return o.bool("woke") ?: false
+    }
+
+    override suspend fun key(connectionId: String, sessionId: String, keys: List<SessionKey>) {
+        if (keys.isEmpty()) return
+        val out = sessionHelper(connectionId, listOf("key", sessionId), SessionProtocol.keyBody(keys))
+        val o = lastJsonLine(out)?.let { RemoteJson.parseObject(it) }
+        if (o?.bool("ok") != true) throw RemoteException("The keys did not reach the session.")
+    }
+
+    override suspend fun answer(connectionId: String, sessionId: String, decision: SessionDecision, message: String?): Session {
+        val out = sessionHelper(connectionId, listOf("answer", sessionId), SessionProtocol.answerBody(decision, message))
+        return sessionOf(out, "session").copy(connectionId = connectionId)
+    }
+
+    override suspend fun ask(connectionId: String, sessionId: String, answers: List<app.tether.core.AskAnswer>): Session {
+        val out = sessionHelper(connectionId, listOf("ask", sessionId), SessionProtocol.askBody(answers), timeoutMs = 120_000)
+        return sessionOf(out, "session").copy(connectionId = connectionId)
+    }
+
+    override suspend fun interrupt(connectionId: String, sessionId: String): Session {
+        val out = sessionHelper(connectionId, listOf("interrupt", sessionId))
+        return sessionOf(out, "session").copy(connectionId = connectionId)
+    }
+
+    override suspend fun stop(connectionId: String, sessionId: String) {
+        sessionHelper(connectionId, listOf("stop", sessionId))
+    }
+
+    override suspend fun rm(connectionId: String, sessionId: String) {
+        sessionHelper(connectionId, listOf("rm", sessionId))
+    }
+
+    override suspend fun uploadImage(connectionId: String, image: app.tether.core.ImageAttachment): String {
+        val home = ensureHelper(connectionId)
+        val ext = when (image.mimeType.lowercase()) {
+            "image/png" -> "png"
+            "image/jpeg", "image/jpg" -> "jpg"
+            "image/gif" -> "gif"
+            "image/webp" -> "webp"
+            else -> image.name.substringAfterLast('.', "").lowercase().takeIf { it.matches(Regex("[a-z0-9]{1,5}")) } ?: "img"
+        }
+        val path = "$home/$UPLOADS_REL/${java.util.UUID.randomUUID()}.$ext"
+        ssh.upload(connectionId, path, image.bytes, "600".toInt(8))
+        return path
+    }
+
     /** Forgets verified-helper state (e.g. after the user edits the machine). */
     fun invalidate(connectionId: String) {
         ready.remove(connectionId)
@@ -515,6 +664,10 @@ class HelperClaudeRemote internal constructor(
     private companion object {
         const val ASSET_NAME = "tether_helper.py"
         const val HELPER_REL = ".tether/bin/tether_helper.py"
+        /** Images the phone attaches, pasted into the session by path (like a file dropped on the terminal). */
+        const val UPLOADS_REL = ".tether/uploads"
+        /** First HELPER_VERSION major that speaks the one-session protocol. */
+        const val SESSION_PROTOCOL_MAJOR = 2
         const val WATCH_STALL_MS = 40_000L
         const val NATIVE_HOLD_MS = 2_500L
         val VERSION_RE = Regex("""HELPER_VERSION\s*=\s*"([^"]+)"""")

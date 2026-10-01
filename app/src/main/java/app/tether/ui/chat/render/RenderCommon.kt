@@ -82,6 +82,12 @@ import kotlinx.coroutines.delay
 /** Working directory of the conversation — tool paths are shown relative to it. */
 val LocalChatCwd = compositionLocalOf<String?> { null }
 
+/**
+ * Subagent transcripts the screen can open read-only, keyed by the Task/Agent tool_use id that
+ * spawned them (one-session model). Empty = no "Open transcript" affordance.
+ */
+val LocalSubagentLinks = compositionLocalOf<Map<String, () -> Unit>> { emptyMap() }
+
 /** Multiplier for code/mono text (Settings → Code text size). */
 val LocalCodeFontScale = compositionLocalOf { 1f }
 

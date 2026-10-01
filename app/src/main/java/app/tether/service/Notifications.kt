@@ -22,6 +22,10 @@ import app.tether.core.AgentEvent
 import app.tether.core.AgentSummary
 import app.tether.core.RunRef
 import app.tether.core.RunStatus
+import app.tether.core.Session
+import app.tether.core.SessionEvent
+import app.tether.core.SessionPending
+import app.tether.core.SessionRef
 
 /** Channels, ids and builders for every notification Tether posts. */
 object Notifications {
@@ -118,13 +122,19 @@ object Notifications {
         agents: List<AgentSummary>,
         links: Map<String, app.tether.core.LinkState> = emptyMap(),
         machines: List<app.tether.core.Connection> = emptyList(),
+        sessions: List<Session> = emptyList(),
     ): Notification {
         val live = agents.filter { it.run.displayStatus in LIVE && !it.run.terminal }
-        val needs = live.count { it.run.status == RunStatus.AWAITING_PERMISSION }
-        val working = live.size - needs
+        val liveSessions = SessionAlerts.live(sessions).sortedByDescending { it.needsYou }
+        val (working, needs) = SessionAlerts.watchCounts(
+            live.count { it.run.status != RunStatus.AWAITING_PERMISSION },
+            live.count { it.run.status == RunStatus.AWAITING_PERMISSION },
+            sessions,
+        )
         val summary = watchSummary(working, needs)
-        val names = live.sortedByDescending { it.run.status == RunStatus.AWAITING_PERMISSION }.map { agentTitle(it) }
-        val single = live.singleOrNull()
+        val names = liveSessions.map { it.title } + live.sortedByDescending { it.run.status == RunStatus.AWAITING_PERMISSION }.map { agentTitle(it) }
+        val single = live.singleOrNull()?.takeIf { liveSessions.isEmpty() }
+        val singleSession = liveSessions.singleOrNull()?.takeIf { live.isEmpty() }
 
         // Termius-style session line: "Connected to Workstation" / "Reconnecting to Workstation".
         val names2 = machines.associate { it.id to it.name }
@@ -136,10 +146,11 @@ object Notifications {
             retrying.isNotEmpty() -> "Reconnecting to " + retrying.joinToString(", ")
             else -> null
         }
-        val title = if (live.isEmpty()) sessionLine ?: summary else summary
+        val anyLive = live.isNotEmpty() || liveSessions.isNotEmpty()
+        val title = if (!anyLive) sessionLine ?: summary else summary
         val text = when {
             names.isNotEmpty() -> names.joinToString(" · ")
-            live.isEmpty() && sessionLine != null -> "Sessions stay open in the background"
+            !anyLive && sessionLine != null -> "Sessions stay open in the background"
             else -> "Tether keeps watching while your agents run"
         }
         val disconnect = PendingIntent.getBroadcast(
@@ -152,7 +163,7 @@ object Notifications {
             .setColor(ACCENT)
             .setContentTitle(title)
             .setContentText(text)
-            .setSubText(if (live.isNotEmpty()) sessionLine else null)
+            .setSubText(if (anyLive) sessionLine else null)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setSilent(true)
@@ -160,17 +171,32 @@ object Notifications {
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
-            .setContentIntent(openApp(context, single?.ref, WATCH_NOTIFICATION_ID))
+            .setContentIntent(
+                if (singleSession != null) openSession(context, singleSession.ref, WATCH_NOTIFICATION_ID)
+                else openApp(context, single?.ref, WATCH_NOTIFICATION_ID),
+            )
             .guard(context, CHANNEL_WATCH, "Tether")
         if (links.isNotEmpty()) builder.addAction(0, "Disconnect", disconnect)
 
-        if (live.size > 1) {
+        val machineNames = machines.associate { it.id to it.name }
+        val total = live.size + liveSessions.size
+        if (total > 1) {
             val inbox = NotificationCompat.InboxStyle().setBigContentTitle(summary)
-            live.sortedByDescending { it.run.status == RunStatus.AWAITING_PERMISSION }.take(6).forEach { a ->
-                inbox.addLine("${agentTitle(a)} — ${statusLabel(a.run.displayStatus)} · ${a.connection.name}")
+            val lines = liveSessions.map { s ->
+                "${s.title} — ${if (s.needsYou) "Needs you" else "Working"}" + (machineNames[s.connectionId]?.let { " · $it" } ?: "")
+            } + live.sortedByDescending { it.run.status == RunStatus.AWAITING_PERMISSION }.map { a ->
+                "${agentTitle(a)} — ${statusLabel(a.run.displayStatus)} · ${a.connection.name}"
             }
-            if (live.size > 6) inbox.setSummaryText("+${live.size - 6} more")
+            lines.take(6).forEach { inbox.addLine(it) }
+            if (total > 6) inbox.setSummaryText("+${total - 6} more")
             builder.setStyle(inbox)
+        } else if (singleSession != null) {
+            val machine = machineNames[singleSession.connectionId]
+            val head = singleSession.title + (machine?.let { " · $it" } ?: "")
+            val detail = if (singleSession.needsYou) SessionAlerts.needsYouText(singleSession.pending, singleSession.waitingFor)
+            else singleSession.lastText?.takeIf { it.isNotBlank() } ?: "Working"
+            builder.setContentText(head)
+            builder.setStyle(NotificationCompat.BigTextStyle().bigText("$head\n$detail"))
         } else if (single != null) {
             val detail = single.run.pending?.let { "Wants to use ${it.toolName}: ${it.summary}" }
                 ?: single.run.lastText?.takeIf { it.isNotBlank() }
@@ -292,6 +318,127 @@ object Notifications {
             .guard(context, CHANNEL_UPDATES, "An agent stopped")
             .build()
         NotificationManagerCompat.from(context).notify(id, notification)
+    }
+
+    // ───────────────────────────── sessions (one-session model) ─────────────────────────────
+
+    const val EXTRA_SESSION_ID = "sessionId"
+    /** Identity of the prompt a session notification was posted for (see [SessionAlerts.identityOf]). */
+    const val EXTRA_PENDING_ID = "pendingIdentity"
+    const val EXTRA_TOOL_USE_ID = "toolUseId"
+
+    /**
+     * A session started waiting for the user: a tool permission (Allow / Deny / Tell Claude inline),
+     * a question or a dialog (both open the session, where the picker / dialog panel answers it).
+     */
+    @SuppressLint("MissingPermission")
+    fun showSessionNeedsYou(context: Context, event: SessionEvent.NeedsYou, machineName: String?, reason: String? = null) {
+        if (!canPost(context)) return
+        val identity = SessionAlerts.identityOf(event.pending, event.waitingFor)
+        val id = SessionAlerts.needsYouId(event.ref, identity)
+        val text = SessionAlerts.needsYouText(event.pending, event.waitingFor)
+        val permission = event.pending as? SessionPending.Permission
+        fun action(action: String, code: Int): PendingIntent {
+            val intent = Intent(context, NotificationActionReceiver::class.java).apply {
+                this.action = action
+                data = Uri.parse("tether://session-answer/${Uri.encode(event.ref.connectionId)}/${Uri.encode(event.ref.sessionId)}/${Uri.encode(identity)}/$code")
+                putExtra(EXTRA_CONNECTION_ID, event.ref.connectionId)
+                putExtra(EXTRA_SESSION_ID, event.ref.sessionId)
+                putExtra(EXTRA_PENDING_ID, identity)
+                putExtra(EXTRA_TOOL_USE_ID, permission?.toolUseId ?: "")
+                putExtra(EXTRA_NOTIFICATION_ID, id)
+                putExtra(EXTRA_TITLE, event.title)
+                putExtra(EXTRA_TOOL, permission?.toolName ?: "")
+                putExtra(EXTRA_SUMMARY, permission?.summary ?: "")
+            }
+            val mutability = if (action == ACTION_REPLY && Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else PendingIntent.FLAG_IMMUTABLE
+            return PendingIntent.getBroadcast(context, id + code, intent, mutability or PendingIntent.FLAG_UPDATE_CURRENT)
+        }
+        fun button(label: String, intent: PendingIntent) =
+            NotificationCompat.Action.Builder(0, label, intent).setAuthenticationRequired(true)
+
+        val open = openSession(context, event.ref, id)
+        val builder = NotificationCompat.Builder(context, CHANNEL_APPROVALS)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setColor(ACCENT)
+            .setContentTitle(SessionAlerts.needsYouTitle(event.title, event.pending))
+            .setContentText(text)
+            .setSubText(machineName)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(if (reason != null) "$text\n\n$reason" else text))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_REMINDER)
+            .setAutoCancel(true)
+            .setGroup(GROUP_APPROVALS)
+            .setContentIntent(open)
+            .guard(context, CHANNEL_APPROVALS, "A session needs you", always = true)
+        // Same rule as run approvals: inline answers need an unlocked phone (enforced on 12+, and by the receiver).
+        val inlineActions = SessionAlerts.answerableInline(event.pending) && (!appLockOn(context) || Build.VERSION.SDK_INT >= 31)
+        if (inlineActions) {
+            val reply = button("Tell Claude", action(ACTION_REPLY, 3))
+                .addRemoteInput(RemoteInput.Builder(KEY_REPLY_TEXT).setLabel("What should Claude do instead?").build())
+                .setAllowGeneratedReplies(false)
+                .build()
+            builder.addAction(button("Allow", action(ACTION_ALLOW, 1)).build())
+                .addAction(button("Deny", action(ACTION_DENY, 2)).build())
+                .addAction(reply)
+        } else {
+            builder.addAction(0, if (event.pending is SessionPending.Permission) "Review" else "Answer", open)
+        }
+        NotificationManagerCompat.from(context).notify(id, builder.build())
+    }
+
+    @SuppressLint("MissingPermission")
+    fun showSessionTurnDone(context: Context, event: SessionEvent.TurnDone, machineName: String?) {
+        if (!canPost(context)) return
+        val id = SessionAlerts.updateId(event.ref)
+        val text = event.snippet?.trim()?.takeIf { it.isNotEmpty() } ?: "Finished — your turn"
+        val notification = NotificationCompat.Builder(context, CHANNEL_UPDATES)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setColor(ACCENT)
+            .setContentTitle("✓ ${event.title}")
+            .setContentText(text)
+            .setSubText(machineName)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setAutoCancel(true)
+            .setGroup(GROUP_UPDATES)
+            .setContentIntent(openSession(context, event.ref, id))
+            .guard(context, CHANNEL_UPDATES, "A session finished")
+            .build()
+        NotificationManagerCompat.from(context).notify(id, notification)
+    }
+
+    @SuppressLint("MissingPermission")
+    fun showSessionFailed(context: Context, event: SessionEvent.Failed, machineName: String?) {
+        if (!canPost(context)) return
+        val id = SessionAlerts.updateId(event.ref)
+        val text = event.detail?.trim()?.takeIf { it.isNotEmpty() } ?: "The session stopped with an error"
+        val notification = NotificationCompat.Builder(context, CHANNEL_UPDATES)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setColor(ACCENT)
+            .setContentTitle("${event.title} hit an error")
+            .setContentText(text)
+            .setSubText(machineName)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setCategory(NotificationCompat.CATEGORY_ERROR)
+            .setAutoCancel(true)
+            .setGroup(GROUP_UPDATES)
+            .setContentIntent(openSession(context, event.ref, id))
+            .guard(context, CHANNEL_UPDATES, "A session hit an error")
+            .build()
+        NotificationManagerCompat.from(context).notify(id, notification)
+    }
+
+    /** Opens MainActivity on session [ref] (see [MainActivity.pendingSession]). */
+    fun openSession(context: Context, ref: SessionRef, requestCode: Int): PendingIntent {
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            data = Uri.parse("tether://session/${Uri.encode(ref.connectionId)}/${Uri.encode(ref.sessionId)}")
+            putExtra(MainActivity.EXTRA_CONNECTION_ID, ref.connectionId)
+            putExtra(MainActivity.EXTRA_SESSION_ID, ref.sessionId)
+        }
+        return PendingIntent.getActivity(context, requestCode, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
     }
 
     /**

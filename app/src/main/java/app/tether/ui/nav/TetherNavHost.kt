@@ -29,8 +29,8 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import app.tether.LocalAppContainer
 import app.tether.core.RunRef
-import app.tether.ui.chat.AgentScreen
-import app.tether.ui.chat.SessionScreen
+import app.tether.core.SessionRef
+import app.tether.ui.chat.SessionChatScreen
 import app.tether.ui.connections.ConnectionEditorScreen
 import app.tether.ui.connections.KeysScreen
 import app.tether.ui.connections.MachinesScreen
@@ -53,7 +53,7 @@ object Routes {
     const val SETTINGS = "settings"
     const val NEW = "new?conn={conn}&cwd={cwd}&resume={resume}"
     const val AGENT = "agent/{conn}/{run}"
-    const val SESSION = "session/{conn}/{session}"
+    const val SESSION = "session/{conn}/{session}?agent={agent}"
 
     fun machine(conn: String) = "machine/${enc(conn)}"
     fun edit(id: String?) = if (id == null) "edit" else "edit?id=${enc(id)}"
@@ -66,10 +66,21 @@ object Routes {
         return if (q.isEmpty()) "new" else "new?" + q.joinToString("&")
     }
     fun agent(ref: RunRef) = "agent/${enc(ref.connectionId)}/${enc(ref.runId)}"
-    fun session(conn: String, session: String) = "session/${enc(conn)}/${enc(session)}"
+    fun session(conn: String, session: String, agent: String? = null) =
+        "session/${enc(conn)}/${enc(session)}" + (agent?.let { "?agent=${enc(it)}" } ?: "")
+    fun session(ref: SessionRef, agent: String? = null) = session(ref.connectionId, ref.sessionId, agent)
     private fun enc(s: String) = Uri.encode(s)
 }
 
+/** Every conversation opens on the session screen, keyed by its session. */
+private fun NavHostController.openSession(ref: SessionRef, agent: String? = null, replaceCurrent: Boolean = false) {
+    navigate(Routes.session(ref, agent)) {
+        launchSingleTop = true
+        if (replaceCurrent) currentDestination?.route?.let { popUpTo(it) { inclusive = true } }
+    }
+}
+
+/** A run-model ref (Home, old notifications, the new-agent screen): resolved to its session on the way. */
 private fun NavHostController.openAgent(ref: RunRef, replaceCurrent: Boolean = false) {
     navigate(Routes.agent(ref)) {
         launchSingleTop = true
@@ -78,7 +89,7 @@ private fun NavHostController.openAgent(ref: RunRef, replaceCurrent: Boolean = f
 }
 
 @Composable
-fun TetherNavHost(pendingAgent: MutableStateFlow<RunRef?>) {
+fun TetherNavHost(pendingAgent: MutableStateFlow<RunRef?>, pendingSession: MutableStateFlow<SessionRef?> = MutableStateFlow(null)) {
     val container = LocalAppContainer.current
     val nav = rememberNavController()
     val scope = androidx.compose.runtime.rememberCoroutineScope()
@@ -98,6 +109,12 @@ fun TetherNavHost(pendingAgent: MutableStateFlow<RunRef?>) {
         val ref = deepLink ?: return@LaunchedEffect
         pendingAgent.value = null
         nav.openAgent(ref)
+    }
+    val sessionLink by pendingSession.collectAsStateWithLifecycle()
+    LaunchedEffect(sessionLink) {
+        val ref = sessionLink ?: return@LaunchedEffect
+        pendingSession.value = null
+        nav.openSession(ref)
     }
 
     fun finishOnboarding() = scope.launch { container.settings.update { it.copy(onboardingDone = true) } }
@@ -119,7 +136,7 @@ fun TetherNavHost(pendingAgent: MutableStateFlow<RunRef?>) {
             }
             composable(Routes.HOME) {
                 HomeScreen(
-                    onOpenAgent = { nav.openAgent(it) },
+                    onOpenSession = { nav.openSession(it) },
                     onNewAgent = { conn -> nav.navigate(Routes.new(conn = conn)) },
                     onOpenMachine = { nav.navigate(Routes.machine(it)) },
                     onOpenMachines = { nav.navigate(Routes.MACHINES) },
@@ -140,8 +157,7 @@ fun TetherNavHost(pendingAgent: MutableStateFlow<RunRef?>) {
                 MachineScreen(
                     connectionId = conn,
                     onBack = { nav.popBackStack() },
-                    onOpenAgent = { nav.openAgent(it) },
-                    onOpenSession = { c, s -> nav.navigate(Routes.session(c, s)) },
+                    onOpenSession = { nav.openSession(it) },
                     onNewAgent = { c, cwd -> nav.navigate(Routes.new(conn = c, cwd = cwd)) },
                     onEdit = { nav.navigate(Routes.edit(it)) },
                 )
@@ -180,14 +196,20 @@ fun TetherNavHost(pendingAgent: MutableStateFlow<RunRef?>) {
                 enterTransition = { slideIntoContainer(SlideDirection.Up, tween(Motion.Medium, easing = Motion.Emphasized)) { it / 6 } + fadeIn() },
                 popExitTransition = { slideOutOfContainer(SlideDirection.Down, tween(Motion.Medium, easing = Motion.Emphasized)) { it / 6 } + fadeOut() },
             ) { e ->
-                NewAgentScreen(
-                    connectionId = e.arguments?.getString("conn"),
-                    cwd = e.arguments?.getString("cwd"),
-                    resumeSessionId = e.arguments?.getString("resume"),
-                    onBack = { nav.popBackStack() },
-                    onStarted = { nav.openAgent(it, replaceCurrent = true) },
-                    onAddMachine = { nav.navigate(Routes.edit(null)) },
-                )
+                val conn = e.arguments?.getString("conn")
+                val resume = e.arguments?.getString("resume")
+                if (conn != null && resume != null) {
+                    // Every session is opened (and woken) from its own screen: no separate "continue" form.
+                    LaunchedEffect(conn, resume) { nav.openSession(SessionRef(conn, resume), replaceCurrent = true) }
+                } else {
+                    NewAgentScreen(
+                        connectionId = conn,
+                        cwd = e.arguments?.getString("cwd"),
+                        onBack = { nav.popBackStack() },
+                        onStarted = { nav.openSession(it, replaceCurrent = true) },
+                        onAddMachine = { nav.navigate(Routes.edit(null)) },
+                    )
+                }
             }
             composable(
                 Routes.AGENT,
@@ -195,21 +217,33 @@ fun TetherNavHost(pendingAgent: MutableStateFlow<RunRef?>) {
                 enterTransition = { scaleIn(tween(Motion.Medium, easing = Motion.Emphasized), initialScale = 0.96f) + fadeIn(tween(Motion.Medium)) },
                 popExitTransition = { scaleOut(tween(Motion.Medium, easing = Motion.Emphasized), targetScale = 0.96f) + fadeOut(tween(Motion.Short)) },
             ) { e ->
-                AgentScreen(
-                    ref = RunRef(e.arguments?.getString("conn")!!, e.arguments?.getString("run")!!),
+                val ref = RunRef(e.arguments?.getString("conn")!!, e.arguments?.getString("run")!!)
+                RunRedirect(
+                    ref = ref,
+                    onResolved = { nav.openSession(it, replaceCurrent = true) },
                     onBack = { if (!nav.popBackStack()) nav.navigate(Routes.HOME) },
                     onOpenMachine = { nav.navigate(Routes.machine(it)) },
-                    // A branch stacks on top of its source (Back returns to the original conversation);
-                    // launchSingleTop would replace it, since every agent shares one route pattern.
                     onOpenAgent = { nav.navigate(Routes.agent(it)) },
                 )
             }
-            composable(Routes.SESSION, arguments = listOf(navArgument("conn") { type = NavType.StringType }, navArgument("session") { type = NavType.StringType })) { e ->
-                SessionScreen(
-                    connectionId = e.arguments?.getString("conn")!!,
-                    sessionId = e.arguments?.getString("session")!!,
-                    onBack = { nav.popBackStack() },
-                    onContinue = { nav.openAgent(it, replaceCurrent = true) },
+            composable(
+                Routes.SESSION,
+                arguments = listOf(
+                    navArgument("conn") { type = NavType.StringType },
+                    navArgument("session") { type = NavType.StringType },
+                    navArgument("agent") { type = NavType.StringType; nullable = true; defaultValue = null },
+                ),
+                enterTransition = { scaleIn(tween(Motion.Medium, easing = Motion.Emphasized), initialScale = 0.96f) + fadeIn(tween(Motion.Medium)) },
+                popExitTransition = { scaleOut(tween(Motion.Medium, easing = Motion.Emphasized), targetScale = 0.96f) + fadeOut(tween(Motion.Short)) },
+            ) { e ->
+                val ref = SessionRef(e.arguments?.getString("conn")!!, e.arguments?.getString("session")!!)
+                SessionChatScreen(
+                    ref = ref,
+                    agentId = e.arguments?.getString("agent"),
+                    onBack = { if (!nav.popBackStack()) nav.navigate(Routes.HOME) },
+                    onOpenMachine = { nav.navigate(Routes.machine(it)) },
+                    // A subagent view stacks on its session (Back returns to it).
+                    onOpenSubagent = { agent -> nav.navigate(Routes.session(ref, agent)) },
                 )
             }
         }

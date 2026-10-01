@@ -41,7 +41,7 @@ class AgentWatchService : Service() {
         super.onCreate()
         val c = (application as TetherApp).container
         container = c
-        val initial = Notifications.buildWatch(this, c.agents.agents.value, c.ssh.states.value, c.connections.connections.value)
+        val initial = Notifications.buildWatch(this, c.agents.agents.value, c.ssh.states.value, c.connections.connections.value, c.sessions.sessions.value)
         try {
             ServiceCompat.startForeground(
                 this,
@@ -62,6 +62,8 @@ class AgentWatchService : Service() {
         }
         runningState.value = true
         c.agents.setBackgroundWatch(true)
+        c.sessions.setBackgroundWatch(true)
+        watchSessions(c)
 
         // Keep-alive: hold the CPU and Wi-Fi awake while sessions are open, so keepalives go out and
         // replies arrive with the screen off (what terminal apps like Termius do).
@@ -89,12 +91,25 @@ class AgentWatchService : Service() {
         }
     }
 
+    private fun watchSessions(c: AppContainer) {
+        scope.launch {
+            c.sessions.sessions
+                // Redraw on what the notification shows: which sessions are live, their state and prompt.
+                .distinctUntilChangedBy { list ->
+                    app.tether.service.SessionAlerts.live(list).map { s ->
+                        listOf(s.connectionId, s.sessionId, s.state, s.title, s.pending?.let { p -> SessionAlerts.identityOf(p, s.waitingFor) }, s.lastText?.take(80))
+                    }
+                }
+                .collect { redraw(c) }
+        }
+    }
+
     @SuppressLint("MissingPermission")
     private fun redraw(c: AppContainer) {
         if (Notifications.canPost(this)) {
             NotificationManagerCompat.from(this).notify(
                 Notifications.WATCH_NOTIFICATION_ID,
-                Notifications.buildWatch(this, c.agents.agents.value, c.ssh.states.value, c.connections.connections.value),
+                Notifications.buildWatch(this, c.agents.agents.value, c.ssh.states.value, c.connections.connections.value, c.sessions.sessions.value),
             )
         }
     }
@@ -139,6 +154,7 @@ class AgentWatchService : Service() {
         releaseLocks()
         if (runningState.value) {
             container?.agents?.setBackgroundWatch(false)
+            container?.sessions?.setBackgroundWatch(false)
             runningState.value = false
         }
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)

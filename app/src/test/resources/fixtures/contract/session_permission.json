@@ -1,0 +1,32 @@
+{
+ "sessionId": "bbbb2222-2222-4222-8222-222222222222",
+ "short": "bbbb2222",
+ "cwd": "/home/user/proj",
+ "name": "ask me",
+ "intent": "ask me",
+ "state": "needs_you",
+ "waitingFor": "permission prompt",
+ "pending": {
+  "toolUseId": "toolu_p1",
+  "toolName": "Bash",
+  "summary": "rm -rf build",
+  "inputJson": "{\"command\": \"rm -rf build\"}",
+  "kind": "permission"
+ },
+ "process": "live",
+ "heldBy": "daemon",
+ "terminalPid": null,
+ "startedAt": 1790870000000,
+ "updatedAt": 1790879362682,
+ "lastText": null,
+ "tokens": null,
+ "model": "claude-haiku-4-5-20251001",
+ "permissionMode": null,
+ "inFlight": {
+  "tasks": 0,
+  "queued": 0,
+  "kinds": []
+ },
+ "children": [],
+ "gitBranch": "main"
+}

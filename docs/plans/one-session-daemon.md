@@ -21,7 +21,18 @@ one that is running now: same id, same history, reply box always live, word-by-w
 4. **Terminal sessions behave like in `claude agents`:** listed with live status and a live transcript;
    while a terminal holds one, the reply box is replaced by "Open in a terminal on <machine> · type /bg
    there to continue here". No copies.
-5. **Streaming** comes from the daemon `subscribe` screen stream, replayed through a terminal emulator in
+5. **Every blocking prompt is answerable from the phone.** Not only tool permissions and
+   AskUserQuestion: startup and session dialogs too — "N new MCP servers found in this project"
+   (checkbox list: Space to toggle, Enter to enable, Esc to reject all), folder trust, auto-mode /
+   billing notices, any `dialog open` / `input needed` state. Detect them from `state.json`
+   (`tempo:"blocked"`, `needs`) + registry `waitingFor` + the screen; the helper exposes them as
+   `pending:{kind:"dialog", title, body, options:[{label, checked?, key}], keys:[…]}` cut from the
+   rendered screen, and the app shows a dialog panel with those options plus a generic key pad
+   (↑ ↓ Space Enter Esc, digits) sent through `key`. Known dialogs (MCP servers, trust) get a
+   proper native panel; unknown ones fall back to the screen text + key pad. A live test must cover
+   the MCP-servers dialog: a fresh folder with a project `.mcp.json` blocks a new session until the
+   phone answers it.
+6. **Streaming** comes from the daemon `subscribe` screen stream, replayed through a terminal emulator in
    the helper; the transcript line replaces the draft when it lands.
 
 ## Daemon facts (verified on this machine, 2.1.286)
@@ -41,8 +52,12 @@ one that is running now: same id, same history, reply box always live, word-by-w
   When blocked or `nextTurn`, text goes over the rendezvous socket; else bracketed-paste + Enter into the pty.
 - `subscribe` → `{type:"snapshot", record, streamTail:[...]}` then `{type:"stream", line}` (raw pty bytes),
   `{type:"state", patch}`, `{type:"settled", outcome}`. No key needed.
-- `attach` → reply line then framed pty stream: 4-byte BE length, 1-byte kind (0 = data, 1 = ctrl JSON),
-  payload. Client writes keys as data frames.
+- `attach` → reply line, then RAW pty bytes in both directions (verified live by H1; not framed).
+  Client writes keys as raw bytes (Shift+Tab = `\x1b[Z`, Esc = `\x1b`).
+- Permission mode is not in state.json or the registry: read it from the screen footer
+  ("manual mode on", "accept edits on", …) or the transcript's `permission-mode` lines.
+- The daemon does not enforce folder trust: the helper checks trust itself (`EUNTRUSTED`).
+- The daemon may upgrade itself mid-session (2.1.286 → 2.1.287 seen); retry `ESTARTING`/`ERESPAWNING`.
 - Files: `~/.claude/jobs/<short>/state.json` (state, detail, tempo, needs, block.questions, inFlight,
   children, output, tokens, name, intent, respawnFlags, sessionId, linkScanPath),
   `jobs/<short>/timeline.jsonl`, `~/.claude/sessions/<pid>.json` (kind bg|interactive, status
@@ -65,7 +80,8 @@ All commands print JSON. Errors: `{"error": "<human sentence>", "code": "<CODE>"
 ```json
 {"sessionId":"uuid","short":"8hex","cwd":"/abs","name":"str","intent":"str|null",
  "state":"working|needs_you|idle|done|failed","waitingFor":"str|null",
- "pending":{"kind":"permission|question","toolUseId":"str","toolName":"str","summary":"str","inputJson":"str"}|null,
+ "pending":{"kind":"permission|question","toolUseId":"str","toolName":"str","summary":"str","inputJson":"str"}
+           |{"kind":"dialog","dialog":"mcp_servers|trust|other","title":"str","body":"str","options":[{"label":"str","checked":true,"key":"str"}],"keys":["up","down","space","enter","esc"]}|null,
  "process":"live|retired","heldBy":"daemon|terminal|none","terminalPid":123|null,
  "startedAt":ms,"updatedAt":ms,"lastText":"str|null","tokens":123|null,"model":"str|null",
  "permissionMode":"str|null","inFlight":{"tasks":0,"queued":0,"kinds":[]},
@@ -110,6 +126,8 @@ All commands print JSON. Errors: `{"error": "<human sentence>", "code": "<CODE>"
   state, peer, subagent, task, todos, caughtUp.
 - H4 Writes: `new`, `send` (wake = dispatch resume same short, then reply), `key`, `answer`, `ask`,
   `interrupt`, `stop`, `rm`. EHELD for terminal-held sessions.
+- H4b Blocking dialogs (decision 5): detect + cut `pending.kind:"dialog"` from the screen; `key`
+  answers it. Live test with a fresh folder containing a project `.mcp.json`.
 - H5 Remove old commands (`start`, `runs`, `watch`(old), `follow`(old), `send`(old), `input`, `history`,
   `native-*`, `record_fork`) — only in phase R, after the app no longer calls them.
 - **Tests:** unit tests with fixtures (no daemon) for every parser; live tests (`TETHER_LIVE=1`) against
@@ -132,7 +150,9 @@ All commands print JSON. Errors: `{"error": "<human sentence>", "code": "<CODE>"
 - U1 Session screen: one screen for every session (merge `AgentScreen`, `SessionScreen`,
   `NativeAgentUi`); draft rendering; status line; composer always live; mode chip = Shift+Tab, model
   chip = `/model X`, Esc = stop button, images via upload + path; held-by-terminal bar; subagent rows
-  open a read-only subagent view; peer message rows; task strip; todos.
+  open a read-only subagent view; peer message rows; task strip; todos; dialog panel for
+  `pending.kind:"dialog"` (native MCP-servers checklist and trust panel, generic screen text + key pad
+  otherwise), also reachable from the needs-you row on Home and from the notification.
 - U2 Home: one list sorted needs-you then recent, machine/project filter chips, inline Allow/Deny,
   "in terminal" mark; Machine screen = filtered list. New session screen without kind picker.
 - **Tests:** compose/unit tests where they exist; `./gradlew :app:assembleDebug` + unit tests green;

@@ -1,0 +1,2 @@
+{"parentUuid":null,"isSidechain":true,"agentId":"a37c067ef6ed1aec1","type":"user","message":{"role":"user","content":"Scan."},"uuid":"s1","timestamp":"2026-10-01T10:00:07.500Z","sessionId":"5a1e0c4b-1111-4222-8333-944455556666"}
+{"parentUuid":"s1","isSidechain":true,"agentId":"a37c067ef6ed1aec1","type":"assistant","message":{"model":"claude-haiku-4-5-20251001","id":"msg_s2","type":"message","role":"assistant","content":[{"type":"text","text":"No related issues."}]},"uuid":"s2","timestamp":"2026-10-01T10:00:07.900Z","sessionId":"5a1e0c4b-1111-4222-8333-944455556666"}

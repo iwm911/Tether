@@ -10,6 +10,8 @@ import app.tether.AppContainer
 import app.tether.core.AgentEvent
 import app.tether.core.RunRef
 import app.tether.core.RunStatus
+import app.tether.core.SessionEvent
+import app.tether.core.SessionRef
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
@@ -49,14 +51,24 @@ object ServiceController {
 
         // 0 ── Opening the app lifts a "Disconnect" from the notification.
         container.scope.launch(Dispatchers.Main.immediate) {
-            foreground.collect { if (it && suspended.value) { suspended.value = false; container.agents.setPaused(false) } }
+            foreground.collect {
+                if (it && suspended.value) {
+                    suspended.value = false
+                    container.agents.setPaused(false)
+                    container.sessions.setPaused(false)
+                }
+            }
         }
 
         // 1 ── Foreground service lifetime: live agents (background watch) OR open SSH sessions (keep-alive).
         container.scope.launch(Dispatchers.Main.immediate) {
             val sessionsOpen = container.ssh.states.map { it.isNotEmpty() }.distinctUntilChanged()
+            val agentsLive = combine(
+                container.agents.agents.map { list -> list.any { it.run.displayStatus in LIVE && !it.run.terminal } },
+                container.sessions.sessions.map { SessionAlerts.live(it).isNotEmpty() },
+            ) { a, s -> a || s }
             val wants = combine(
-                container.agents.agents.map { list -> list.any { it.run.displayStatus in LIVE && !it.run.terminal } }.distinctUntilChanged(),
+                agentsLive.distinctUntilChanged(),
                 container.settings.settings.map { it.backgroundWatch to it.keepConnectionsAlive }.distinctUntilChanged(),
                 sessionsOpen,
                 suspended,
@@ -100,6 +112,45 @@ object ServiceController {
             }
         }
 
+        // 2b ── Session events (one-session model): needs-you, turn done, failed — keyed on session id.
+        container.scope.launch {
+            container.sessions.events.collect { event ->
+                try {
+                    if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return@collect
+                    val settings = container.settings.settings.value
+                    val machine = container.connections.get(event.ref.connectionId)?.name
+                    when (event) {
+                        is SessionEvent.NeedsYou -> if (settings.notifyPermissions) {
+                            Notifications.showSessionNeedsYou(app, event, machine)
+                            val identity = SessionAlerts.identityOf(event.pending, event.waitingFor)
+                            rememberSessionNotification(SessionAlerts.needsYouId(event.ref, identity), event.ref, identity)
+                        }
+                        is SessionEvent.TurnDone -> if (settings.notifyCompletion) Notifications.showSessionTurnDone(app, event, machine)
+                        is SessionEvent.Failed -> Notifications.showSessionFailed(app, event, machine)
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "Couldn't post notification for ${event::class.simpleName} on session ${event.ref.short}", e)
+                }
+            }
+        }
+
+        // 3b ── Dismiss session needs-you notifications once that prompt is answered (anywhere) or the session is gone.
+        container.scope.launch {
+            container.sessions.sessions.collect { list ->
+                if (postedSessions.isEmpty()) return@collect
+                val now = System.currentTimeMillis()
+                for ((id, p) in postedSessions.entries.toList()) {
+                    if (now - p.at < 5_000) continue
+                    if (!SessionAlerts.stillWaiting(list, p.ref, p.identity, unknownDefault = false)) {
+                        Notifications.cancel(app, id)
+                        postedSessions.remove(id)
+                    }
+                }
+            }
+        }
+
         // 3 ── Dismiss approval notifications answered elsewhere (in the app, on the desktop, cancelled…).
         container.scope.launch {
             container.agents.agents.collect { list ->
@@ -130,6 +181,8 @@ object ServiceController {
         suspended.value = true
         container.agents.setPaused(true)          // cancel every watch stream first…
         container.agents.setBackgroundWatch(false)
+        container.sessions.setPaused(true)
+        container.sessions.setBackgroundWatch(false)
         stop(app)
         container.scope.launch {
             kotlinx.coroutines.delay(300)             // …so nothing reconnects behind our back
@@ -143,6 +196,19 @@ object ServiceController {
 
     internal fun forgetPermission(notificationId: Int) {
         posted.remove(notificationId)
+    }
+
+    private class PostedSession(val ref: SessionRef, val identity: String, val at: Long)
+
+    /** Session needs-you notifications currently shown, by notification id. */
+    private val postedSessions = ConcurrentHashMap<Int, PostedSession>()
+
+    internal fun rememberSessionNotification(notificationId: Int, ref: SessionRef, identity: String) {
+        postedSessions[notificationId] = PostedSession(ref, identity, System.currentTimeMillis())
+    }
+
+    internal fun forgetSessionNotification(notificationId: Int) {
+        postedSessions.remove(notificationId)
     }
 
     private fun start(app: Application) {
