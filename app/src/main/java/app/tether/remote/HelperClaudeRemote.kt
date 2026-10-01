@@ -5,21 +5,10 @@ import app.tether.core.ClaudeRemote
 import app.tether.core.ConnectionRepository
 import app.tether.core.DirListing
 import app.tether.core.ExecResult
-import app.tether.core.McpChoice
-import app.tether.core.NativeStartResult
-import app.tether.core.NativeTimelineEntry
-import app.tether.core.isNative
-import app.tether.core.nativeId
-import app.tether.core.nativeRunRef
 import app.tether.core.ProbeResult
 import app.tether.core.SlashCommand
 import app.tether.core.ProjectSummary
-import app.tether.core.RunInfo
-import app.tether.core.RunRef
-import app.tether.core.SessionSummary
 import app.tether.core.SshManager
-import app.tether.core.StartRunRequest
-import app.tether.core.TailLine
 import app.tether.core.DaemonStatus
 import app.tether.core.FollowEvent
 import app.tether.core.NewSessionRequest
@@ -30,7 +19,6 @@ import app.tether.core.SessionRemote
 import app.tether.core.WatchMessage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
@@ -38,20 +26,15 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 /**
  * [ClaudeRemote] over SSH, driving `tether_helper.py` (bundled in assets, installed on demand at
- * `~/.tether/bin/tether_helper.py`). Every call is one exec channel; tail/watch are long-lived
+ * `~/.tether/bin/tether_helper.py`). Every call is one exec channel; watch/follow are long-lived
  * streams. The helper is (re)installed once per app session per machine when missing or outdated.
  */
 class HelperClaudeRemote internal constructor(
@@ -59,7 +42,7 @@ class HelperClaudeRemote internal constructor(
     private val connections: ConnectionRepository,
     private val scope: CoroutineScope,
     helperSource: () -> ByteArray,
-) : ClaudeRemote, RunHistorySource, SessionRemote {
+) : ClaudeRemote, SessionRemote {
 
     constructor(context: Context, ssh: SshManager, connections: ConnectionRepository, scope: CoroutineScope) :
         this(ssh, connections, scope, { context.applicationContext.assets.open(ASSET_NAME).use { it.readBytes() } })
@@ -229,271 +212,6 @@ class HelperClaudeRemote internal constructor(
         return decode(out, "project list") { json.decodeFromString(ListSerializer(ProjectSummary.serializer()), it) }
     }
 
-    override suspend fun listSessions(connectionId: String, cwd: String?, limit: Int): List<SessionSummary> {
-        val args = buildList {
-            add("sessions"); add("--legacy") // the old SessionSummary list (helper 2.x: `sessions` is the new Session list)
-            add("--limit"); add(limit.coerceIn(1, 1000).toString())
-            if (!cwd.isNullOrBlank()) { add("--cwd"); add(cwd) }
-        }
-        val out = helper(connectionId, args, timeoutMs = 60_000)
-        return decode(out, "session list") { json.decodeFromString(ListSerializer(SessionSummary.serializer()), it) }
-    }
-
-    override suspend fun loadTranscript(connectionId: String, sessionId: String): List<String> {
-        val out = helper(connectionId, listOf("transcript", sessionId), timeoutMs = 120_000)
-        return withContext(Dispatchers.Default) { out.lines().filter { it.isNotBlank() } }
-    }
-
-    override suspend fun loadRunHistory(ref: RunRef): List<String> {
-        val out = helper(ref.connectionId, listOf("history", ref.runId), timeoutMs = 120_000)
-        return withContext(Dispatchers.Default) { out.lines().filter { it.isNotBlank() } }
-    }
-
-    override suspend fun listRuns(connectionId: String): List<RunInfo> {
-        val out = helper(connectionId, listOf("runs"), timeoutMs = 45_000)
-        val runs = decode(out, "agent list") { json.decodeFromString(ListSerializer(RunInfo.serializer()), it) }
-        // Native agents are best-effort: a machine without `claude agents` still lists its Tether runs.
-        val native = try {
-            listNative(connectionId)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (_: Exception) {
-            emptyList()
-        }
-        return runs + native
-    }
-
-    // ═══════════════════════════════════════ native background agents ═══════════════════════════════════════
-
-    private fun nativeIdOf(ref: RunRef): String = ref.nativeId ?: throw RemoteException("Not a background agent.")
-
-    suspend fun listNative(connectionId: String): List<RunInfo> {
-        val out = helper(connectionId, claudeArgs(connectionId) + "native-list", timeoutMs = 45_000)
-        return decode(out, "background agent list") { NativeAgents.parseList(it).map(NativeAgents::toRunInfo) }
-    }
-
-    override suspend fun startNative(connectionId: String, request: StartRunRequest, trust: Boolean, mcp: McpChoice?): NativeStartResult {
-        val body = buildJsonObject {
-            put("cwd", request.cwd)
-            put("prompt", request.prompt.orEmpty())
-            request.model?.let { put("model", it) }
-            request.permissionMode?.let { put("permissionMode", it) }
-            put("trust", trust)
-            mcp?.let { put("mcp", it.wire) }
-        }.toString().toByteArray(Charsets.UTF_8)
-        val out = helper(connectionId, claudeArgs(connectionId) + "native-start", stdin = body, timeoutMs = 120_000)
-        val line = lastJsonLine(out) ?: throw RemoteException("The machine sent no answer.")
-        val o = RemoteJson.parseObject(line)
-        if (o?.str("error") == "untrusted") return NativeStartResult.Untrusted(o.str("cwd") ?: request.cwd)
-        if (o?.str("error") == "mcp") {
-            val servers = o.arr("servers")?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.orEmpty()
-            return NativeStartResult.McpApproval(o.str("cwd") ?: request.cwd, servers)
-        }
-        o?.str("error")?.let { throw RemoteException(it) }
-        val dto = decode(out, "background agent") { NativeAgents.parseOne(it) }
-        return NativeStartResult.Started(nativeRunRef(connectionId, dto.id))
-    }
-
-    override suspend fun replyNative(ref: RunRef, message: String, model: String?, permissionMode: String?): RunInfo {
-        val body = buildJsonObject {
-            put("message", message)
-            model?.let { put("model", it) }
-            permissionMode?.let { put("permissionMode", it) }
-        }.toString().toByteArray(Charsets.UTF_8)
-        val id = nativeIdOf(ref)
-        val restart = model != null || permissionMode != null
-        val out = helper(ref.connectionId, claudeArgs(ref.connectionId) + listOf(NativeAgents.replyCommand(id, restart), id), stdin = body, timeoutMs = 120_000)
-        return decode(out, "background agent") { NativeAgents.toRunInfo(NativeAgents.parseOne(it)) }
-    }
-
-    override suspend fun answerNative(ref: RunRef, allow: Boolean): RunInfo {
-        val body = buildJsonObject { put("decision", if (allow) "allow" else "deny") }.toString().toByteArray(Charsets.UTF_8)
-        val out = helper(ref.connectionId, claudeArgs(ref.connectionId) + listOf("native-answer", nativeIdOf(ref)), stdin = body, timeoutMs = 60_000)
-        return decode(out, "background agent") { NativeAgents.toRunInfo(NativeAgents.parseOne(it)) }
-    }
-
-    override suspend fun rewindFiles(connectionId: String, sessionId: String, messageId: String, cwd: String, dryRun: Boolean, runId: String?): app.tether.core.RewindResult {
-        val body = buildJsonObject {
-            put("sessionId", sessionId); put("messageId", messageId); put("cwd", cwd); put("dryRun", dryRun)
-            runId?.let { put("runId", it) }
-        }.toString().toByteArray(Charsets.UTF_8)
-        val out = helper(connectionId, claudeArgs(connectionId) + "rewind", stdin = body, timeoutMs = 90_000)
-        return decode(out, "rewind result") { line ->
-            val o = RemoteJson.parseObject(line) ?: throw IOException("not an object")
-            app.tether.core.RewindResult(
-                canRewind = o.bool("canRewind") ?: false,
-                filesChanged = (o["filesChanged"] as? kotlinx.serialization.json.JsonArray)?.mapNotNull { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }.orEmpty(),
-                insertions = o.int("insertions") ?: 0,
-                deletions = o.int("deletions") ?: 0,
-                error = o.str("error"),
-            )
-        }
-    }
-
-    override suspend fun nativeQuestion(ref: RunRef): String {
-        val out = helper(ref.connectionId, claudeArgs(ref.connectionId) + listOf("native-question", nativeIdOf(ref)), timeoutMs = 60_000)
-        return decode(out, "question") { RemoteJson.parseObject(it)?.str("inputJson") ?: throw IOException("no question") }
-    }
-
-    override suspend fun askNative(ref: RunRef, answers: List<app.tether.core.AskAnswer>): RunInfo {
-        val body = buildJsonObject {
-            put("answers", kotlinx.serialization.json.buildJsonArray {
-                for (a in answers) add(buildJsonObject {
-                    put("choices", kotlinx.serialization.json.JsonArray(a.choices.map { kotlinx.serialization.json.JsonPrimitive(it) }))
-                    a.other?.trim()?.takeIf { it.isNotEmpty() }?.let { put("other", it) }
-                })
-            })
-        }.toString().toByteArray(Charsets.UTF_8)
-        val out = helper(ref.connectionId, claudeArgs(ref.connectionId) + listOf("native-ask", nativeIdOf(ref)), stdin = body, timeoutMs = 120_000)
-        return decode(out, "background agent") { NativeAgents.toRunInfo(NativeAgents.parseOne(it)) }
-    }
-
-    override suspend fun setNativeMode(ref: RunRef, mode: String): RunInfo {
-        val body = buildJsonObject { put("mode", mode) }.toString().toByteArray(Charsets.UTF_8)
-        val out = helper(ref.connectionId, claudeArgs(ref.connectionId) + listOf("native-mode", nativeIdOf(ref)), stdin = body, timeoutMs = 60_000)
-        return decode(out, "background agent") { NativeAgents.toRunInfo(NativeAgents.parseOne(it)) }
-    }
-
-    override suspend fun interruptNative(ref: RunRef): RunInfo {
-        val out = helper(ref.connectionId, claudeArgs(ref.connectionId) + listOf("native-interrupt", nativeIdOf(ref)), timeoutMs = 60_000)
-        return decode(out, "background agent") { NativeAgents.toRunInfo(NativeAgents.parseOne(it)) }
-    }
-
-    override suspend fun nativeTimeline(ref: RunRef): List<NativeTimelineEntry> {
-        val out = helper(ref.connectionId, listOf("native-timeline", nativeIdOf(ref)), timeoutMs = 30_000)
-        return decode(out, "activity timeline") { NativeAgents.parseTimeline(it) }
-    }
-
-    override suspend fun nativeLogs(ref: RunRef): String {
-        val out = helper(ref.connectionId, claudeArgs(ref.connectionId) + listOf("native-logs", nativeIdOf(ref)), timeoutMs = 45_000)
-        return decode(out, "terminal output") { RemoteJson.parseObject(it)?.str("text") ?: "" }
-    }
-
-    override fun followNative(ref: RunRef): Flow<String> = flow {
-        val home = ensureHelper(ref.connectionId)
-        ssh.streamLines(ref.connectionId, helperCommand(home, listOf("native-follow", nativeIdOf(ref)))).collect { line ->
-            if (line.startsWith("{\"error\"")) {
-                RemoteJson.parseObject(line)?.str("error")?.let { throw RemoteException(it) }
-            }
-            emit(line)
-        }
-    }
-
-    override suspend fun startRun(connectionId: String, request: StartRunRequest): RunInfo {
-        val body = json.encodeToString(StartRunRequest.serializer(), request).toByteArray(Charsets.UTF_8)
-        val out = helper(connectionId, claudeArgs(connectionId) + "start", stdin = body, timeoutMs = 60_000)
-        return decode(out, "agent description") { json.decodeFromString(RunInfo.serializer(), it) }
-    }
-
-    override suspend fun writeInput(ref: RunRef, jsonLines: List<String>) {
-        if (jsonLines.isEmpty()) return
-        val payload = (jsonLines.joinToString("\n") { it.replace("\n", "") } + "\n").toByteArray(Charsets.UTF_8)
-        val out = helper(ref.connectionId, listOf("send", ref.runId), stdin = payload, timeoutMs = 30_000)
-        val o = lastJsonLine(out)?.let { RemoteJson.parseObject(it) }
-        if (o?.bool("ok") != true) throw RemoteException("The message did not reach the agent.")
-    }
-
-    override suspend fun readInput(ref: RunRef): List<String> {
-        val out = helper(ref.connectionId, listOf("input", ref.runId), timeoutMs = 60_000)
-        return out.lines().filter { it.isNotBlank() }
-    }
-
-    /**
-     * Follows out.jsonl from [fromOffset]. Uses the helper's `follow` (byte-exact, complete lines only,
-     * exits the moment the SSH channel closes) — a bare `tail -F` would linger on the remote forever
-     * once the run goes quiet. Equivalent to `tail -c +<offset+1> -F out.jsonl`.
-     */
-    override fun tail(ref: RunRef, fromOffset: Long): Flow<TailLine> = flow {
-        val home = ensureHelper(ref.connectionId)
-        val start = fromOffset.coerceAtLeast(0)
-        var offset = start
-        ssh.streamLines(ref.connectionId, helperCommand(home, listOf("follow", ref.runId, start.toString()))).collect { line ->
-            offset += utf8Length(line) + 1
-            emit(TailLine(line, offset))
-        }
-    }
-
-    override fun watch(connectionId: String): Flow<List<RunInfo>> = channelFlow {
-        val home = ensureHelper(connectionId)
-        val lastLine = AtomicLong(System.currentTimeMillis())
-        val watchdog = launch {
-            while (true) {
-                delay(5_000)
-                if (System.currentTimeMillis() - lastLine.get() > WATCH_STALL_MS) {
-                    throw IOException("Lost contact with the machine (no heartbeat).")
-                }
-            }
-        }
-        val serializer = ListSerializer(RunInfo.serializer())
-        // The helper prints the Tether runs (`[…]`) and the native agents (`{"native":[…]}`) as
-        // separate lines; downstream sees one merged list. Right after (re)connecting, runs are held
-        // back briefly for the native line so native agents do not blink out of the dashboard.
-        var runs: List<RunInfo>? = null
-        var native: List<RunInfo>? = null
-        var hold: kotlinx.coroutines.Job? = null
-        // `watch --legacy`: the old RunInfo stream (helper 2.x: plain `watch` is the new Session stream).
-        ssh.streamLines(connectionId, helperCommand(home, claudeArgs(connectionId) + listOf("watch", "--legacy")))
-            .collect { raw ->
-                lastLine.set(System.currentTimeMillis())
-                val line = raw.trim()
-                if (line.startsWith("[")) {
-                    val parsed = try {
-                        json.decodeFromString(serializer, line)
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (_: Exception) {
-                        null
-                    }
-                    if (parsed != null) {
-                        runs = parsed
-                        if (native != null) {
-                            send(parsed + native!!)
-                        } else if (hold == null) {
-                            hold = launch {
-                                delay(NATIVE_HOLD_MS)
-                                if (native == null) send(runs.orEmpty())
-                            }
-                        }
-                    }
-                } else if (line.startsWith("{\"native\"")) {
-                    val parsed = try {
-                        NativeAgents.parseWatchLine(line)?.map(NativeAgents::toRunInfo)
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (_: Exception) {
-                        null
-                    }
-                    if (parsed != null) {
-                        native = parsed
-                        hold?.cancel()
-                        runs?.let { send(it + parsed) }
-                    }
-                } else if (line.startsWith("{")) {
-                    val o: JsonObject? = RemoteJson.parseObject(line)
-                    o?.str("error")?.let { throw RemoteException(it) }
-                }
-            }
-        hold?.cancel()
-        watchdog.cancel()
-        throw IOException("The machine closed the status stream.")
-    }
-
-    override suspend fun stopRun(ref: RunRef) {
-        if (ref.isNative) {
-            helper(ref.connectionId, claudeArgs(ref.connectionId) + listOf("native-stop", nativeIdOf(ref)), timeoutMs = 45_000)
-        } else {
-            helper(ref.connectionId, listOf("stop", ref.runId), timeoutMs = 30_000)
-        }
-    }
-
-    override suspend fun deleteRun(ref: RunRef) {
-        if (ref.isNative) {
-            helper(ref.connectionId, claudeArgs(ref.connectionId) + listOf("native-rm", nativeIdOf(ref)), timeoutMs = 60_000)
-        } else {
-            helper(ref.connectionId, listOf("delete", ref.runId), timeoutMs = 30_000)
-        }
-    }
-
     override suspend fun listDir(connectionId: String, path: String?): DirListing {
         val args = if (path.isNullOrBlank()) listOf("ls") else listOf("ls", path)
         val out = helper(connectionId, args, timeoutMs = 30_000)
@@ -607,8 +325,15 @@ class HelperClaudeRemote internal constructor(
         if (o?.bool("ok") != true) throw RemoteException("The keys did not reach the session.")
     }
 
-    override suspend fun answer(connectionId: String, sessionId: String, decision: SessionDecision, message: String?): Session {
-        val out = sessionHelper(connectionId, listOf("answer", sessionId), SessionProtocol.answerBody(decision, message))
+    override suspend fun setMode(connectionId: String, sessionId: String, mode: String?): String? {
+        val out = sessionHelper(connectionId, listOf("key", sessionId), SessionProtocol.modeBody(mode), timeoutMs = 60_000)
+        val o = lastJsonLine(out)?.let { RemoteJson.parseObject(it) }
+        if (o?.bool("ok") != true) throw RemoteException("The keys did not reach the session.")
+        return o.str("permissionMode")
+    }
+
+    override suspend fun answer(connectionId: String, sessionId: String, decision: SessionDecision, message: String?, toolUseId: String?): Session {
+        val out = sessionHelper(connectionId, listOf("answer", sessionId), SessionProtocol.answerBody(decision, message, toolUseId))
         return sessionOf(out, "session").copy(connectionId = connectionId)
     }
 
@@ -669,7 +394,6 @@ class HelperClaudeRemote internal constructor(
         /** First HELPER_VERSION major that speaks the one-session protocol. */
         const val SESSION_PROTOCOL_MAJOR = 2
         const val WATCH_STALL_MS = 40_000L
-        const val NATIVE_HOLD_MS = 2_500L
         val VERSION_RE = Regex("""HELPER_VERSION\s*=\s*"([^"]+)"""")
         /** Home dir, owner-only ~/.tether, and the installed helper's SHA-256, without running it. */
         val CHECK_SCRIPT = """

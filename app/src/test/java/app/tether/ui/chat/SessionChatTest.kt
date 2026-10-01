@@ -165,8 +165,12 @@ class SessionChatTest {
         assertEquals("Esc", keyLabel("esc"))
         assertEquals("New MCP servers found in this project", dialogTitle(mcp))
         assertEquals("Trust?", dialogTitle(mcp.copy(dialog = DialogKind.TRUST, title = " Trust? ")))
-        // No per-option key: walk the cursor (top, then down) and Space / Enter.
-        assertEquals(listOf(SessionKey.Up, SessionKey.Up, SessionKey.Down, SessionKey.Space), toggleKeys(mcp, 1))
+        // No per-option key: anchor on "Enable selected" (Down clamps there), walk up (Up wraps at the top), Space.
+        val (d, u, sp) = Triple(SessionKey.Down, SessionKey.Up, SessionKey.Space)
+        assertEquals(listOf(d, d, d, u, sp), toggleKeys(mcp, 1))
+        assertEquals(listOf(d, d, d, u, u, sp), toggleKeys(mcp, 0))
+        // Continue: Enter on a server row toggles it; on "Enable selected" it enables the checked ones.
+        assertEquals(listOf(d, d, d, SessionKey.Enter), mcpContinueKeys(mcp))
         assertEquals(listOf(SessionKey.Down, SessionKey.Enter), optionKeys(mcp, 1))
         // The helper's own key wins.
         val keyed = mcp.copy(options = listOf(DialogOption("Yes", key = "1"), DialogOption("No", key = "esc")))
@@ -203,7 +207,11 @@ class SessionChatTest {
     fun statusLabels() {
         val s = Session(sessionId = sid, state = SessionState.IDLE, process = SessionProcess.LIVE)
         assertEquals("Idle", sessionStatusLabel(ui(s)))
-        assertEquals("Stopped · a reply wakes it", sessionStatusLabel(ui(s.copy(process = SessionProcess.RETIRED))))
+        // Short in the header (it shares a line with the machine badge); the composer says how to wake it.
+        assertEquals("Stopped", sessionStatusLabel(ui(s.copy(process = SessionProcess.RETIRED))))
+        assertEquals("Stopped · your reply wakes it", sessionComposerHint(ui(s.copy(process = SessionProcess.RETIRED))))
+        assertEquals("Waking…", sessionComposerHint(ui(s.copy(process = SessionProcess.RETIRED), waking = true)))
+        assertEquals(null, sessionComposerHint(ui(s)))
         assertEquals("Working", sessionStatusLabel(ui(s.copy(state = SessionState.WORKING))))
         assertEquals("Needs you", sessionStatusLabel(ui(s.copy(state = SessionState.NEEDS_YOU))))
         assertEquals("In a terminal", sessionStatusLabel(ui(s.copy(heldBy = app.tether.core.Holder.TERMINAL))))

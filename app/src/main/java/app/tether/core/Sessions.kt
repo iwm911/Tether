@@ -13,7 +13,7 @@ import kotlinx.serialization.json.JsonPrimitive
  *
  * Wire types of the helper ↔ app protocol, HELPER_VERSION 2.0.0 (docs/plans/one-session-daemon.md).
  * Field names match the helper's JSON exactly; every field has a default so a helper that omits
- * one (or adds new ones) still parses. The old run types (RunRef, RunInfo…) stay until phase R.
+ * one (or adds new ones) still parses.
  */
 
 /** Identifies one Claude Code session on one machine. Route-safe (no slashes). */
@@ -196,6 +196,10 @@ object SessionErrorCodes {
     const val EUNTRUSTED = "EUNTRUSTED"
     const val ETIMEOUT = "ETIMEOUT"
     const val EDAEMON = "EDAEMON"
+    /** The prompt being answered is gone or another one took its place (`answer` with a toolUseId, `ask`). */
+    const val ESTALE = "ESTALE"
+    /** The helper refused the request itself (bad keys, empty text, ...). */
+    const val EINVAL = "EINVAL"
 }
 
 // ───────────────────────────── watch ─────────────────────────────
@@ -277,7 +281,7 @@ data class SessionTodo(
 
 /** One line of `helper follow` (field `e`). */
 sealed interface FollowEvent {
-    /** A transcript line, as raw JSON text, for [app.tether.remote.StreamReducer.acceptTranscript]. */
+    /** A transcript line, as raw JSON text, for [app.tether.remote.TranscriptReducer.acceptTranscript]. */
     data class Line(val json: String, val uuid: String?, val offset: Long?) : FollowEvent
     data class Draft(val text: String) : FollowEvent
     data object DraftClear : FollowEvent

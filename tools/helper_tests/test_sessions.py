@@ -124,7 +124,9 @@ class SessionsTest(unittest.TestCase):
     def test_live_working_job(self):
         a = self.by_sid()[SID_A]
         self.assertEqual((a["state"], a["process"], a["heldBy"]), ("working", "live", "daemon"))
-        self.assertEqual((a["name"], a["intent"], a["model"], a["tokens"]), ("builder", "build it", "haiku", 1200))
+        # The model the transcript last ran on wins over the job's --model flag (the CLI rewrites that flag).
+        self.assertEqual((a["name"], a["intent"], a["model"], a["tokens"]),
+                         ("builder", "build it", "claude-haiku-4-5-20251001", 1200))
         self.assertEqual(a["inFlight"], {"tasks": 1, "queued": 0, "kinds": ["shell"]})
         self.assertEqual(a["children"], [{"id": "12", "href": "https://github.com/x/y/pull/12", "kind": "pr"}])
         self.assertEqual(a["lastText"], "Building now.")
@@ -152,7 +154,8 @@ class SessionsTest(unittest.TestCase):
     def test_retired_job_keeps_its_facts(self):
         c = self.by_sid()[SID_C]
         self.assertEqual((c["state"], c["process"], c["heldBy"]), ("done", "retired", "none"))
-        self.assertEqual((c["model"], c["permissionMode"], c["lastText"]), ("sonnet", "acceptEdits", "PONG"))
+        self.assertEqual((c["model"], c["permissionMode"], c["lastText"]),
+                         ("claude-haiku-4-5-20251001", "acceptEdits", "PONG"))
 
     def test_shift_tab_mode_from_respawn_flags_beats_the_transcript(self):
         # Shift+Tab: the daemon rewrites the job's --permission-mode at once; the transcript still says
@@ -230,11 +233,10 @@ class SessionsTest(unittest.TestCase):
         rc, out, err = self.w.home.run("sessions", "--cwd", self.w.other)
         self.assertEqual(set(s["sessionId"] for s in out["sessions"]), {SID_D, SID_E})
 
-    def test_legacy_sessions_command_still_answers_the_old_shape(self):
-        rc, out, err = self.w.home.run("sessions", "--legacy", "--limit", "50")
-        self.assertEqual(rc, 0, err)
-        self.assertIsInstance(out, list)
-        self.assertTrue(all("title" in s and "messageCount" in s for s in out))
+    def test_removed_live_run_commands_are_unknown(self):
+        for cmd in ("start", "runs", "input", "history", "delete", "rewind", "native-list", "native-start"):
+            rc, out, err = self.w.home.run(cmd)
+            self.assertEqual((rc, out["error"]), (1, "Unknown command: %s" % cmd))
 
     def test_probe_reports_the_daemon(self):
         rc, out, err = self.w.home.run("probe")
@@ -384,6 +386,27 @@ class ScreenDraftTest(unittest.TestCase):
         # A spinner still wins (and gives the status).
         spun = screen.replace(u"  3.\n", u"  3.\n\n✶ Herding… (2s)\n")
         self.assertEqual(h.screen_draft(self.lines(spun), working=True)[1]["verb"], u"Herding…")
+
+    def test_turn_closing_line_is_not_part_of_the_draft(self):
+        # Seen on the emulator: the state still said working after the turn ended, so the box anchored the block
+        # and the "✻ Crunched for 10s" line came along; that draft never matched the landed reply and stuck.
+        rule = u"─" * 110
+        screen = u"\n".join([u"❯ write 3 facts", u"", u"● 1. One.", u"  2. Two.", u"  3. Three.", u"",
+                             u"✻ Crunched for 10s · done 9:41 PM", u"", rule, u"❯", rule])
+        self.assertEqual(h.screen_draft(self.lines(screen), working=True), (u"1. One.\n2. Two.\n3. Three.", None))
+        # A reply line that merely says "for 5s" (indented under the ●) is kept.
+        keep = screen.replace(u"  3. Three.", u"  3. Wait for 5s then retry.")
+        self.assertIn(u"Wait for 5s", h.screen_draft(self.lines(keep), working=True)[0])
+
+    def test_token_counter_above_the_box_is_not_part_of_the_draft(self):
+        # Recorded live (2.1.287, a session started like the phone does): mid-list, the right-aligned token
+        # counter sits right above the prompt box; it came through as an indented line (a code block on the phone).
+        rule = u"─" * 120
+        screen = u"\n".join([u"❯ write 30 facts", u"", u"● 1. Stars are hot.", u"  2. Sun is old.", u"  3."]
+                            + [u""] * 6 + [u" " * 106 + u"34781 tokens", rule, u"❯", rule])
+        self.assertEqual(h.screen_draft(self.lines(screen), working=True), (u"1. Stars are hot.\n2. Sun is old.\n3.", None))
+        self.assertFalse(h.right_aligned_chrome(u"  2. Sun is old."))
+        self.assertTrue(h.right_aligned_chrome(u" " * 60 + u"1.2k tokens"))
 
     def test_wide_characters_take_two_cells(self):
         s = h.WideScreen(rows=3, cols=20)
@@ -637,11 +660,11 @@ class FollowTest(unittest.TestCase):
         self.assertGreater(clear, final_line)
         self.assertNotIn("draft", kinds[clear:])
 
-    def test_follow_command_routes_old_and_new(self):
+    def test_follow_command_takes_session_ids_only(self):
         self.follow_fixture()
         self.home.serve()
         rc, out, err = self.home.run("follow", "r1abcdefg", "0")
-        self.assertEqual((rc, out["error"]), (1, "Run r1abcdefg does not exist on this machine."))
+        self.assertEqual((rc, out["code"]), (1, "ENOSESSION"))
         rc, out, err = self.home.run("follow", "12345678")
         self.assertEqual((rc, out["code"]), (1, "ENOSESSION"))
         p = self.home.popen("follow", FOLLOW_SID[:8], "--from", "0")
@@ -681,7 +704,9 @@ class WritesTest(unittest.TestCase):
         self.assertEqual(d["launch"]["mode"], "resume")
         self.assertEqual((d["launch"]["sessionId"], d["launch"]["fork"]), (SID_C, False))
         self.assertTrue(d["launch"]["transcriptPath"].endswith(SID_C + ".jsonl"))
-        self.assertEqual(d["launch"]["flagArgs"], ["--model", "sonnet", "--permission-mode", "acceptEdits"])
+        # The flags are replayed, except --model: the transcript's last model replaces it.
+        self.assertEqual(d["launch"]["flagArgs"],
+                         ["--permission-mode", "acceptEdits", "--model", "claude-haiku-4-5-20251001"])
         self.assertEqual(d["cwd"], self.w.proj)
         self.assertEqual(self.model.replies, [("cccc3333", "again")])
 
@@ -689,7 +714,8 @@ class WritesTest(unittest.TestCase):
         rc, out, err = self.hm.run("send", SID_D, stdin=json.dumps({"text": "hi", "images": []}))
         self.assertEqual((rc, out), (0, {"ok": True, "woke": True}), err)
         d = self.model.dispatched[0]
-        self.assertEqual((d["short"], d["launch"]["flagArgs"], d["cwd"]), (SID_D[:8], [], self.w.other))
+        self.assertEqual((d["short"], d["launch"]["flagArgs"], d["cwd"]),
+                         (SID_D[:8], ["--permission-mode", "plan", "--model", "claude-opus-5-5"], self.w.other))
 
     def test_resume_flags_drop_launch_only_arguments(self):
         h_ = self.hm.h
@@ -697,6 +723,57 @@ class WritesTest(unittest.TestCase):
                                           "--dangerously-skip-permissions", "the first prompt"]),
                          ["--model", "opus", "--permission-mode=auto", "--dangerously-skip-permissions"])
         self.assertEqual(h_.resume_flags(None), [])
+
+    def test_wake_flags_take_the_model_from_the_transcript(self):
+        # Seen live: launched --model haiku, the CLI later rewrote respawnFlags to "--model opus" (the settings
+        # default) while replies still came from haiku; replaying that flag would switch the session to opus.
+        h_ = self.hm.h
+        tp = self.hm.path("t.jsonl")
+        with open(tp, "w") as fh:
+            fh.write(json.dumps({"type": "assistant", "message": {"model": "claude-haiku-4-5-20251001",
+                                                                  "content": [{"type": "text", "text": "hi"}]}}) + "\n")
+            fh.write(json.dumps({"type": "assistant", "message": {"model": "<synthetic>", "content": []}}) + "\n")
+        self.assertEqual(h_.wake_flags(["--permission-mode", "default", "--model", "opus"], tp),
+                         ["--permission-mode", "default", "--model", "claude-haiku-4-5-20251001"])
+        self.assertEqual(h_.wake_flags(["--model=opus", "--effort", "high"], tp),
+                         ["--effort", "high", "--model", "claude-haiku-4-5-20251001"])
+        empty = self.hm.path("e.jsonl")
+        open(empty, "w").close()
+        self.assertEqual(h_.wake_flags(["--model", "opus"], empty), ["--model", "opus"])
+        self.assertEqual(h_.wake_flags(["--model", "opus"], None), ["--model", "opus"])
+
+    def test_wake_keeps_the_sessions_mode_when_the_flags_lost_it(self):
+        # Seen live: respawnFlags were [] right after a launch with --permission-mode default; a wake without the
+        # flag started in the settings defaultMode ("auto"). The transcript's last mode fills it in.
+        h_ = self.hm.h
+        tp = self.hm.path("m.jsonl")
+        with open(tp, "w") as fh:
+            fh.write(json.dumps({"type": "permission-mode", "permissionMode": "acceptEdits", "sessionId": "x"}) + "\n")
+            fh.write(json.dumps({"parentUuid": None, "type": "user", "permissionMode": "plan",  # compact, like the CLI
+                                 "message": {"role": "user", "content": "hi"}}, separators=(",", ":")) + "\n")
+        self.assertEqual(h_.wake_flags([], tp), ["--permission-mode", "plan"])
+        # The flag, when there, wins (Shift+Tab rewrites it at once; the transcript lags).
+        self.assertEqual(h_.wake_flags(["--permission-mode", "default"], tp), ["--permission-mode", "default"])
+
+    def test_first_turn_model_comes_from_the_daemon_roster(self):
+        # respawnFlags can be [] during the first turn and no reply has landed yet: the roster's launch args tell.
+        hm = self.hm
+        roster = {"proto": 1, "workers": {"aaaa1111": {"sessionId": SID_A, "dispatch": {
+            "short": "aaaa1111", "sessionId": SID_A,
+            "launch": {"mode": "prompt", "args": ["--session-id", SID_A, "--model", "haiku", "--", "go"]}}}}}
+        os.makedirs(hm.path(".claude", "daemon"), exist_ok=True)
+        with open(hm.path(".claude", "daemon", "roster.json"), "w") as fh:
+            json.dump(roster, fh)
+        self.assertEqual(hm.h.roster_launch_flags(), {SID_A: ["--session-id", SID_A, "--model", "haiku"]})
+
+    def test_new_passes_the_default_mode_explicitly(self):
+        # Without the flag the CLI starts in the user's settings defaultMode ("auto" on the test machine), not Ask.
+        d = self.hm.folder("plain", trusted=True)
+        rc, out, err = self.hm.run("new", stdin=json.dumps({"cwd": d, "prompt": "hi", "permissionMode": "default"}))
+        self.assertEqual(rc, 0, err)
+        args = self.model.dispatched[0]["launch"]["args"]
+        self.assertEqual(args[2:4], ["--permission-mode", "default"])
+        self.assertEqual(out["permissionMode"], "default")
 
     def test_images_are_appended_like_a_dropped_file(self):
         img = self.hm.path("up", "shot 1.png")
@@ -738,6 +815,7 @@ class WritesTest(unittest.TestCase):
 
         def unblock(keys):
             self.model.records["bbbb2222"]["tempo"] = "active"
+            hm.job("bbbb2222", sessionId=SID_B, cwd=self.w.proj, state="working", tempo="active")
             os.remove(os.path.join(hm.claude, "sessions", "%d.json" % os.getpid()))
 
         self.model.on_keys = unblock
@@ -759,6 +837,8 @@ class WritesTest(unittest.TestCase):
 
         def unblock(keys):
             self.model.records["bbbb2222"]["tempo"] = "active"
+            st = self.hm.h.job_state("bbbb2222")
+            self.hm.job("bbbb2222", **dict(st, tempo="active"))
             p = os.path.join(self.hm.claude, "sessions", "%d.json" % os.getpid())
             if os.path.exists(p):
                 os.remove(p)
@@ -792,9 +872,10 @@ class WritesTest(unittest.TestCase):
         s = self.hm.h.build_sessions(self.hm.h.Sources(), self.hm.h.TranscriptFacts())
         self.assertEqual([x["process"] for x in s if x["sessionId"] == SID_A], ["retired"])
 
-    def test_stop_routes_old_run_ids_to_the_old_command(self):
+    def test_stop_rejects_old_run_ids(self):
         rc, out, err = self.hm.run("stop", "r1abcdefg")
-        self.assertEqual((rc, out["error"]), (1, "Run r1abcdefg does not exist on this machine."))
+        self.assertEqual((rc, out["error"], out["code"]), (1, "Invalid session id.", "ENOSESSION"))
+        self.assertEqual(self.model.kills, [])
 
     def test_rm_evicts_deletes_the_job_and_hides_the_session(self):
         rc, out, err = self.hm.run("rm", SID_C)
@@ -847,7 +928,7 @@ class WritesTest(unittest.TestCase):
         env_claude = self.hm.path("noclaude")
         rc, out, err = self.hm.run("--claude", "/nonexistent/claude", "send", SID_C, stdin=json.dumps({"text": "x"}))
         self.assertEqual(rc, 1)
-        self.assertTrue(out.get("code") in (None, "ENODAEMON"), out)
+        self.assertEqual(out.get("code"), "ENODAEMON", out)
         self.assertFalse(os.path.exists(env_claude))
 
 

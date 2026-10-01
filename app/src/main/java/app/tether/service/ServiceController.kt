@@ -7,9 +7,6 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
 import app.tether.AppContainer
-import app.tether.core.AgentEvent
-import app.tether.core.RunRef
-import app.tether.core.RunStatus
 import app.tether.core.SessionEvent
 import app.tether.core.SessionRef
 import kotlinx.coroutines.CancellationException
@@ -25,22 +22,15 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Wires the background behaviour:
- *  - runs [AgentWatchService] while `backgroundWatch` is on and any agent is live. Android 12+
+ *  - runs [AgentWatchService] while `backgroundWatch` is on and any session is live. Android 12+
  *    forbids starting a foreground service from the background, so it is started while the app
- *    is still in the foreground and kept until no live agents remain;
- *  - turns [app.tether.core.AgentHub.events] into notifications while the app isn't visible;
- *  - clears approval notifications once the request has been answered elsewhere.
+ *    is still in the foreground and kept until no live sessions remain;
+ *  - turns [app.tether.core.SessionHub.events] into notifications while the app isn't visible;
+ *  - clears needs-you notifications once the prompt has been answered elsewhere.
  */
 object ServiceController {
     private const val TAG = "TetherService"
-    private val LIVE = setOf(RunStatus.STARTING, RunStatus.WORKING, RunStatus.AWAITING_PERMISSION)
-
     private val installed = AtomicBoolean(false)
-
-    private class Posted(val ref: RunRef, val requestId: String, val at: Long)
-
-    /** Approval notifications currently shown, by notification id. */
-    private val posted = ConcurrentHashMap<Int, Posted>()
 
     @OptIn(FlowPreview::class)
     fun install(app: Application, container: AppContainer) {
@@ -54,7 +44,6 @@ object ServiceController {
             foreground.collect {
                 if (it && suspended.value) {
                     suspended.value = false
-                    container.agents.setPaused(false)
                     container.sessions.setPaused(false)
                 }
             }
@@ -63,10 +52,7 @@ object ServiceController {
         // 1 ── Foreground service lifetime: live agents (background watch) OR open SSH sessions (keep-alive).
         container.scope.launch(Dispatchers.Main.immediate) {
             val sessionsOpen = container.ssh.states.map { it.isNotEmpty() }.distinctUntilChanged()
-            val agentsLive = combine(
-                container.agents.agents.map { list -> list.any { it.run.displayStatus in LIVE && !it.run.terminal } },
-                container.sessions.sessions.map { SessionAlerts.live(it).isNotEmpty() },
-            ) { a, s -> a || s }
+            val agentsLive = container.sessions.sessions.map { SessionAlerts.live(it).isNotEmpty() }
             val wants = combine(
                 agentsLive.distinctUntilChanged(),
                 container.settings.settings.map { it.backgroundWatch to it.keepConnectionsAlive }.distinctUntilChanged(),
@@ -75,7 +61,7 @@ object ServiceController {
             ) { anyLive, (watch, keepAlive), open, off -> !off && ((anyLive && watch) || (keepAlive && open)) }
             combine(wants, foreground, AgentWatchService.running) { should, isForeground, running -> Decision(should, isForeground, running) }
                 .distinctUntilChanged()
-                // Absorb momentary flaps (e.g. a run passing STARTING → IDLE → WORKING).
+                // Absorb momentary flaps (e.g. a session passing WORKING → IDLE → WORKING).
                 .debounce(350)
                 .collect { d ->
                     when {
@@ -85,34 +71,7 @@ object ServiceController {
                 }
         }
 
-        // 2 ── Event notifications, only while no Tether screen is visible.
-        container.scope.launch {
-            container.agents.events.collect { event ->
-                try {
-                    if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return@collect
-                    val settings = container.settings.settings.value
-                    val machine = container.connections.get(event.ref.connectionId)?.name
-                    when (event) {
-                        is AgentEvent.PermissionRequested -> if (settings.notifyPermissions) {
-                            Notifications.showPermission(app, event, machine)
-                            rememberPermission(Notifications.permissionId(event.ref, event.requestId), event.ref, event.requestId)
-                        }
-                        is AgentEvent.TurnCompleted -> if (settings.notifyCompletion) {
-                            Notifications.showTurnCompleted(app, event, machine)
-                        }
-                        is AgentEvent.Ended -> if (event.error != null) {
-                            Notifications.showEnded(app, event, machine)
-                        }
-                    }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    Log.w(TAG, "Couldn't post notification for ${event::class.simpleName} on ${event.ref.runId}", e)
-                }
-            }
-        }
-
-        // 2b ── Session events (one-session model): needs-you, turn done, failed — keyed on session id.
+        // 2 ── Session events, only while no Tether screen is visible: needs-you, turn done, failed — keyed on session id.
         container.scope.launch {
             container.sessions.events.collect { event ->
                 try {
@@ -136,7 +95,7 @@ object ServiceController {
             }
         }
 
-        // 3b ── Dismiss session needs-you notifications once that prompt is answered (anywhere) or the session is gone.
+        // 3 ── Dismiss session needs-you notifications once that prompt is answered (anywhere) or the session is gone.
         container.scope.launch {
             container.sessions.sessions.collect { list ->
                 if (postedSessions.isEmpty()) return@collect
@@ -146,25 +105,6 @@ object ServiceController {
                     if (!SessionAlerts.stillWaiting(list, p.ref, p.identity, unknownDefault = false)) {
                         Notifications.cancel(app, id)
                         postedSessions.remove(id)
-                    }
-                }
-            }
-        }
-
-        // 3 ── Dismiss approval notifications answered elsewhere (in the app, on the desktop, cancelled…).
-        container.scope.launch {
-            container.agents.agents.collect { list ->
-                if (posted.isEmpty()) return@collect
-                val now = System.currentTimeMillis()
-                val stillPending = list.mapNotNullTo(HashSet()) { a -> a.run.pending?.let { a.ref to it.requestId } }
-                val known = list.mapTo(HashSet()) { it.ref }
-                for ((id, p) in posted.entries.toList()) {
-                    // Grace period: the event may arrive before the agents list shows the request.
-                    if (now - p.at < 5_000) continue
-                    val runGone = p.ref !in known
-                    if (runGone || (p.ref to p.requestId) !in stillPending) {
-                        Notifications.cancel(app, id)
-                        posted.remove(id)
                     }
                 }
             }
@@ -179,23 +119,13 @@ object ServiceController {
     /** Notification "Disconnect": close every SSH session and stop keeping them alive. */
     fun disconnectAll(app: Application, container: AppContainer) {
         suspended.value = true
-        container.agents.setPaused(true)          // cancel every watch stream first…
-        container.agents.setBackgroundWatch(false)
-        container.sessions.setPaused(true)
+        container.sessions.setPaused(true)         // cancel every watch stream first…
         container.sessions.setBackgroundWatch(false)
         stop(app)
         container.scope.launch {
             kotlinx.coroutines.delay(300)             // …so nothing reconnects behind our back
             runCatching { container.ssh.disconnectAll() }
         }
-    }
-
-    internal fun rememberPermission(notificationId: Int, ref: RunRef, requestId: String) {
-        posted[notificationId] = Posted(ref, requestId, System.currentTimeMillis())
-    }
-
-    internal fun forgetPermission(notificationId: Int) {
-        posted.remove(notificationId)
     }
 
     private class PostedSession(val ref: SessionRef, val identity: String, val at: Long)

@@ -5,6 +5,7 @@ import app.tether.core.AskAnswer
 import app.tether.core.ChatItem
 import app.tether.core.ConversationState
 import app.tether.core.PeerDirection
+import app.tether.core.PermissionState
 import app.tether.core.PeerMessage
 import app.tether.core.PermissionDecision
 import app.tether.core.PermissionMode
@@ -22,6 +23,75 @@ import kotlinx.serialization.json.JsonPrimitive
  * the rendered item list (peers as their own rows), what a permission / question answer sends,
  * how many Shift+Tabs reach a mode, and the dialog key names.
  */
+
+
+/**
+ * Items the list actually renders. TodoWrite rows are drawn by the todo strip, and thinking rows are
+ * dropped entirely when the user turned thinking off — filtering here (off the main thread) keeps
+ * the LazyColumn free of zero-height slots that would still take spacing.
+ */
+internal fun visibleChatItems(items: List<ChatItem>, showThinking: Boolean): List<ChatItem> {
+    // Permission answers fold into the tool row they belong to (one row, a small badge),
+    // instead of a second "Allowed Edit …" row right under it.
+    val toolIds = HashSet<String>()
+    fun collect(list: List<ChatItem>) {
+        for (i in list) if (i is ChatItem.ToolCall) { toolIds += i.toolUseId; collect(i.children) }
+    }
+    collect(items)
+    val decisions = HashMap<String, PermissionState>()
+    for (i in items) if (i is ChatItem.Permission && i.toolUseId != null && i.toolUseId in toolIds) decisions[i.toolUseId] = i.state
+    fun ChatItem.ToolCall.withDecision(): ChatItem.ToolCall {
+        val d = decisions[toolUseId]
+        val kids = if (children.isEmpty()) children else children.map { (it as? ChatItem.ToolCall)?.withDecision() ?: it }
+        return if (d == decision && kids === children) this else copy(decision = d, children = kids)
+    }
+
+    val seen = HashSet<String>(items.size * 2)
+    val out = ArrayList<ChatItem>(items.size)
+    for (raw in items) {
+        var item = raw
+        val keep = when (item) {
+            is ChatItem.ToolCall -> item.name != "TodoWrite"
+            // Redacted / empty thinking has nothing to open — don't spend a row on it.
+            is ChatItem.Thinking -> showThinking && (item.streaming || item.text.isNotBlank())
+            is ChatItem.Permission -> item.toolUseId == null || item.toolUseId !in toolIds
+            else -> true
+        }
+        if (!keep) continue
+        if (item is ChatItem.ToolCall && decisions.isNotEmpty()) item = item.withDecision()
+        // Consecutive thinking blocks read as one quiet "Thought" affordance.
+        val prev = out.lastOrNull()
+        if (item is ChatItem.Thinking && prev is ChatItem.Thinking) {
+            val tokens = listOfNotNull(prev.estimatedTokens, item.estimatedTokens).takeIf { it.isNotEmpty() }?.sum()
+            out[out.lastIndex] = prev.copy(
+                text = listOf(prev.text, item.text).filter { it.isNotBlank() }.joinToString("\n\n"),
+                streaming = item.streaming,
+                estimatedTokens = tokens,
+            )
+            continue
+        }
+        // LazyColumn crashes on duplicate keys — never trust upstream blindly.
+        if (seen.add(item.key)) {
+            out += item
+        } else {
+            var n = 2
+            while (!seen.add("${item.key}#$n")) n++
+            out += item.withKey("${item.key}#$n")
+        }
+    }
+    return out
+}
+
+internal fun ChatItem.withKey(newKey: String): ChatItem = when (this) {
+    is ChatItem.User -> copy(key = newKey)
+    is ChatItem.AssistantText -> copy(key = newKey)
+    is ChatItem.Thinking -> copy(key = newKey)
+    is ChatItem.ToolCall -> copy(key = newKey)
+    is ChatItem.Permission -> copy(key = newKey)
+    is ChatItem.TurnSummary -> copy(key = newKey)
+    is ChatItem.Notice -> copy(key = newKey)
+    is ChatItem.Peer -> copy(key = newKey)
+}
 
 /** Sentinel suggestion: "Yes, and don't ask again" → `answer allow_always`. */
 internal const val ALWAYS_ALLOW_SENTINEL = "{\"tether\":\"allow_always\"}"

@@ -78,6 +78,8 @@ class DaemonLiveTest(unittest.TestCase):
         os.makedirs(LIVE_DIR, exist_ok=True)
         self.short = None
         self.sid = None
+        # Transcripts already in the live folder's project dir (other runs' leftovers are not ours to judge).
+        self.preexisting = set(glob.glob(os.path.join(os.path.join(h.CLAUDE_PROJECTS, h.project_dir_name(LIVE_DIR)), "*.jsonl")))
 
     def tearDown(self):
         if not self.short:
@@ -145,7 +147,8 @@ class DaemonLiveTest(unittest.TestCase):
         self.assertGreater(os.path.getsize(tpath), size)
         mine = [a for a in claude_agents() if a.get("sessionId") == self.sid]
         self.assertEqual([a["id"] for a in mine], [self.short])  # same short, no fork
-        self.assertEqual(glob.glob(os.path.join(os.path.dirname(tpath), "*.jsonl")), [tpath])
+        new_files = set(glob.glob(os.path.join(os.path.dirname(tpath), "*.jsonl"))) - self.preexisting
+        self.assertEqual(new_files, {tpath})  # resumed in place: no forked transcript
 
         before, after = attach_screen(self.short, b"\x1b[Z")
         self.assertIn("manual mode on", before)

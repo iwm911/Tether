@@ -79,7 +79,9 @@ class SessionListController(
         _decisions.update { it + (key to allow) }
         scope.launch {
             val minDelay = async { delay(minDecisionMs) }
-            val result = attempt { hub.answer(session.ref, if (allow) SessionDecision.ALLOW else SessionDecision.DENY) }
+            val result = attempt {
+                hub.answer(session.ref, if (allow) SessionDecision.ALLOW else SessionDecision.DENY, toolUseId = pending.toolUseId.ifBlank { null })
+            }
             minDelay.await()
             result.fold(
                 onSuccess = {

@@ -118,7 +118,6 @@ import app.tether.ui.components.prettyPath
 import app.tether.ui.components.projectName
 import app.tether.ui.components.relativeTime
 import app.tether.ui.components.rememberHaptics
-import app.tether.ui.home.AgentRunCard
 import app.tether.ui.home.ErrorCard
 import app.tether.ui.home.GitBranchBadge
 import app.tether.ui.home.IconTile

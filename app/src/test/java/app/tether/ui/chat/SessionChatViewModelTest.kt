@@ -65,6 +65,8 @@ class SessionChatViewModelTest {
         val calls = mutableListOf<String>()
         var sendGate: CompletableDeferred<Unit>? = null
         var failWith: Throwable? = null
+        /** What setMode reports the footer showed afterwards (null: the requested mode). */
+        var landed: String? = null
         val opened = mutableListOf<Pair<SessionRef, String?>>()
 
         private fun record(s: String) { calls += s; failWith?.let { throw it } }
@@ -83,7 +85,11 @@ class SessionChatViewModelTest {
             return true
         }
         override suspend fun key(ref: SessionRef, keys: List<SessionKey>) = record("key " + keys.joinToString(",") { (it as? SessionKey.Named)?.name ?: "text:" + (it as SessionKey.Text).text })
-        override suspend fun answer(ref: SessionRef, decision: SessionDecision, message: String?) = record("answer ${decision.wire} ${message ?: "-"}")
+        override suspend fun setMode(ref: SessionRef, mode: String?): String? {
+            record("mode ${mode ?: "once"}")
+            return landed ?: mode
+        }
+        override suspend fun answer(ref: SessionRef, decision: SessionDecision, message: String?, toolUseId: String?) = record("answer ${decision.wire} ${message ?: "-"}${toolUseId?.let { " $it" } ?: ""}")
         override suspend fun ask(ref: SessionRef, answers: List<AskAnswer>) = record("ask ${answers.map { it.choices }}")
         override suspend fun interrupt(ref: SessionRef) = record("interrupt")
         override suspend fun stop(ref: SessionRef) = record("stop")
@@ -215,11 +221,11 @@ class SessionChatViewModelTest {
         assertEquals(PermissionMode.ACCEPT_EDITS, vm.cycleMode())
         advanceTimeBy(100)
         assertEquals("acceptEdits", vm.state.value.permissionMode)
-        assertEquals(listOf("key shift-tab"), hub.calls)
+        assertEquals(listOf("mode once"), hub.calls)
 
-        vm.setMode(PermissionMode.AUTO) // acceptEdits → plan → auto
+        vm.setMode(PermissionMode.AUTO) // the helper presses Shift+Tab until the footer shows auto
         advanceTimeBy(100)
-        assertEquals("key shift-tab,shift-tab", hub.calls.last())
+        assertEquals("mode auto", hub.calls.last())
         assertEquals("auto", vm.state.value.permissionMode)
 
         // The session confirms: the optimistic value gives way to the real one.
@@ -238,6 +244,66 @@ class SessionChatViewModelTest {
         vm.setMode(PermissionMode.BYPASS)
         advanceUntilIdle()
         assertEquals("bypass is not a cycle step", before, hub.calls.size)
+    }
+
+    @Test
+    fun theChipShowsWhereTheCycleReallyLanded() = runTest(dispatcher) {
+        // Haiku offers no auto mode: Shift+Tab from plan goes straight back to manual.
+        val hub = FakeHub(stateWith(session(mode = "plan")))
+        val vm = vm(hub)
+        advanceUntilIdle()
+        hub.landed = "default"
+        assertEquals(PermissionMode.AUTO, vm.cycleMode())
+        advanceTimeBy(100)
+        assertEquals("default", vm.state.value.permissionMode)
+    }
+
+    @Test
+    fun aStoppedSessionKeepsItsModeUntilItWakes() = runTest(dispatcher) {
+        val hub = FakeHub(stateWith(session(mode = "default", process = SessionProcess.RETIRED)))
+        val vm = vm(hub)
+        val messages = mutableListOf<String>()
+        backgroundScope.launch { vm.messages.collect { messages += it } }
+        advanceUntilIdle()
+        assertNull(vm.cycleMode())
+        vm.setMode(PermissionMode.PLAN)
+        advanceUntilIdle()
+        assertTrue(hub.calls.isEmpty())
+        assertTrue(messages.all { it.contains("wake") })
+        assertEquals("Stopped", sessionStatusLabel(vm.state.value))
+    }
+
+    @Test
+    fun helperSaysWhyASessionIsMissing() = runTest(dispatcher) {
+        val hub = FakeHub(stateWith(session()))
+        val vm = vm(hub)
+        val messages = mutableListOf<String>()
+        backgroundScope.launch { vm.messages.collect { messages += it } }
+        advanceUntilIdle()
+        hub.failWith = RemoteException("This session isn't running. Send it a message to wake it.", code = SessionErrorCodes.ENOSESSION)
+        vm.pressKeys(listOf(SessionKey.Enter))
+        advanceUntilIdle()
+        assertTrue(messages.single(), messages.single().contains("Send it a message to wake it"))
+    }
+
+    @Test
+    fun aModelChangeOnAStoppedSessionShowsWakingAndHoldsItsLabel() = runTest(dispatcher) {
+        val hub = FakeHub(stateWith(session(model = "claude-haiku-4-5", process = SessionProcess.RETIRED)))
+        val vm = vm(hub)
+        advanceUntilIdle()
+        hub.sendGate = CompletableDeferred()
+        vm.setModel("sonnet")
+        advanceTimeBy(100)
+        assertTrue(vm.state.value.waking)
+        assertEquals("Waking…", sessionStatusLabel(vm.state.value))
+        // Mid-wake the session reports something else (the resumed worker's first state): the label holds.
+        hub.conv.value = stateWith(session(model = "claude-opus-5", process = SessionProcess.LIVE).copy(updatedAt = 2))
+        advanceTimeBy(10_000)
+        assertEquals("sonnet", vm.state.value.model)
+        hub.sendGate!!.complete(Unit)
+        advanceTimeBy(100)
+        assertFalse(vm.state.value.waking)
+        assertEquals(listOf("send /model sonnet images=0"), hub.calls)
     }
 
     @Test
@@ -271,7 +337,8 @@ class SessionChatViewModelTest {
         advanceUntilIdle()
         vm.respond("toolu_Q", PermissionDecision.Deny("The user chose not to answer."))
         advanceUntilIdle()
-        assertEquals(listOf("answer allow_always -", "answer deny not prod", "ask [[0]]", "key esc"), hub.calls)
+        // Answers name the prompt they answer: the helper refuses (ESTALE) if another one is open by then.
+        assertEquals(listOf("answer allow_always - toolu_P", "answer deny not prod toolu_P", "ask [[0]]", "key esc"), hub.calls)
     }
 
     @Test

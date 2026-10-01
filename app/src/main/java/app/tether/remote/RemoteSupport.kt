@@ -1,6 +1,5 @@
 package app.tether.remote
 
-import app.tether.core.RunRef
 import app.tether.core.SlashCommand
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -19,12 +18,6 @@ class RemoteException(
     /** Helper error code (`ENODAEMON`, `EHELD`… see [app.tether.core.SessionErrorCodes]) when it sent one. */
     val code: String? = null,
 ) : Exception(message, cause)
-
-/** Optional capability of a [app.tether.core.ClaudeRemote]: transcript lines of the session a run resumed. */
-interface RunHistorySource {
-    /** Transcript lines of the resumed session written before the run started (empty for fresh runs). */
-    suspend fun loadRunHistory(ref: RunRef): List<String>
-}
 
 internal object RemoteJson {
     val json: Json = Json {

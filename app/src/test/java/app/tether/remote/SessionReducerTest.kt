@@ -51,6 +51,8 @@ class SessionReducerTest {
         """{"type":"user","isSidechain":false,"message":{"role":"user","content":"$text"},"uuid":"$uuid","timestamp":"2026-10-01T17:16:00.000Z"}""",
     )
 
+    private fun FollowEvent.at(offset: Long) = (this as FollowEvent.Line).copy(offset = offset)
+
     private fun texts(r: SessionReducer) = r.snapshot().items.mapNotNull { (it as? ChatItem.AssistantText)?.let { a -> a.text to a.streaming } }
 
     // ───────────── draft → final ─────────────
@@ -317,8 +319,47 @@ class SessionReducerTest {
         r.accept(FollowEvent.CaughtUp(100))
         r.accept(FollowEvent.Line("""{"type":"system","uuid":"s1"}""", "s1", 250))
         assertEquals(250L, r.offset)
-        r.accept(FollowEvent.CaughtUp(200)) // never goes backwards
-        assertEquals(250L, r.offset)
+        // caughtUp is the helper's real position: lower only when the transcript was replaced and it started over.
+        r.accept(FollowEvent.CaughtUp(200))
+        assertEquals(200L, r.offset)
+    }
+
+    @Test
+    fun aReplacedTranscriptIsRebuiltFromScratchAndResumesFromItsRealOffset() {
+        val r = reducer()
+        r.accept(user("u1", "old prompt").at(400))
+        r.accept(assistant("a1", "old answer").at(900))
+        r.accept(FollowEvent.CaughtUp(900))
+        assertEquals(900L, r.beginFollow())
+        // The file was replaced (smaller): the helper replays it from 0, then reports where it really is.
+        r.accept(user("u2", "new prompt").at(120))
+        r.accept(FollowEvent.CaughtUp(120))
+        assertEquals(120L, r.offset)
+        assertEquals(listOf("new prompt"), r.snapshot().items.filterIsInstance<ChatItem.User>().map { it.text })
+        assertTrue(r.snapshot().items.filterIsInstance<ChatItem.AssistantText>().isEmpty())
+        // The next follow resumes at 120: lines past it append normally.
+        assertEquals(120L, r.beginFollow())
+        r.accept(assistant("a2", "new answer").at(300))
+        assertEquals(listOf("new answer"), texts(r).map { it.first })
+        assertEquals(300L, r.offset)
+    }
+
+    @Test
+    fun aNewFollowDropsTheLastVisitsDraftAndSpinner() {
+        // Reopened from the cache after the turn ended while nobody watched: the helper's new follow only sends
+        // what is on screen now (nothing), so the old draft and spinner must not survive.
+        val r = reducer()
+        r.accept(FollowEvent.CaughtUp(10))
+        r.applySession(session(SessionState.IDLE, 5))
+        r.accept(FollowEvent.Status("Improvising…", 3, null))
+        r.accept(FollowEvent.Draft("half a rep"))
+        assertEquals(RunStatus.WORKING, r.snapshot().status)
+        r.beginFollow()
+        val s = r.snapshot()
+        assertNull(s.live!!.draft)
+        assertNull(s.live!!.status)
+        assertEquals(RunStatus.IDLE, s.status)
+        assertNull(s.workingSince)
     }
 
     // ───────────── transcript reducer reuse ─────────────
@@ -326,7 +367,7 @@ class SessionReducerTest {
     @Test
     fun lineEventsRenderExactlyLikeTheTranscriptReducer() {
         val raw = fixture("transcript_session.jsonl").lines().filter { it.isNotBlank() }
-        val direct = StreamReducer { now }.also { sr -> raw.forEach { sr.acceptTranscript(it) } }.snapshot()
+        val direct = TranscriptReducer { now }.also { sr -> raw.forEach { sr.acceptTranscript(it) } }.snapshot()
         val r = reducer()
         for (l in raw) SessionProtocol.parseFollowLine("""{"e":"line","line":$l}""")?.let { r.accept(it) }
         r.accept(FollowEvent.CaughtUp(1))

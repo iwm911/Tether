@@ -23,7 +23,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import app.tether.core.AgentHub
+import app.tether.core.SessionHub
 import app.tether.core.SlashCommand
 import app.tether.ui.theme.TetherTheme
 import kotlinx.coroutines.CancellationException
@@ -52,11 +52,11 @@ internal fun matchSlashCommands(text: String, commands: List<SlashCommand>): Lis
 }
 
 /**
- * Slash commands of whatever machine folder [target] points at, for composers with no live
- * stream-json run to ask. Stays empty until known, and on failure (the popup just doesn't show).
+ * Slash commands of whatever machine folder [target] points at, for composers with no session
+ * to ask yet. Stays empty until known, and on failure (the popup just doesn't show).
  */
 @OptIn(FlowPreview::class)
-internal fun CoroutineScope.slashCommandsFor(hub: AgentHub, target: Flow<Pair<String, String>?>): StateFlow<List<SlashCommand>> {
+internal fun CoroutineScope.slashCommandsFor(hub: SessionHub, target: Flow<Pair<String, String>?>): StateFlow<List<SlashCommand>> {
     val out = MutableStateFlow<List<SlashCommand>>(emptyList())
     launch {
         target.distinctUntilChanged().debounce(300).collectLatest { t ->

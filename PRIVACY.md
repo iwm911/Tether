@@ -33,10 +33,9 @@ These are all the events the app sends. The code is in
 | `app_updated` | First launch after an update | `from`: previous version code |
 | `app_opened` | App comes to the foreground | `machines`: how many machines are saved, bucketed as `0`, `1`, `2-3`, `4+` |
 | `machine_connected` | A saved machine's SSH link first comes up (once per machine per app run) | none |
-| `agent_started` | You start or resume an agent | `model` (e.g. `default`, `opus`), `mode` (permission mode), `resumed` (yes/no), `images` (count) |
-| `message_sent` | You send a message to an agent | `images` (count) |
+| `agent_started` | You start a session, or a message wakes a stopped one | `model` (e.g. `default`, `opus`), `mode` (permission mode), `resumed` (yes/no), `images` (count) |
+| `message_sent` | You send a message to a session | `images` (count) |
 | `permission_answered` | You answer a permission prompt | `decision`: `allow`, `always`, `deny` or `answer` |
-| `conversation_branched` | You branch a conversation | `rewind` (yes/no) |
 
 Every event also carries the **app version and build, Android version, locale** (e.g. `en-US`), a
 **debug-build flag**, and a **random session id** that is generated on the phone and replaced after

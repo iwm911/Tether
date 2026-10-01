@@ -11,7 +11,6 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import app.tether.AppContainer
 import app.tether.TetherApp
-import app.tether.core.RunStatus
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -25,9 +24,9 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
 /**
- * Foreground service (type dataSync) that keeps the per-machine watch streams open while agents
+ * Foreground service (type dataSync) that keeps the per-machine watch streams open while sessions
  * are live and the app is in the background, with an ongoing low-importance summary
- * notification ("2 agents working · 1 needs you"). Started and stopped by [ServiceController].
+ * notification ("2 sessions working · 1 needs you"). Started and stopped by [ServiceController].
  */
 class AgentWatchService : Service() {
 
@@ -41,7 +40,7 @@ class AgentWatchService : Service() {
         super.onCreate()
         val c = (application as TetherApp).container
         container = c
-        val initial = Notifications.buildWatch(this, c.agents.agents.value, c.ssh.states.value, c.connections.connections.value, c.sessions.sessions.value)
+        val initial = Notifications.buildWatch(this, c.sessions.sessions.value, c.ssh.states.value, c.connections.connections.value)
         try {
             ServiceCompat.startForeground(
                 this,
@@ -61,7 +60,6 @@ class AgentWatchService : Service() {
             return
         }
         runningState.value = true
-        c.agents.setBackgroundWatch(true)
         c.sessions.setBackgroundWatch(true)
         watchSessions(c)
 
@@ -78,16 +76,6 @@ class AgentWatchService : Service() {
             combine(c.ssh.states, c.connections.connections) { st: Map<String, app.tether.core.LinkState>, conns: List<app.tether.core.Connection> ->
                 st.mapValues { it.value::class.simpleName } to conns.size
             }.distinctUntilChanged().collect { redraw(c) }
-        }
-
-        scope.launch {
-            c.agents.agents
-                // Only redraw when something visible changes (not on every streamed token).
-                .distinctUntilChangedBy { list ->
-                    list.filter { it.run.displayStatus in LIVE && !it.run.terminal }.map { Triple(it.ref, it.run.displayStatus, it.run.title ?: it.run.cwd) } to
-                        list.firstOrNull { it.run.displayStatus in LIVE && !it.run.terminal }?.let { it.run.pending?.requestId ?: it.run.lastText?.take(80) }
-                }
-                .collect { redraw(c) }
         }
     }
 
@@ -109,7 +97,7 @@ class AgentWatchService : Service() {
         if (Notifications.canPost(this)) {
             NotificationManagerCompat.from(this).notify(
                 Notifications.WATCH_NOTIFICATION_ID,
-                Notifications.buildWatch(this, c.agents.agents.value, c.ssh.states.value, c.connections.connections.value, c.sessions.sessions.value),
+                Notifications.buildWatch(this, c.sessions.sessions.value, c.ssh.states.value, c.connections.connections.value),
             )
         }
     }
@@ -153,7 +141,6 @@ class AgentWatchService : Service() {
         scope.cancel()
         releaseLocks()
         if (runningState.value) {
-            container?.agents?.setBackgroundWatch(false)
             container?.sessions?.setBackgroundWatch(false)
             runningState.value = false
         }
@@ -163,7 +150,6 @@ class AgentWatchService : Service() {
 
     companion object {
         private const val TAG = "TetherWatch"
-        private val LIVE = setOf(RunStatus.STARTING, RunStatus.WORKING, RunStatus.AWAITING_PERMISSION)
         private val runningState = MutableStateFlow(false)
 
         /** True between a successful startForeground and onDestroy. */

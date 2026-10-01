@@ -71,7 +71,7 @@ class HomeViewModelTest {
         override suspend fun new(connectionId: String, request: NewSessionRequest, images: List<ImageAttachment>): NewSessionResult = error("unused")
         override suspend fun send(ref: SessionRef, text: String, images: List<ImageAttachment>): Boolean = error("unused")
         override suspend fun key(ref: SessionRef, keys: List<SessionKey>) = error("unused")
-        override suspend fun answer(ref: SessionRef, decision: SessionDecision, message: String?) {
+        override suspend fun answer(ref: SessionRef, decision: SessionDecision, message: String?, toolUseId: String?) {
             calls += "answer ${ref.sessionId} ${decision.wire}"
             answerGate?.await()
             answerFails?.let { throw it }

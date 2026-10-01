@@ -34,7 +34,7 @@ import kotlinx.serialization.json.JsonPrimitive
  * Pure Kotlin, single-threaded (the hub serialises access). One instance per open session (or
  * subagent view).
  *
- *   line        → the existing transcript reducer ([StreamReducer.acceptTranscript]); de-duplicated
+ *   line        → the transcript reducer ([TranscriptReducer.acceptTranscript]); de-duplicated
  *                 by uuid so a reconnect that replays a few lines is harmless. Incoming
  *                 `<cross-session-message>` user lines are dropped (the `peer` event shows them).
  *                 In a subagent view the lines are sidechain lines: shown as the main thread.
@@ -51,7 +51,7 @@ class SessionReducer(
     val agentId: String? = null,
     private val clock: () -> Long = { System.currentTimeMillis() },
 ) {
-    private val transcript = StreamReducer(clock)
+    private var transcript = TranscriptReducer(clock)
     private val seenUuids = HashSet<String>()
 
     private var session: Session? = null
@@ -69,6 +69,8 @@ class SessionReducer(
 
     var offset: Long = 0L
         private set
+    /** The offset the current follow asked for, until its first line (-1: not checking). */
+    private var followFrom: Long = -1L
     var caughtUp: Boolean = false
         private set
 
@@ -120,7 +122,10 @@ class SessionReducer(
                 version++
             }
             is FollowEvent.CaughtUp -> {
-                if (event.offset > offset) offset = event.offset
+                // The helper's real position: lower than ours only when the transcript was replaced and it
+                // started over (history from 0), so it wins either way.
+                offset = event.offset
+                followFrom = -1L
                 if (!caughtUp) caughtUp = true
                 version++
             }
@@ -153,6 +158,17 @@ class SessionReducer(
     }
 
     /**
+     * A new `follow` starts: the draft and spinner of the last one are stale (a reopened conversation may
+     * have sat in the cache while the turn ended; the helper only sends what is on screen now). Returns the
+     * offset to resume from.
+     */
+    fun beginFollow(): Long {
+        onDisconnected()
+        followFrom = offset
+        return offset
+    }
+
+    /**
      * The follow stream dropped: draft and spinner are stale (the helper resends them on reconnect).
      * History stays; the next stream resumes from [offset].
      */
@@ -164,7 +180,13 @@ class SessionReducer(
     }
 
     private fun onLine(e: FollowEvent.Line) {
-        e.offset?.let { if (it > offset) offset = it }
+        e.offset?.let { off ->
+            // A resumed follow's first line ends past where it resumed; one that ends at or before it means the
+            // helper started over (the transcript was replaced): drop what was built from the old file.
+            if (followFrom > 0 && off <= followFrom) resetTranscript()
+            followFrom = -1L
+            offset = off
+        }
         if (e.uuid != null && !seenUuids.add(e.uuid)) return
         val o = RemoteJson.parseObject(e.json) ?: return
         val type = o.str("type")
@@ -186,6 +208,13 @@ class SessionReducer(
                 clearDraft()
             }
         }
+    }
+
+    private fun resetTranscript() {
+        transcript = TranscriptReducer(clock)
+        seenUuids.clear()
+        lastFinalNorm = null
+        version++
     }
 
     private fun onDraft(text: String) {

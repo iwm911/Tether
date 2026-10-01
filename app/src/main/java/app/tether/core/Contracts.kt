@@ -122,162 +122,15 @@ interface SshManager {
 // ───────────────────────────── Claude Code on a machine ─────────────────────────────
 
 /**
- * Low-level remote operations, implemented on top of [SshManager] and a small Python helper
- * (`assets/tether_helper.py`) installed under `~/.tether/` on the remote.
+ * Machine-level remote operations (no session involved), implemented on top of [SshManager] and a
+ * small Python helper (`assets/tether_helper.py`) installed under `~/.tether/` on the remote.
  */
 interface ClaudeRemote {
     suspend fun probe(connectionId: String): ProbeResult
     suspend fun listProjects(connectionId: String): List<ProjectSummary>
-    suspend fun listSessions(connectionId: String, cwd: String? = null, limit: Int = 60): List<SessionSummary>
-    /** Raw JSONL lines of a Claude Code transcript (~/.claude/projects/…/<id>.jsonl). */
-    suspend fun loadTranscript(connectionId: String, sessionId: String): List<String>
-    suspend fun listRuns(connectionId: String): List<RunInfo>
-    suspend fun startRun(connectionId: String, request: StartRunRequest): RunInfo
-    /** Appends raw stream-json lines to the run's stdin log. */
-    suspend fun writeInput(ref: RunRef, jsonLines: List<String>)
-    /** Raw lines previously written to the run's stdin (to know which permission requests were answered). */
-    suspend fun readInput(ref: RunRef): List<String>
-    /** Tails the run's stdout log from a byte offset; each element carries the offset just past the line. */
-    fun tail(ref: RunRef, fromOffset: Long = 0): Flow<TailLine>
-    /** One JSON status snapshot per change for all runs of a machine (drives dashboard + notifications). */
-    fun watch(connectionId: String): Flow<List<RunInfo>>
-    suspend fun stopRun(ref: RunRef)
-    suspend fun deleteRun(ref: RunRef)
     suspend fun listDir(connectionId: String, path: String?): DirListing
     /** Slash commands Claude Code offers in [cwd] (built-ins, custom commands, skills, plugins, MCP prompts). */
     suspend fun listCommands(connectionId: String, cwd: String): List<SlashCommand> = emptyList()
-
-    // ── Claude Code's own background agents (`claude --bg`). [listRuns] and [watch] include them
-    //    as RunInfo(kind = NATIVE, runId = "native-<id>"). ──
-
-    /**
-     * Starts `claude --bg`; [trust] = mark the folder trusted for Claude Code first when it is not,
-     * [mcp] = enable or skip the folder's not-yet-approved project MCP servers.
-     */
-    suspend fun startNative(connectionId: String, request: StartRunRequest, trust: Boolean, mcp: McpChoice? = null): NativeStartResult =
-        throw UnsupportedOperationException("Background agents are not supported here.")
-    /**
-     * Sends a message to a native agent. A running one gets it typed into its terminal via
-     * `claude attach` (queued while it works, like at the keyboard); a stopped one is resumed.
-     * Returns the (maybe new) agent. A [model] / [permissionMode] restarts it with the message under
-     * those settings (`claude --bg --resume … --model …`): a new id, the same conversation.
-     */
-    suspend fun replyNative(ref: RunRef, message: String, model: String? = null, permissionMode: String? = null): RunInfo =
-        throw UnsupportedOperationException()
-    /** Answers the native agent's open permission prompt ("1" = Yes / Esc = No). */
-    suspend fun answerNative(ref: RunRef, allow: Boolean): RunInfo = throw UnsupportedOperationException()
-    /** Presses Esc in the native agent: interrupts the current turn, keeps the agent. */
-    suspend fun interruptNative(ref: RunRef): RunInfo = throw UnsupportedOperationException()
-    /** Shift+Tabs the running native agent to [mode] in its terminal, like at the keyboard. */
-    suspend fun setNativeMode(ref: RunRef, mode: String): RunInfo = throw UnsupportedOperationException()
-    /** Restores (or with [dryRun] previews restoring) files to before user message [messageId] of [sessionId]. */
-    suspend fun rewindFiles(connectionId: String, sessionId: String, messageId: String, cwd: String, dryRun: Boolean, runId: String? = null): RewindResult =
-        RewindResult(false, error = "Not supported.")
-    /** Reads the native agent's pending AskUserQuestion from its screen; returns tool input JSON. */
-    suspend fun nativeQuestion(ref: RunRef): String = throw UnsupportedOperationException()
-    /** Answers the native agent's pending AskUserQuestion in its TUI. */
-    suspend fun askNative(ref: RunRef, answers: List<AskAnswer>): RunInfo = throw UnsupportedOperationException()
-    suspend fun nativeTimeline(ref: RunRef): List<NativeTimelineEntry> = emptyList()
-    /** `claude logs <id>`, rendered to plain text. */
-    suspend fun nativeLogs(ref: RunRef): String = ""
-    /** The native agent's transcript lines, then new ones live; a `{"tether":"caught-up"}` line marks the end of history. */
-    fun followNative(ref: RunRef): Flow<String> = kotlinx.coroutines.flow.emptyFlow()
-}
-
-data class TailLine(val line: String, val endOffset: Long)
-
-data class AgentSummary(val ref: RunRef, val connection: Connection, val run: RunInfo)
-
-sealed interface AgentEvent {
-    val ref: RunRef
-    val title: String
-
-    data class PermissionRequested(
-        override val ref: RunRef, override val title: String,
-        val requestId: String, val toolName: String, val summary: String,
-    ) : AgentEvent
-
-    data class TurnCompleted(override val ref: RunRef, override val title: String, val success: Boolean, val snippet: String?) : AgentEvent
-    data class Ended(override val ref: RunRef, override val title: String, val error: String?) : AgentEvent
-}
-
-/**
- * The app-facing agent API used by every screen and the background service.
- * Owns tailing, parsing and reduction of stream-json into [ConversationState].
- */
-interface AgentHub {
-    /** Every run on every machine, newest activity first. */
-    val agents: StateFlow<List<AgentSummary>>
-    /** Per-machine refresh errors (e.g. unreachable). */
-    val machineErrors: StateFlow<Map<String, String>>
-    val events: SharedFlow<AgentEvent>
-
-    /** Hot conversation state while collected; replays history on first collection. */
-    fun conversation(ref: RunRef): Flow<ConversationState>
-
-    /** Read-only conversation for a past session transcript (no live run). */
-    suspend fun transcript(connectionId: String, sessionId: String): ConversationState
-
-    suspend fun refresh(connectionId: String? = null)
-    suspend fun start(connectionId: String, request: StartRunRequest, images: List<ImageAttachment> = emptyList()): RunRef
-    suspend fun send(ref: RunRef, text: String, images: List<ImageAttachment> = emptyList())
-    suspend fun respond(ref: RunRef, requestId: String, decision: PermissionDecision)
-    suspend fun interrupt(ref: RunRef)
-    suspend fun setPermissionMode(ref: RunRef, mode: String)
-    suspend fun setModel(ref: RunRef, model: String)
-    suspend fun stop(ref: RunRef)
-    suspend fun remove(ref: RunRef)
-
-    /**
-     * Branches a conversation into a new live run: history up to [atUuid] (null = the whole session,
-     * or a fresh start when [sessionId] is null), then [prompt] if given. With [restoreBefore] set,
-     * files are first restored to how they were before that user message. The original is untouched.
-     */
-    suspend fun branch(
-        connectionId: String,
-        sessionId: String?,
-        cwd: String,
-        atUuid: String?,
-        prompt: String?,
-        title: String?,
-        restoreBefore: String? = null,
-        sourceRunId: String? = null,
-    ): RunRef = throw UnsupportedOperationException()
-
-    suspend fun previewRewind(connectionId: String, sessionId: String, messageId: String, cwd: String, sourceRunId: String? = null): RewindResult =
-        RewindResult(false)
-
-    /** Tool input JSON of a background agent's pending question (read from its screen when needed). */
-    suspend fun nativeQuestion(ref: RunRef): String = throw UnsupportedOperationException()
-
-    /** Slash commands for a composer that has no live stream-json run to ask (empty when unavailable). */
-    suspend fun slashCommands(connectionId: String, cwd: String): List<SlashCommand> = emptyList()
-
-    /** Stops every machine watch stream until un-paused (the notification's "Disconnect"). */
-    fun setPaused(paused: Boolean) {}
-
-    /**
-     * Stops watching one machine (and so re-opening its SSH link) after the user disconnected it.
-     * Returns once its watch stream is gone. Lifted by [release] or [refresh] of that machine;
-     * a refresh of every machine skips held ones.
-     */
-    suspend fun hold(connectionId: String) {}
-
-    /** Lifts [hold]: the machine is watched (and connected) again. */
-    fun release(connectionId: String) {}
-
-    /** While true, keeps per-machine watch streams open even with no UI collecting (background service). */
-    fun setBackgroundWatch(enabled: Boolean)
-
-    // ── native background agents (`claude --bg`); stop/remove/conversation also accept their refs ──
-
-    suspend fun startNative(connectionId: String, request: StartRunRequest, trustFolder: Boolean = false, mcp: McpChoice? = null): NativeStartResult =
-        throw UnsupportedOperationException("Background agents are not supported here.")
-    /** Replies to a finished native agent; returns the ref that continues the conversation (normally the same). */
-    suspend fun continueNative(ref: RunRef, text: String, model: String? = null, permissionMode: String? = null): RunRef =
-        throw UnsupportedOperationException()
-    suspend fun nativeTimeline(ref: RunRef): List<NativeTimelineEntry> = emptyList()
-    suspend fun nativeLogs(ref: RunRef): String = ""
 }
 
 // ───────────────────────────── One-session model (Claude Code daemon) ─────────────────────────────
@@ -299,18 +152,31 @@ interface SessionRemote {
     /** Returns whether the session had to be woken (dispatch resume) first. Code `EHELD` while a terminal holds it. */
     suspend fun send(connectionId: String, sessionId: String, text: String, images: List<String> = emptyList()): Boolean
     suspend fun key(connectionId: String, sessionId: String, keys: List<SessionKey>)
-    suspend fun answer(connectionId: String, sessionId: String, decision: SessionDecision, message: String? = null): Session
+    /**
+     * Shift+Tab until the session's footer shows [mode] (a CLI permission mode), or once when [mode] is null;
+     * returns the mode it landed on (null when the footer couldn't be read). The cycle depends on the model
+     * (auto mode is not offered everywhere), so the helper reads it back instead of counting presses.
+     */
+    suspend fun setMode(connectionId: String, sessionId: String, mode: String?): String? =
+        throw UnsupportedOperationException("setMode")
+    /**
+     * Answers the open permission prompt. With [toolUseId] (the prompt the user saw) the helper refuses with
+     * code `ESTALE` when a different prompt is open now.
+     */
+    suspend fun answer(connectionId: String, sessionId: String, decision: SessionDecision, message: String? = null, toolUseId: String? = null): Session
     suspend fun ask(connectionId: String, sessionId: String, answers: List<AskAnswer>): Session
     suspend fun interrupt(connectionId: String, sessionId: String): Session
     suspend fun stop(connectionId: String, sessionId: String)
     suspend fun rm(connectionId: String, sessionId: String)
     /** Copies an image to the machine (like a file dropped on the terminal); returns its absolute path there. */
     suspend fun uploadImage(connectionId: String, image: ImageAttachment): String
+    /** Slash commands Claude Code offers in [cwd], for the composer's popup (empty when unknown). */
+    suspend fun listCommands(connectionId: String, cwd: String): List<SlashCommand> = emptyList()
 }
 
 /**
  * The app-facing API of the one-session model: every Claude Code session on every machine,
- * keyed by session id. Lives next to [AgentHub] until the old run model is removed (phase R).
+ * keyed by session id. Used by every screen and the background service.
  */
 interface SessionHub {
     /** Every session on every watched machine, most recently updated first. */
@@ -338,7 +204,10 @@ interface SessionHub {
     /** Sends a message (wakes a retired session first). Returns whether it was woken. */
     suspend fun send(ref: SessionRef, text: String, images: List<ImageAttachment> = emptyList()): Boolean
     suspend fun key(ref: SessionRef, keys: List<SessionKey>)
-    suspend fun answer(ref: SessionRef, decision: SessionDecision, message: String? = null)
+    /** Shift+Tab to [mode] (null: once); returns the mode the session landed on. See [ClaudeRemote.setMode]. */
+    suspend fun setMode(ref: SessionRef, mode: String?): String? = throw UnsupportedOperationException("setMode")
+    /** Answers the open permission prompt; [toolUseId] guards against answering a newer prompt (`ESTALE`). */
+    suspend fun answer(ref: SessionRef, decision: SessionDecision, message: String? = null, toolUseId: String? = null)
     suspend fun ask(ref: SessionRef, answers: List<AskAnswer>)
     /** Esc: interrupts the current turn, keeps the session. */
     suspend fun interrupt(ref: SessionRef)
@@ -354,4 +223,7 @@ interface SessionHub {
     /** Stops watching one machine after the user disconnected it; lifted by [release] / [refresh] of it. */
     suspend fun hold(connectionId: String)
     fun release(connectionId: String)
+
+    /** Slash commands of a machine folder for the composer (cached; empty when unavailable). */
+    suspend fun slashCommands(connectionId: String, cwd: String): List<SlashCommand> = emptyList()
 }

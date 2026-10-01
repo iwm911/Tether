@@ -132,7 +132,7 @@ class NewAgentViewModel(
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), NewAgentUiState(connections = container.connections.connections.value))
 
     val commands: StateFlow<List<SlashCommand>> = viewModelScope.slashCommandsFor(
-        container.agents,
+        container.sessions,
         form.map { f -> f.cwd?.let { cwd -> f.connectionId?.let { it to cwd } } },
     )
 

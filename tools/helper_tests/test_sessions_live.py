@@ -99,6 +99,8 @@ class SessionsLiveTest(unittest.TestCase):
     def setUp(self):
         os.makedirs(LIVE_DIR, exist_ok=True)
         self.sid = self.short = None
+        # Transcripts already in the live folder's project dir (other runs' leftovers are not ours to judge).
+        self.preexisting = set(glob.glob(os.path.join(os.path.join(h.CLAUDE_PROJECTS, h.project_dir_name(LIVE_DIR)), "*.jsonl")))
         self.follow = None
 
     def tearDown(self):
@@ -156,7 +158,7 @@ class SessionsLiveTest(unittest.TestCase):
             helper("key", self.sid, stdin=json.dumps({"keys": ["esc"]}))
             s = self.wait_session(lambda x: x["state"] == "idle" and x["lastText"], 120)
         self.assertEqual(s["lastText"], "ALPHA-ONE")
-        self.assertEqual(s["model"], "claude-haiku-4-5-20251001")
+        self.assertIn(s["model"], ("haiku", "claude-haiku-4-5-20251001"))  # the respawn flag (latest /model) wins
 
         # follow: history, caughtUp, then a streamed reply: drafts grow, the final line lands, the draft clears.
         self.follow = f = Follow(self.sid)
@@ -201,7 +203,8 @@ class SessionsLiveTest(unittest.TestCase):
         mine = [a for a in claude_agents() if a.get("sessionId") == self.sid]
         print("wake -> claude agents:", [(a.get("id"), a.get("state")) for a in mine])
         self.assertEqual([a["id"] for a in mine], [self.short])
-        self.assertEqual(glob.glob(os.path.join(os.path.dirname(tpath), "*.jsonl")), [tpath])
+        new_files = set(glob.glob(os.path.join(os.path.dirname(tpath), "*.jsonl"))) - self.preexisting
+        self.assertEqual(new_files, {tpath})  # woken in place: no forked transcript
         s = self.wait_session(lambda x: x["process"] == "live" and x["state"] == "idle", 30)
         self.assertEqual((s["short"], s["process"]), (self.short, "live"))
 

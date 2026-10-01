@@ -18,6 +18,7 @@ import app.tether.core.SessionLive
 import app.tether.core.SessionRef
 import app.tether.core.SessionRemote
 import app.tether.core.SessionState
+import app.tether.core.SlashCommand
 import app.tether.core.SshManager
 import app.tether.core.WatchMessage
 import app.tether.core.identity
@@ -293,6 +294,14 @@ class DefaultSessionHub(
         held.update { it - connectionId }
     }
 
+    private val commandCache = ConcurrentHashMap<Pair<String, String>, List<SlashCommand>>()
+
+    override suspend fun slashCommands(connectionId: String, cwd: String): List<SlashCommand> {
+        val key = connectionId to cwd
+        commandCache[key]?.let { return it }
+        return remote.listCommands(connectionId, cwd).also { if (it.isNotEmpty()) commandCache[key] = it }
+    }
+
     // ═══════════════════════════════════════ conversations ═══════════════════════════════════════
 
     private data class ConvKey(val ref: SessionRef, val agentId: String?)
@@ -348,7 +357,9 @@ class DefaultSessionHub(
                 } finally {
                     openConversations.update { it - 1 }
                 }
-            }.stateIn(scope, SharingStarted.WhileSubscribed(5_000), initialState(ref, agentId))
+            // replayExpirationMillis = 0: once nobody watches, the flow drops its last snapshot (every chat item)
+            // and holds only the small initial state; the reducer itself is cached (LRU) in convs.
+            }.stateIn(scope, SharingStarted.WhileSubscribed(5_000, replayExpirationMillis = 0), initialState(ref, agentId))
         }
     }
 
@@ -359,7 +370,8 @@ class DefaultSessionHub(
         while (true) {
             val epoch = epochOf(ref.connectionId)
             try {
-                val from = synchronized(c.lock) { c.reducer.offset }
+                val from = synchronized(c.lock) { c.reducer.beginFollow() }
+                c.bump()
                 remote.follow(ref.connectionId, ref.sessionId, c.key.agentId, from).collect { e ->
                     val changed = synchronized(c.lock) { c.reducer.accept(e) }
                     if (e is FollowEvent.CaughtUp) {
@@ -419,8 +431,11 @@ class DefaultSessionHub(
         remote.key(ref.connectionId, ref.sessionId, keys)
     }
 
-    override suspend fun answer(ref: SessionRef, decision: SessionDecision, message: String?) {
-        mergeSession(remote.answer(ref.connectionId, ref.sessionId, decision, message).ofMachine(ref))
+    override suspend fun setMode(ref: SessionRef, mode: String?): String? =
+        remote.setMode(ref.connectionId, ref.sessionId, mode)
+
+    override suspend fun answer(ref: SessionRef, decision: SessionDecision, message: String?, toolUseId: String?) {
+        mergeSession(remote.answer(ref.connectionId, ref.sessionId, decision, message, toolUseId).ofMachine(ref))
     }
 
     override suspend fun ask(ref: SessionRef, answers: List<AskAnswer>) {

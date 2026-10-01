@@ -1,9 +1,5 @@
 package app.tether.core
 
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -26,13 +22,10 @@ class AskQuestionsTest {
     }
 
     @Test
-    fun updatedInputCarriesAnswersExactlyLikeClaudeCodeExpects() {
-        val out = AskQuestions.updatedInput(input, listOf(AskAnswer(listOf(1)), AskAnswer(listOf(2, 0))))
-        val o = Json.parseToJsonElement(out).jsonObject
-        val answers = o["answers"]!!.jsonObject
-        assertEquals("Blue", answers["Which color do you prefer?"]!!.jsonPrimitive.content)
-        assertEquals("Cats, Fish", answers["Which pets do you like?"]!!.jsonPrimitive.content)
-        assertTrue(o["questions"] != null) // original input kept
+    fun answerTextIsWhatClaudeCodeExpects() {
+        val p = AskQuestions.parse(input)
+        assertEquals("Blue", AskQuestions.answerText(p.questions[0], AskAnswer(listOf(1))))
+        assertEquals("Cats, Fish", AskQuestions.answerText(p.questions[1], AskAnswer(listOf(2, 0))))
     }
 
     @Test
@@ -45,10 +38,8 @@ class AskQuestionsTest {
     }
 
     @Test
-    fun placeholderFromBackgroundAgentNeedsFetch() {
-        val p = AskQuestions.parse("""{"questions":[],"needsFetch":true}""")
-        assertTrue(p.needsFetch)
-        val clean = Json.parseToJsonElement(AskQuestions.updatedInput("""{"questions":[],"needsFetch":true}""", emptyList())) as JsonObject
-        assertFalse(clean.containsKey("needsFetch"))
+    fun placeholderWithoutQuestionsNeedsFetch() {
+        assertTrue(AskQuestions.parse("""{"questions":[],"needsFetch":true}""").needsFetch)
+        assertTrue(AskQuestions.parse("""{}""").needsFetch)
     }
 }

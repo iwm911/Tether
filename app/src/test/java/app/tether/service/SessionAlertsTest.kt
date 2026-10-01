@@ -41,9 +41,9 @@ class SessionAlertsTest {
         )
         assertEquals(listOf("a", "b"), SessionAlerts.live(list).map { it.sessionId })
         assertEquals(1, SessionAlerts.needsYouCount(list))
-        // old runs: 2 working, 1 needs you; sessions: 1 working, 1 needs you
-        assertEquals(3 to 2, SessionAlerts.watchCounts(2, 1, list))
-        assertEquals(0 to 0, SessionAlerts.watchCounts(0, 0, emptyList()))
+        // 1 working, 1 needs you (terminal-held and finished sessions do not count)
+        assertEquals(1 to 1, SessionAlerts.watchCounts(list))
+        assertEquals(0 to 0, SessionAlerts.watchCounts(emptyList()))
     }
 
     // ───────────── texts ─────────────

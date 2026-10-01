@@ -299,7 +299,7 @@ internal fun SessionDialogPanel(dialog: SessionPending.Dialog, busy: Boolean, on
         when (dialog.dialog) {
             DialogKind.MCP_SERVERS -> Row(horizontalArrangement = Arrangement.spacedBy(Space.sm)) {
                 SecondaryButton("Reject all", onClick = { haptics.confirm(); onKeys(listOf(SessionKey.Esc)) }, enabled = !busy, modifier = Modifier.weight(1f))
-                PrimaryButton("Continue", onClick = { haptics.confirm(); onKeys(listOf(SessionKey.Enter)) }, enabled = !busy, modifier = Modifier.weight(1f))
+                PrimaryButton("Continue", onClick = { haptics.confirm(); onKeys(mcpContinueKeys(dialog)) }, enabled = !busy, modifier = Modifier.weight(1f))
             }
             else -> {
                 OptionButtons(dialog, busy) { haptics.confirm(); onKeys(it) }
@@ -365,14 +365,22 @@ private fun McpServersBody(dialog: SessionPending.Dialog, busy: Boolean, onKeys:
 }
 
 /**
- * Toggling a checklist row: its own key when the helper gave one, else move the cursor there from
- * the top (Up enough times to be sure, Down × index) and press Space.
+ * Toggling a checklist row: its own key when the helper gave one, else move the cursor there and
+ * press Space. The cursor is wherever the user left it, so anchor at the bottom first: in Claude
+ * Code's MCP checklist (verified live on 2.1.287) Down stops at the "Enable selected" row under the
+ * last option while Up wraps from the first option to the last, so Down × (n + 1) always lands on
+ * "Enable selected" and Up × (n − index) then reaches the row.
  */
 internal fun toggleKeys(dialog: SessionPending.Dialog, index: Int): List<SessionKey> {
     val own = dialog.options.getOrNull(index)?.key?.takeIf { it.isNotBlank() }
     if (own != null) return listOf(dialogKey(own))
-    return List(dialog.options.size) { SessionKey.Up } + List(index) { SessionKey.Down } + SessionKey.Space
+    val n = dialog.options.size
+    return List(n + 1) { SessionKey.Down } + List(n - index) { SessionKey.Up } + SessionKey.Space
 }
+
+/** MCP checklist "Continue": Enter on a server row toggles it, so go down to "Enable selected" first. */
+internal fun mcpContinueKeys(dialog: SessionPending.Dialog): List<SessionKey> =
+    List(dialog.options.size + 1) { SessionKey.Down } + SessionKey.Enter
 
 @Composable
 private fun TrustBody(dialog: SessionPending.Dialog) {

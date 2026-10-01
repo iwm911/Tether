@@ -57,10 +57,10 @@ object SessionAlerts {
         return s.state == SessionState.NEEDS_YOU && identityOf(s.pending, s.waitingFor) == identity
     }
 
-    /** "2 agents working · 1 needs you" counts across old runs ([agentsWorking], [agentsNeeding]) and sessions. */
-    fun watchCounts(agentsWorking: Int, agentsNeeding: Int, sessions: List<Session>): Pair<Int, Int> {
+    /** (working, needs you) counts of the live sessions, for "2 agents working · 1 needs you". */
+    fun watchCounts(sessions: List<Session>): Pair<Int, Int> {
         val live = live(sessions)
         val needs = live.count { it.state == SessionState.NEEDS_YOU }
-        return (agentsWorking + live.size - needs) to (agentsNeeding + needs)
+        return (live.size - needs) to needs
     }
 }

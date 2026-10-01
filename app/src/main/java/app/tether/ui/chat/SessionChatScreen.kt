@@ -91,8 +91,19 @@ internal fun sessionStatusLabel(s: SessionChatUiState): String {
         session.state == SessionState.NEEDS_YOU -> "Needs you"
         session.state == SessionState.WORKING -> "Working"
         session.state == SessionState.FAILED -> "Failed"
-        s.retired -> "Stopped · a reply wakes it"
+        s.retired -> "Stopped"
         else -> "Idle"
+    }
+}
+
+/** The line above the composer: waking, how to wake a stopped session, the queue. */
+internal fun sessionComposerHint(s: SessionChatUiState): String? {
+    val queued = s.conversation.queuedCount
+    return when {
+        s.waking -> "Waking…"
+        s.retired && !s.sending && s.session != null -> "Stopped · your reply wakes it"
+        queued > 0 -> if (queued == 1) "1 message queued · Claude reads it next" else "$queued messages queued · Claude reads them next"
+        else -> null
     }
 }
 
@@ -117,7 +128,7 @@ fun SessionChatScreen(
             agentId = agentId,
             settings = container.settings.settings,
             machine = container.connections.connections.map { list -> list.firstOrNull { it.id == ref.connectionId } },
-            loadCommands = { conn, cwd -> container.agents.slashCommands(conn, cwd) },
+            loadCommands = { conn, cwd -> container.sessions.slashCommands(conn, cwd) },
             bindDraft = { composer, scope ->
                 if (agentId == null) {
                     Drafts.init(container.app)
@@ -322,16 +333,13 @@ fun SessionChatScreen(
                         onStop = vm::interrupt,
                         permissionMode = state.permissionMode,
                         onCycleMode = vm::cycleMode,
+                        modeEnabled = !state.retired,
                         onSelectMode = vm::setMode,
                         model = state.model,
                         models = conv.models,
                         onSelectModel = vm::setModel,
                         commands = (conv.commands + slash).distinctBy { it.name.removePrefix("/") },
-                        hint = when {
-                            state.waking -> "Waking…"
-                            conv.queuedCount > 0 -> if (conv.queuedCount == 1) "1 message queued · Claude reads it next" else "${conv.queuedCount} messages queued · Claude reads them next"
-                            else -> null
-                        },
+                        hint = sessionComposerHint(state),
                         onError = { msg -> scope.launch { snackbar.showSnackbar(msg) } },
                     )
                 }

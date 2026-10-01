@@ -10,7 +10,6 @@ import androidx.compose.runtime.getValue
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import app.tether.core.RunRef
 import app.tether.core.SessionRef
 import app.tether.ui.components.LocalHapticsEnabled
 import app.tether.ui.connections.HostKeyPromptHost
@@ -24,10 +23,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 /** FragmentActivity (not plain ComponentActivity) because BiometricPrompt needs it. */
 class MainActivity : FragmentActivity() {
 
-    /** Deep link from a notification: open this agent. Consumed by the nav host. */
-    val pendingAgent = MutableStateFlow<RunRef?>(null)
-
-    /** Deep link from a session notification (one-session model): open this session. Consumed by the nav host. */
+    /** Deep link from a notification: open this session. Consumed by the nav host. */
     val pendingSession = MutableStateFlow<SessionRef?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -38,7 +34,7 @@ class MainActivity : FragmentActivity() {
         )
         super.onCreate(savedInstanceState)
         // Only a fresh launch consumes the deep link: a recreation (rotation, process-death restore)
-        // or a relaunch from Recents re-delivers the same intent and must not re-open the agent.
+        // or a relaunch from Recents re-delivers the same intent and must not re-open the session.
         if (savedInstanceState == null &&
             (intent?.flags ?: 0) and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY == 0
         ) {
@@ -55,7 +51,7 @@ class MainActivity : FragmentActivity() {
                 TetherTheme(themeMode = settings.theme, dynamicColor = settings.dynamicColor) {
                     AppLockGate {
                         SafeLinks {
-                            TetherNavHost(pendingAgent = pendingAgent, pendingSession = pendingSession)
+                            TetherNavHost(pendingSession = pendingSession)
                             HostKeyPromptHost()
                         }
                     }
@@ -92,21 +88,14 @@ class MainActivity : FragmentActivity() {
             return
         }
         val c = intent?.getStringExtra(EXTRA_CONNECTION_ID) ?: return
-        intent.getStringExtra(EXTRA_SESSION_ID)?.let { sid ->
-            pendingSession.value = SessionRef(c, sid)
-            intent.removeExtra(EXTRA_CONNECTION_ID)
-            intent.removeExtra(EXTRA_SESSION_ID)
-            return
-        }
-        val r = intent.getStringExtra(EXTRA_RUN_ID) ?: return
-        pendingAgent.value = RunRef(c, r)
+        val sid = intent.getStringExtra(EXTRA_SESSION_ID) ?: return
+        pendingSession.value = SessionRef(c, sid)
         intent.removeExtra(EXTRA_CONNECTION_ID)
-        intent.removeExtra(EXTRA_RUN_ID)
+        intent.removeExtra(EXTRA_SESSION_ID)
     }
 
     companion object {
         const val EXTRA_CONNECTION_ID = "app.tether.extra.CONNECTION_ID"
-        const val EXTRA_RUN_ID = "app.tether.extra.RUN_ID"
         const val EXTRA_SESSION_ID = "app.tether.extra.SESSION_ID"
         const val ACTION_INSTALL_UPDATE = "app.tether.action.INSTALL_UPDATE"
     }

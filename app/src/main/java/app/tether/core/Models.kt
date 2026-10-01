@@ -124,160 +124,16 @@ data class ProjectSummary(
 )
 
 @Serializable
-data class SessionSummary(
-    val sessionId: String,
-    val cwd: String,
-    /** ai-title / custom-title, else first prompt, truncated. */
-    val title: String,
-    val lastPrompt: String? = null,
-    val updatedAt: Long,
-    val messageCount: Int = 0,
-    val sizeBytes: Long = 0,
-    val gitBranch: String? = null,
-    /** True when the transcript was written in the last ~60 s (maybe open on a desktop). */
-    val recentlyActive: Boolean = false,
-    /** runId of a live Tether run currently driving this session, if any. */
-    val liveRunId: String? = null,
-)
-
-@Serializable
 data class DirEntry(val name: String, val path: String, val isDir: Boolean, val isGitRepo: Boolean = false, val modifiedAt: Long = 0)
 
 @Serializable
 data class DirListing(val path: String, val parent: String?, val entries: List<DirEntry>)
 
-// ───────────────────────────── Runs = live agents driven by Tether ─────────────────────────────
+// ───────────────────────────── Conversations ─────────────────────────────
 
-/** Identifies one agent run on one machine. Route-safe (no slashes). */
-@Serializable
-data class RunRef(val connectionId: String, val runId: String)
-
+/** What a conversation is doing right now (see [ConversationState.status]). */
 @Serializable
 enum class RunStatus { STARTING, WORKING, AWAITING_PERMISSION, IDLE, ENDED, FAILED }
-
-@Serializable
-data class PendingPermission(
-    val requestId: String,
-    val toolName: String,
-    /** One-line human summary, e.g. `npm test` or `src/App.kt`. */
-    val summary: String,
-    val inputJson: String? = null,
-)
-
-/** Who drives an agent: a Tether live run (stream-json, approvals from the phone) or Claude Code's own `claude --bg`. */
-@Serializable
-enum class RunKind { TETHER, NATIVE }
-
-/** Prefix of [RunRef.runId] for a native background agent: `native-<claude agents id>`. */
-const val NATIVE_RUN_PREFIX = "native-"
-
-val RunRef.isNative: Boolean get() = runId.startsWith(NATIVE_RUN_PREFIX)
-
-/** The `claude agents` id of a native agent ref (null for Tether runs). */
-val RunRef.nativeId: String? get() = if (isNative) runId.removePrefix(NATIVE_RUN_PREFIX) else null
-
-fun nativeRunRef(connectionId: String, nativeId: String) = RunRef(connectionId, NATIVE_RUN_PREFIX + nativeId)
-
-/** One entry of a native agent's fan-out (subagents, workflow agents) from its job state. */
-@Serializable
-data class NativeSubagent(
-    val id: String,
-    val kind: String = "agent",
-    val label: String,
-    val group: String? = null,
-    val startedAt: Long? = null,
-    val doneAt: Long? = null,
-    val running: Boolean = false,
-)
-
-/** One line of a native agent's activity timeline (`~/.claude/jobs/<id>/timeline.jsonl`). */
-@Serializable
-data class NativeTimelineEntry(
-    val at: Long = 0,
-    val state: String? = null,
-    val detail: String? = null,
-    val text: String? = null,
-)
-
-/** Outcome of starting a native background agent. */
-sealed interface NativeStartResult {
-    data class Started(val ref: RunRef) : NativeStartResult
-    /** Claude Code does not trust [cwd] yet; retry with trust = true to mark it trusted. */
-    data class Untrusted(val cwd: String) : NativeStartResult
-    /** [cwd] has project MCP servers (.mcp.json) Claude Code would ask about; retry with a [McpChoice]. */
-    data class McpApproval(val cwd: String, val servers: List<String>) : NativeStartResult
-}
-
-/** Answer to Claude Code's "new MCP servers found in this project" question. */
-enum class McpChoice(val wire: String) { ENABLE("enable"), SKIP("skip") }
-
-@Serializable
-data class RunInfo(
-    val runId: String,
-    val cwd: String,
-    val title: String? = null,
-    val sessionId: String? = null,
-    val model: String? = null,
-    val permissionMode: String? = null,
-    val startedAt: Long,
-    val updatedAt: Long,
-    val alive: Boolean,
-    val status: RunStatus,
-    /** Last assistant text, trimmed to ~200 chars. */
-    val lastText: String? = null,
-    val costUsd: Double = 0.0,
-    val turns: Int = 0,
-    val pending: PendingPermission? = null,
-    val outBytes: Long = 0,
-    val exitCode: Int? = null,
-    val error: String? = null,
-    /** Background shell commands / subagents still running after the turn ended. */
-    val backgroundTasks: Int = 0,
-    /** A branch (--fork-session) of another conversation. */
-    val forked: Boolean = false,
-    // ── native background agents only (kind = NATIVE) ──
-    val kind: RunKind = RunKind.TETHER,
-    /** `claude agents` id. */
-    val nativeId: String? = null,
-    /** Raw job state: "working" | "done" | "blocked" | … */
-    val nativeState: String? = null,
-    /** Raw process status from `claude agents`: "busy" | "idle" | "waiting" (= a permission prompt is open). */
-    val nativeStatus: String? = null,
-    /** Live one-line activity ("Checking CLI agent features"). */
-    val detail: String? = null,
-    val subagents: List<NativeSubagent> = emptyList(),
-    val tokens: Long = 0,
-    /** Latest timeline entries, oldest first. */
-    val timeline: List<NativeTimelineEntry> = emptyList(),
-    /**
-     * A `claude` session open in a terminal on the computer (listed by `claude agents`): watch-only here.
-     * Replying continues its conversation as a new background agent; the terminal session is untouched.
-     */
-    val terminal: Boolean = false,
-) {
-    val isNative: Boolean get() = kind == RunKind.NATIVE
-    /** What to show: an idle run whose background shells / subagents are still going counts as working. */
-    val displayStatus: RunStatus get() = if (alive && status == RunStatus.IDLE && backgroundTasks > 0) RunStatus.WORKING else status
-    /** Native agent has a permission prompt open (answerable from the phone). */
-    val nativeBlocked: Boolean get() = isNative && !terminal && nativeStatus == "waiting"
-}
-
-@Serializable
-data class StartRunRequest(
-    val cwd: String,
-    /** First user message; null = start idle and wait. */
-    val prompt: String? = null,
-    /** CLI model alias/value, null = CLI default. */
-    val model: String? = null,
-    /** CLI permission mode value (see [PermissionMode.cli]); null = CLI default. */
-    val permissionMode: String? = null,
-    /** Resume an existing Claude Code session id. */
-    val resumeSessionId: String? = null,
-    val forkSession: Boolean = false,
-    /** With [forkSession]: keep history only up to this assistant message uuid (a branch). */
-    val resumeAt: String? = null,
-    val title: String? = null,
-)
 
 data class ImageAttachment(val bytes: ByteArray, val mimeType: String, val name: String)
 
@@ -370,8 +226,6 @@ sealed interface ChatItem {
         val queued: Boolean = false,
         /** Transcript uuid of this message (null until Claude Code echoes it). */
         val uuid: String? = null,
-        /** uuid of the last assistant message before this one: where a branch that edits/retries it forks. */
-        val forkPointUuid: String? = null,
         /** A slash command ("/compact keep tests"), not a prompt. */
         val command: Boolean = false,
         /** What a local command (/context, /cost…) printed. Claude never sees it. */
@@ -382,7 +236,7 @@ sealed interface ChatItem {
         override val key: String,
         val text: String,
         val streaming: Boolean = false,
-        /** Transcript uuid of this block — "Fork from here" resumes up to it. */
+        /** Transcript uuid of this block. */
         val uuid: String? = null,
     ) : ChatItem
 
@@ -448,15 +302,6 @@ sealed interface ChatItem {
     ) : ChatItem
 }
 
-/** Preview / result of restoring files to how they were before a message (Claude Code checkpoints). */
-data class RewindResult(
-    val canRewind: Boolean,
-    val filesChanged: List<String> = emptyList(),
-    val insertions: Int = 0,
-    val deletions: Int = 0,
-    val error: String? = null,
-)
-
 data class RateLimitInfo(
     val status: String,
     val windowLabel: String?,
@@ -469,7 +314,6 @@ data class RateLimitInfo(
 data class UsageWindow(val label: String, val utilization: Double, val resetsAt: Long?)
 
 data class ConversationState(
-    val ref: RunRef? = null,
     val items: List<ChatItem> = emptyList(),
     val status: RunStatus = RunStatus.STARTING,
     val title: String? = null,
@@ -500,10 +344,7 @@ data class ConversationState(
     val thinkingTokens: Int? = null,
     /** Background shell commands / subagents still running, oldest first. */
     val backgroundTasks: List<BackgroundTask> = emptyList(),
-    val kind: RunKind = RunKind.TETHER,
-    /** For a native background agent: its latest dashboard record (state, detail, subagents, timeline). */
-    val nativeRun: RunInfo? = null,
-    /** One-session model (daemon): the session this conversation shows, plus draft / peers / tasks…; null for runs. */
+    /** The session this conversation shows, plus draft / peers / tasks…; null until known. */
     val live: SessionLive? = null,
 )
 

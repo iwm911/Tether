@@ -294,6 +294,9 @@ class SessionProtocolTest {
         assertEquals(obj("""{"decision":"allow"}"""), obj(SessionProtocol.answerBody(SessionDecision.ALLOW, null)))
         assertEquals(obj("""{"decision":"allow_always"}"""), obj(SessionProtocol.answerBody(SessionDecision.ALLOW_ALWAYS, "  ")))
         assertEquals(obj("""{"decision":"deny","message":"use yarn"}"""), obj(SessionProtocol.answerBody(SessionDecision.DENY, " use yarn ")))
+        assertEquals(obj("""{"decision":"allow","toolUseId":"toolu_1"}"""), obj(SessionProtocol.answerBody(SessionDecision.ALLOW, null, "toolu_1")))
+        assertEquals(obj("""{"mode":"plan"}"""), obj(SessionProtocol.modeBody("plan")))
+        assertEquals(obj("""{"mode":""}"""), obj(SessionProtocol.modeBody(null)))
         assertEquals(
             obj("""{"answers":[{"choices":[0,2],"other":null},{"choices":[],"other":"Redis"}]}"""),
             obj(SessionProtocol.askBody(listOf(AskAnswer(listOf(0, 2)), AskAnswer(emptyList(), " Redis ")))),

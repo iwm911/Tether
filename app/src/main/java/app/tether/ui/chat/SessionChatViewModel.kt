@@ -94,6 +94,8 @@ private data class LocalSessionState(
     val pendingModeBase: String? = null,
     val pendingModel: String? = null,
     val pendingModelBase: String? = null,
+    /** A model change is on its way (it may be waking the session): its label holds until the send returns. */
+    val modelSending: Boolean = false,
 )
 
 /**
@@ -199,7 +201,7 @@ class SessionChatViewModel(
         if (l.pendingMode != null && (next.permissionMode == l.pendingMode || next.permissionMode != l.pendingModeBase)) {
             changed = changed.copy(pendingMode = null, pendingModeBase = null)
         }
-        if (l.pendingModel != null && (next.model == l.pendingModel || next.model != l.pendingModelBase)) {
+        if (l.pendingModel != null && (next.model == l.pendingModel || (!l.modelSending && next.model != l.pendingModelBase))) {
             changed = changed.copy(pendingModel = null, pendingModelBase = null)
         }
         if (changed !== l) local.value = changed
@@ -210,8 +212,10 @@ class SessionChatViewModel(
     private fun describe(t: Throwable): String = when ((t as? RemoteException)?.code) {
         SessionErrorCodes.EHELD -> "A terminal on ${state.value.machineName ?: "the machine"} has this session open — type /bg there to continue here"
         SessionErrorCodes.ENODAEMON -> "Claude Code's background service isn't running on ${state.value.machineName ?: "the machine"}"
-        SessionErrorCodes.ENOSESSION -> "This session no longer exists on the machine"
-        else -> friendlyError(t)
+        // The helper says which: no such session, or a stopped one that needs a message to wake it.
+        SessionErrorCodes.ENOSESSION -> t.message?.trim()?.takeIf { it.isNotEmpty() } ?: "This session no longer exists on the machine"
+        SessionErrorCodes.ESTALE -> "Claude moved on — that prompt isn't open any more"
+        else -> t.message?.trim()?.takeIf { it.isNotEmpty() } ?: t::class.simpleName?.let { "Something went wrong ($it)" } ?: "Something went wrong"
     }
 
     private fun launchAction(failure: String, block: suspend () -> Unit): Job = viewModelScope.launch {
@@ -268,32 +272,51 @@ class SessionChatViewModel(
     /** The stop button: Esc, like in the terminal. The session stays. */
     fun interrupt() = launchAction("Couldn't interrupt") { hub.interrupt(ref) }
 
-    /** The mode chip: one Shift+Tab. Returns the mode it should land on (for the chip's toast). */
-    fun cycleMode(): PermissionMode {
+    /** Shift+Tab needs a running session: a stopped one changes mode after a message wakes it. */
+    val modeChangeable: Boolean get() = agentId == null && !state.value.retired && !state.value.heldByTerminal
+
+    /**
+     * The mode chip: one Shift+Tab. Returns the mode it should land on (for the chip's toast); the helper
+     * reports where it really landed (auto mode is skipped on models that don't offer it).
+     */
+    fun cycleMode(): PermissionMode? {
+        if (!modeChangeable) {
+            if (state.value.retired) say("Send a message to wake this session, then change its mode")
+            return null
+        }
         val next = nextMode(state.value.permissionMode)
-        moveMode(next, presses = 1)
+        moveMode(next, cycleOnce = true)
         return next
     }
 
-    /** The mode sheet: as many Shift+Tabs as it takes to reach [mode]. */
+    /** The mode sheet: Shift+Tab until the session shows [mode] (the helper reads the footer after each press). */
     fun setMode(mode: PermissionMode) {
+        if (!modeChangeable) {
+            if (state.value.retired) say("Send a message to wake this session, then change its mode")
+            return
+        }
         val presses = modeKeyPresses(state.value.permissionMode, mode)
         if (presses == null) {
             say("${mode.label} mode can only be chosen when the session starts")
             return
         }
         if (presses == 0) return
-        moveMode(mode, presses)
+        moveMode(mode, cycleOnce = false)
     }
 
-    private fun moveMode(target: PermissionMode, presses: Int) {
+    private fun moveMode(target: PermissionMode, cycleOnce: Boolean) {
         if (agentId != null) return
         val base = conv.value.permissionMode
         local.update { it.copy(pendingMode = target.cli, pendingModeBase = base) }
         viewModelScope.launch {
             try {
-                hub.key(ref, List(presses) { SessionKey.ShiftTab })
-                expireOptimistic { it.pendingMode == target.cli }
+                val landed = hub.setMode(ref, if (cycleOnce) null else target.cli)
+                if (landed != null && landed != target.cli) {
+                    // The cycle skipped the predicted mode (e.g. auto mode on a model without it): show the real one.
+                    local.update { it.copy(pendingMode = landed, pendingModeBase = base) }
+                }
+                val shown = landed ?: target.cli
+                expireOptimistic { it.pendingMode == shown }
             } catch (ce: CancellationException) {
                 throw ce
             } catch (t: Throwable) {
@@ -308,15 +331,18 @@ class SessionChatViewModel(
         if (agentId != null) return
         val base = conv.value.model
         if (model == (local.value.pendingModel ?: base)) return
-        local.update { it.copy(pendingModel = model, pendingModelBase = base) }
+        // `/model X` is a message: a stopped session wakes for it (that can take a while), shown like a send.
+        val wake = state.value.retired
+        local.update { it.copy(pendingModel = model, pendingModelBase = base, modelSending = true, waking = it.waking || wake) }
         viewModelScope.launch {
             try {
                 hub.send(ref, modelCommand(model))
+                local.update { it.copy(modelSending = false, waking = if (wake) false else it.waking) }
                 expireOptimistic { it.pendingModel == model }
             } catch (ce: CancellationException) {
                 throw ce
             } catch (t: Throwable) {
-                local.update { it.copy(pendingModel = null, pendingModelBase = null) }
+                local.update { it.copy(pendingModel = null, pendingModelBase = null, modelSending = false, waking = if (wake) false else it.waking) }
                 say("Couldn't change model — ${describe(t)}")
             }
         }
@@ -341,7 +367,7 @@ class SessionChatViewModel(
         viewModelScope.launch {
             try {
                 when (val r = sessionReplyFor(toolName, decision)) {
-                    is SessionReply.Answer -> hub.answer(ref, r.decision, r.message)
+                    is SessionReply.Answer -> hub.answer(ref, r.decision, r.message, toolUseId = requestId.ifBlank { null })
                     is SessionReply.Ask -> hub.ask(ref, r.answers)
                     SessionReply.Dismiss -> hub.key(ref, listOf(SessionKey.Esc))
                 }

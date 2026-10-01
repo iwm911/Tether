@@ -5,15 +5,14 @@ tether_helper.py -- remote side of the Tether Android app.
 
 Installed by the app (over SFTP) at ~/.tether/bin/tether_helper.py and invoked over SSH exec
 channels. Python 3.6+, standard library only. Every command prints JSON on stdout (one object or
-array per line); failures print {"error": "..."} and exit with status 1.
+array per line); failures print {"error": "...", "code": "..."} and exit with status 1.
 
-State lives in ~/.tether/runs/<runId>/:
-    meta.json    run request + spawn info          in.jsonl   stream-json lines fed to claude's stdin
-    out.jsonl    claude's stream-json stdout       err.log    claude's stderr
-    pid          process-group leader (runner)     exit       claude's exit status (when it ended)
-    runner.sh    the detached bash runner          .state.json incremental parse cache (byte offsets)
+One kind of thing: a Claude Code session, keyed by its session id (protocol 2.0.0,
+docs/plans/one-session-daemon.md). Every start, wake, message, key and stop goes through the Claude
+Code daemon's control socket; the helper never runs `claude` itself, except `claude daemon` when the
+daemon is not running and the read-only `commands` lookup. <sid> is a session id or its 8-hex short.
 
-Sessions (protocol 2.0.0, docs/plans/one-session-daemon.md) -- <sid> is a session id or its 8-hex short:
+Sessions
     sessions [--cwd P] [--limit N] [--before MS]   {"sessions": [Session]} newest first
     watch [--cwd P] [--limit N]  {"snapshot": [Session]}, then {"changed": [Session], "removed": [sid]}, {"hb": ms}
     follow <sid> [--agent ID] [--from OFFSET]      follow events: line (+offset), draft, draftClear, status, state,
@@ -21,56 +20,33 @@ Sessions (protocol 2.0.0, docs/plans/one-session-daemon.md) -- <sid> is a sessio
     new                          stdin {cwd, prompt, model?, permissionMode?, images?, trust?, name?} -> Session
     send <sid>                   stdin {text, images?} -> {ok, woke} (a retired session is resumed under its own id)
     key <sid>                    stdin {keys: ["shift-tab"|"esc"|"enter"|"up"|"down"|"left"|"right"|"tab"|"space"|"1".."9"|{text}]}
-    answer <sid>                 stdin {decision: allow|allow_always|deny, message?} -> Session
-    ask <sid>                    stdin {answers: [{choices: [i…], other}]} -> Session
+                                 -> {ok}; or stdin {mode: "<permission mode>"|""}: Shift+Tab until the footer shows
+                                 that mode ("" = once) -> {ok, permissionMode} (the mode it landed on)
+    answer <sid>                 stdin {decision: allow|allow_always|deny, message?, toolUseId?} -> Session
+                                 (ESTALE when the open prompt is not toolUseId's)
+    ask <sid>                    stdin {answers: [{choices: [i...], other}]} -> Session
     interrupt <sid>              Esc -> Session
     stop <sid> | rm <sid>        {"ok": true}
-  Errors carry "code": ENODAEMON EAUTH EPROTO EHELD ENOSESSION EUNTRUSTED ETIMEOUT EDAEMON.
-  `follow`, `send` and `stop` with a Tether run id ("r…") and `sessions --legacy` / `watch --legacy` are the
-  previous protocol, kept until the app no longer calls them.
+    daemon-status                {running, proto, version, auth: ok|needs_login|unknown, pid?, error?, code?}
+  Errors carry "code": ENODAEMON EAUTH EPROTO EHELD ENOSESSION EUNTRUSTED ETIMEOUT EDAEMON, ESTALE (the prompt
+  being answered is gone or was replaced) or EINVAL (the request itself was refused: bad keys, no text...).
+  A needs_you Session's pending is a permission, a question, or a dialog cut from its screen
+  ({kind:"dialog", dialog: mcp_servers|trust|other, title, body, options:[{label, checked?, key?}], keys}).
 
-Commands
+Machine
     version                      {"version": HELPER_VERSION}
     probe                        host / claude / python facts (+ daemon: {running, proto, version, auth})
     projects                     [ProjectSummary]
-    sessions --legacy [--cwd P] [--limit N]   [SessionSummary]
     transcript <sessionId>       raw transcript lines (filtered for size)
-    history <runId>              transcript lines of a resumed session written before the run began
-    start                        stdin: StartRunRequest JSON  ->  RunInfo
-    runs                         [RunInfo]
-    watch --legacy               a [RunInfo] line on every change, {"hb": ms} every 15 s
-    follow <runId> <offset>      raw out.jsonl bytes from offset, complete lines only, until the reader goes
-    send <runId>                 stdin: JSONL appended to in.jsonl (flock)
-    input <runId>                in.jsonl lines (image payloads stripped)
-    stop <runId> | delete <runId>
     ls [path]                    DirListing
     commands [--cwd P]           {commands: [{name, description, argumentHint}]} from claude's initialize reply
-  Claude Code's own background agents (`claude --bg`, listed by `claude agents`):
-    native-list                  [NativeAgent]  (agents --json --all merged with ~/.claude/jobs/<id>/state.json)
-                                 Terminal sessions (kind "interactive") are listed too, as term-<pid>: watch-only;
-                                 native-reply continues one as a background copy, the rest refuse them.
-    native-start                 stdin {cwd, prompt, model?, permissionMode?, trust, mcp?} -> NativeAgent
-                                   | {error:"untrusted"} | {error:"mcp", servers} (mcp: "enable" | "skip" answers it)
-    native-reply <id>            stdin {message, model?, permissionMode?}: stop (if running) + `claude --bg --resume <session> [flags] msg`
-    native-send <id>             stdin {message}: type into the RUNNING agent via `claude attach` (queues while busy)
-    native-answer <id>           stdin {decision: allow|deny}: answer the agent's permission prompt
-    native-interrupt <id>        press Esc in the agent (interrupts the current turn, keeps the agent)
-    native-mode <id>             stdin {mode}: Shift+Tab the RUNNING agent to that permission mode
-    native-ask <id>              stdin {answers:[{choices:[i…], other:str|null}]}: answer an AskUserQuestion prompt
-    native-question <id>         the pending AskUserQuestion with multiSelect flags (peeks the TUI once, cached)
-    native-stop <id> | native-rm <id>
-    native-timeline <id>         [{at, state, detail, text}] from timeline.jsonl
-    native-logs <id>             {text}: `claude logs <id>` with ANSI stripped
-    native-follow <id>           the agent's transcript lines (as `transcript`), then new ones as they are written
-  `watch` also emits {"native": [NativeAgent]} lines whenever the native list changes.
-  The Claude Code daemon (control socket, proto 1):
-    daemon-status                {running, proto, version, auth: ok|needs_login|unknown, pid?, error?, code?}
-Errors from daemon calls carry "code": ENODAEMON | EAUTH | EPROTO | ENOSESSION | ETIMEOUT | EDAEMON ...
 Global option: --claude PATH (explicit claude binary).
+
+Older helpers kept Tether's own runs in ~/.tether/runs/; this one ignores that folder. Those
+conversations are ordinary Claude Code sessions and show up through their transcripts.
 """
 
 import errno
-import fcntl
 import glob
 import json
 import os
@@ -78,10 +54,8 @@ import platform
 import random
 import select
 import re
-import shlex
 import signal
 import socket
-import string
 import subprocess
 import sys
 import time
@@ -90,20 +64,17 @@ HELPER_VERSION = "2.0.0"
 
 HOME = os.path.expanduser("~")
 TETHER_DIR = os.path.join(HOME, ".tether")
-RUNS_DIR = os.path.join(TETHER_DIR, "runs")
 CACHE_DIR = os.path.join(TETHER_DIR, "cache")
 CLAUDE_PROJECTS = os.path.join(HOME, ".claude", "projects")
 
 STATE_VERSION = 4
 HEAD_BYTES = 1024 * 1024
 TAIL_BYTES = 256 * 1024
-RECENT_MS = 60 * 1000
 TRANSCRIPT_MAX_BYTES = 12 * 1024 * 1024
 TRANSCRIPT_STRING_CAP = 24 * 1024
 LAST_TEXT_CAP = 200
 
 SESSION_ID_RE = re.compile(r"^[0-9A-Za-z_-]{8,}$")
-RUN_ID_RE = re.compile(r"^[0-9A-Za-z_-]{4,64}$")
 META_PREFIXES = ("<system-reminder>", "<local-command", "Caveat:", "<command-message>", "<bash-")
 
 
@@ -661,18 +632,6 @@ def decode_dir_name(name):
     return "/" + name.lstrip("-").replace("-", "/") if name.startswith("-") else name
 
 
-def live_sessions():
-    """sessionId -> runId for live Tether runs."""
-    res = {}
-    for run_id, d in iter_run_dirs():
-        st = read_json(os.path.join(d, ".state.json"), {}) or {}
-        meta = read_json(os.path.join(d, "meta.json"), {}) or {}
-        sid = st.get("sessionId") or meta.get("resumeSessionId")
-        if sid and pid_alive(read_pid(d), meta.get("pidStart")):
-            res[sid] = run_id
-    return res
-
-
 def session_title(info):
     for k in ("customTitle", "aiTitle", "summary"):
         if info.get(k):
@@ -681,53 +640,6 @@ def session_title(info):
         if info.get(k):
             return one_line(info[k], 120)
     return "Untitled session"
-
-
-def cmd_sessions(opts):
-    limit = int(opts.get("limit") or 60)
-    want_cwd = opts.get("cwd")
-    if want_cwd:
-        want_cwd = os.path.abspath(os.path.expanduser(want_cwd))
-    files = []
-    if not os.path.isdir(CLAUDE_PROJECTS):
-        emit([])
-        return
-    if want_cwd:
-        d = os.path.join(CLAUDE_PROJECTS, project_dir_name(want_cwd))
-        if os.path.isdir(d):
-            files.extend(list_session_files(d))
-    else:
-        for name in os.listdir(CLAUDE_PROJECTS):
-            d = os.path.join(CLAUDE_PROJECTS, name)
-            if os.path.isdir(d):
-                files.extend(list_session_files(d))
-    files.sort(key=lambda t: t[2].st_mtime, reverse=True)
-    idx = SessionIndex()
-    live = live_sessions()
-    now = now_ms()
-    out = []
-    for path, sid, st in files:
-        if len(out) >= limit:
-            break
-        info = idx.info(path, st)
-        cwd = info.get("cwd") or decode_dir_name(os.path.basename(os.path.dirname(path)))
-        if want_cwd and os.path.normpath(cwd) != os.path.normpath(want_cwd):
-            continue
-        mt = int(st.st_mtime * 1000)
-        out.append({
-            "sessionId": sid,
-            "cwd": cwd,
-            "title": session_title(info),
-            "lastPrompt": one_line(info.get("lastPrompt"), 200),
-            "updatedAt": mt,
-            "messageCount": info.get("messages") or 0,
-            "sizeBytes": st.st_size,
-            "gitBranch": info.get("gitBranch"),
-            "recentlyActive": (now - mt) < RECENT_MS and sid not in live,
-            "liveRunId": live.get(sid),
-        })
-    idx.save()
-    emit(out)
 
 
 def cmd_projects(opts):
@@ -880,63 +792,7 @@ def cmd_transcript(opts, session_id):
     out.flush()
 
 
-def cmd_history(opts, run_id):
-    d = run_dir(run_id)
-    meta = read_json(os.path.join(d, "meta.json"), {}) or {}
-    sid = meta.get("resumeSessionId")
-    if not sid:
-        return
-    path = find_transcript(sid)
-    if not path:
-        return
-    stop_at = meta.get("resumeAt")
-    for s in transcript_lines(path, before_ms=meta.get("startedAt")):
-        sys.stdout.write(s)
-        sys.stdout.write("\n")
-        if stop_at and ('"uuid":"%s"' % stop_at) in s:
-            break  # a branch: history ends at the fork point
-    sys.stdout.flush()
-
-
-# ───────────────────────────────────────── runs ─────────────────────────────────────────
-
-def run_dir(run_id):
-    if not RUN_ID_RE.match(run_id or ""):
-        raise HelperError("Invalid run id.")
-    d = os.path.join(RUNS_DIR, run_id)
-    if not os.path.isdir(d):
-        raise HelperError("Run %s does not exist on this machine." % run_id)
-    return d
-
-
-def iter_run_dirs():
-    try:
-        names = os.listdir(RUNS_DIR)
-    except OSError:
-        return
-    for n in names:
-        d = os.path.join(RUNS_DIR, n)
-        if RUN_ID_RE.match(n) and os.path.isfile(os.path.join(d, "meta.json")):
-            yield n, d
-
-
-def read_pid(d):
-    t = read_text(os.path.join(d, "pid"))
-    try:
-        return int(t.strip()) if t else None
-    except ValueError:
-        return None
-
-
-def new_run_id():
-    t = int(time.time())
-    alphabet = string.digits + string.ascii_lowercase
-    s = ""
-    while t:
-        t, r = divmod(t, 36)
-        s = alphabet[r] + s
-    return "r" + s + "".join(random.choice(alphabet) for _ in range(5))
-
+# ───────────────────────────────────────── shared bits ─────────────────────────────────────────
 
 def rel_path(p, cwd):
     if not isinstance(p, str):
@@ -974,316 +830,6 @@ def permission_summary(tool, inp, cwd):
     return tool
 
 
-def new_state():
-    return {
-        "v": STATE_VERSION, "outOff": 0, "inOff": 0,
-        "sessionId": None, "model": None, "permissionMode": None,
-        "lastText": None, "cost": 0.0, "turns": 0, "resultError": None,
-        "initResp": False, "echoes": 0, "sent": 0, "lastKind": None,
-        "requests": {}, "closed": [], "lastResultAt": 0, "workingSince": None,
-        "bgTasks": [],
-    }
-
-
-def consume_out(state, data, cwd):
-    closed = set(state["closed"])
-    for raw in iter_lines_bytes(data):
-        o = parse_line(raw)
-        if not o:
-            continue
-        t = o.get("type")
-        if t == "system":
-            st = o.get("subtype")
-            if st == "init":
-                state["sessionId"] = o.get("session_id") or state["sessionId"]
-                state["model"] = o.get("model") or state["model"]
-                state["permissionMode"] = o.get("permissionMode") or state["permissionMode"]
-                state["lastKind"] = "activity"
-            elif st == "status":
-                if o.get("permissionMode"):
-                    state["permissionMode"] = o["permissionMode"]
-                if o.get("status"):
-                    state["lastKind"] = "activity"
-            elif st in ("task_started", "task_updated", "task_notification", "task_progress"):
-                # Background shells / subagents outlive the turn: tracked apart from turn activity.
-                tid = o.get("task_id")
-                patch = o.get("patch") if isinstance(o.get("patch"), dict) else {}
-                if not tid:
-                    pass
-                elif st == "task_started":
-                    if not o.get("ambient") and tid not in state["bgTasks"]:
-                        state["bgTasks"] = (state["bgTasks"] + [tid])[-100:]
-                elif st == "task_notification" or patch.get("status") not in (None, "running", "pending"):
-                    state["bgTasks"] = [x for x in state["bgTasks"] if x != tid]
-            else:
-                state["lastKind"] = "activity"
-        elif t == "assistant":
-            state["lastKind"] = "activity"
-            if o.get("parent_tool_use_id"):
-                continue
-            msg = o.get("message") or {}
-            for b in msg.get("content") or []:
-                if isinstance(b, dict) and b.get("type") == "text" and (b.get("text") or "").strip():
-                    state["lastText"] = trim(b["text"], LAST_TEXT_CAP)
-            if msg.get("model") and not msg.get("model", "").startswith("<"):
-                state["model"] = msg["model"]
-        elif t == "user":
-            state["lastKind"] = "activity"
-            if o.get("parent_tool_use_id"):
-                continue
-            content = (o.get("message") or {}).get("content")
-            is_text = isinstance(content, str) or (
-                isinstance(content, list) and any(isinstance(b, dict) and b.get("type") in ("text", "image") for b in content)
-                and not any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content))
-            if is_text and o.get("isReplay") is True:
-                state["echoes"] += 1
-                if state.get("workingSince") is None:
-                    state["workingSince"] = iso_to_ms(o.get("timestamp")) or now_ms()
-        elif t == "stream_event":
-            state["lastKind"] = "activity"
-        elif t == "result":
-            state["lastKind"] = "result"
-            # A resume with no prompt emits an empty bookkeeping result (num_turns 0): not a turn.
-            if o.get("num_turns") or (isinstance(o.get("result"), str) and o["result"]) or o.get("is_error"):
-                state["turns"] += 1
-            if isinstance(o.get("total_cost_usd"), (int, float)):
-                state["cost"] = float(o["total_cost_usd"])
-            if o.get("session_id"):
-                state["sessionId"] = o["session_id"]
-            interrupted = str(o.get("terminal_reason") or "").startswith("aborted") or o.get("terminal_reason") == "interrupted"
-            if interrupted:
-                state["resultError"] = None
-            elif o.get("is_error") or (o.get("subtype") and o.get("subtype") != "success"):
-                err = o.get("result") if isinstance(o.get("result"), str) and o.get("result") else None
-                if not err:
-                    errs = o.get("errors")
-                    err = "; ".join(str(e) for e in errs) if isinstance(errs, list) and errs else o.get("subtype")
-                state["resultError"] = trim(err, 300)
-            else:
-                state["resultError"] = None
-                if isinstance(o.get("result"), str) and o["result"].strip():
-                    state["lastText"] = trim(o["result"], LAST_TEXT_CAP)
-            # A finished turn leaves no live permission prompt behind.
-            for rid in list(state["requests"].keys()):
-                closed.add(rid)
-            state["requests"] = {}
-            state["lastResultAt"] = now_ms()
-            state["workingSince"] = None
-        elif t == "control_request":
-            req = o.get("request") or {}
-            rid = o.get("request_id")
-            if req.get("subtype") == "can_use_tool" and rid and rid not in closed:
-                tool = req.get("tool_name") or req.get("display_name") or "Tool"
-                inp = req.get("input")
-                ij = json.dumps(inp, ensure_ascii=False, separators=(",", ":")) if inp is not None else None
-                state["requests"][rid] = {
-                    "requestId": rid, "toolName": tool,
-                    "summary": permission_summary(tool, inp, cwd),
-                    "inputJson": ij if ij is None or len(ij) <= 512 * 1024 else None,
-                }
-        elif t == "control_cancel_request":
-            rid = o.get("request_id")
-            if rid:
-                closed.add(rid)
-                state["requests"].pop(rid, None)
-        elif t == "control_response":
-            resp = o.get("response") or {}
-            if isinstance(resp.get("response"), dict) and "commands" in resp["response"]:
-                state["initResp"] = True
-                m = resp["response"].get("current_permission_mode")
-                if m and not state["permissionMode"]:
-                    state["permissionMode"] = m
-    state["closed"] = list(closed)[-400:]
-
-
-def consume_in(state, data):
-    closed = set(state["closed"])
-    for raw in iter_lines_bytes(data):
-        if b'"type":"user"' in raw or b'"type": "user"' in raw:
-            o = parse_line(raw)
-            if o and o.get("type") == "user":
-                state["sent"] += 1
-                if state.get("workingSince") is None and state["lastKind"] != "activity":
-                    state["workingSince"] = now_ms()
-        elif b"control_response" in raw:
-            o = parse_line(raw)
-            if o and o.get("type") == "control_response":
-                rid = (o.get("response") or {}).get("request_id")
-                if rid:
-                    closed.add(rid)
-                    state["requests"].pop(rid, None)
-    state["closed"] = list(closed)[-400:]
-
-
-def read_complete(path, offset):
-    """Bytes from offset to the last complete line. Returns (data, new_offset)."""
-    try:
-        with open(path, "rb") as f:
-            f.seek(0, 2)
-            size = f.tell()
-            if size < offset:
-                return None, 0  # truncated / replaced: start over
-            if size == offset:
-                return b"", offset
-            f.seek(offset)
-            data = f.read(size - offset)
-    except (OSError, IOError):
-        return b"", offset
-    nl = data.rfind(b"\n")
-    if nl < 0:
-        return b"", offset
-    return data[:nl + 1], offset + nl + 1
-
-
-def load_state(d, cwd):
-    sp = os.path.join(d, ".state.json")
-    state = read_json(sp, None)
-    if not state or state.get("v") != STATE_VERSION:
-        state = new_state()
-    changed = False
-    for fname, key, fn in (("out.jsonl", "outOff", lambda s, b: consume_out(s, b, cwd)),
-                           ("in.jsonl", "inOff", consume_in)):
-        data, off = read_complete(os.path.join(d, fname), state[key])
-        if data is None:
-            state = new_state()
-            return load_state_fresh(d, cwd, sp)
-        if data:
-            fn(state, data)
-            state[key] = off
-            changed = True
-    if changed:
-        try:
-            write_json_atomic(sp, state)
-        except (OSError, IOError):
-            pass
-    return state
-
-
-def load_state_fresh(d, cwd, sp):
-    try:
-        os.remove(sp)
-    except OSError:
-        pass
-    state = new_state()
-    for fname, key in (("out.jsonl", "outOff"), ("in.jsonl", "inOff")):
-        data, off = read_complete(os.path.join(d, fname), 0)
-        if data:
-            if key == "outOff":
-                consume_out(state, data, cwd)
-            else:
-                consume_in(state, data)
-            state[key] = off
-    try:
-        write_json_atomic(sp, state)
-    except (OSError, IOError):
-        pass
-    return state
-
-
-def err_tail(d, cap=400):
-    data = read_tail(os.path.join(d, "err.log"), 4096)
-    if not data:
-        return None
-    text = data.decode("utf-8", "replace").strip()
-    lines = [l for l in text.splitlines() if l.strip()]
-    return trim("\n".join(lines[-4:]), cap) if lines else None
-
-
-def run_info(run_id, d):
-    meta = read_json(os.path.join(d, "meta.json"), {}) or {}
-    cwd = meta.get("cwd") or HOME
-    state = load_state(d, cwd)
-    pid = read_pid(d)
-    alive = pid_alive(pid, meta.get("pidStart"))
-    exit_txt = read_text(os.path.join(d, "exit"))
-    exit_code = None
-    if exit_txt is not None:
-        try:
-            exit_code = int(exit_txt.strip())
-        except ValueError:
-            exit_code = None
-    stopped = os.path.exists(os.path.join(d, "stopped"))
-    pending = None
-    error = None
-    started = meta.get("startedAt") or mtime_ms(os.path.join(d, "meta.json"))
-    if alive:
-        if state["requests"]:
-            # Oldest first: JSON objects keep insertion order (CPython 3.6+ dicts are ordered).
-            pending = next(iter(state["requests"].values()))
-            status = "AWAITING_PERMISSION"
-        elif state["lastKind"] == "activity" or (
-                state["sent"] > state["echoes"]
-                # a sent-but-never-echoed line older than 5 min after a result is not "working"
-                and not (state["lastKind"] == "result"
-                         and now_ms() - mtime_ms(os.path.join(d, "in.jsonl")) > 5 * 60 * 1000)):
-            status = "WORKING"
-        elif not state["initResp"] and state["turns"] == 0 and now_ms() - started < 120 * 1000:
-            status = "STARTING"
-        else:
-            status = "IDLE"
-        if state["resultError"] and status == "IDLE":
-            error = state["resultError"]
-    else:
-        if stopped or exit_code in (0, 143, -15, 137) or (state["turns"] > 0 and exit_code is None):
-            status = "ENDED"
-        elif state["turns"] > 0 and exit_code == 0:
-            status = "ENDED"
-        else:
-            status = "FAILED"
-            error = err_tail(d) or (("Claude exited with status %s." % exit_code) if exit_code is not None
-                                    else "The agent process is gone.")
-        if status == "ENDED" and state["resultError"]:
-            error = state["resultError"]
-    upd = max(mtime_ms(os.path.join(d, "out.jsonl")), mtime_ms(os.path.join(d, "in.jsonl")), started)
-    out_size = file_size(os.path.join(d, "out.jsonl"))
-    return {
-        "runId": run_id,
-        "cwd": cwd,
-        "title": meta.get("title"),
-        "sessionId": state["sessionId"] or meta.get("resumeSessionId"),
-        "forked": bool(meta.get("forkSession")),
-        "model": state["model"] or meta.get("model"),
-        "permissionMode": state["permissionMode"] or meta.get("permissionMode"),
-        "startedAt": started,
-        "updatedAt": upd,
-        "alive": alive,
-        "status": status,
-        "lastText": state["lastText"],
-        "costUsd": state["cost"],
-        "turns": state["turns"],
-        "pending": pending,
-        "outBytes": max(0, out_size),
-        "exitCode": exit_code,
-        "error": error,
-        "backgroundTasks": len(state["bgTasks"]) if alive else 0,
-    }
-
-
-def all_runs():
-    out = []
-    for run_id, d in iter_run_dirs():
-        try:
-            out.append(run_info(run_id, d))
-        except (OSError, IOError, ValueError, KeyError):
-            continue
-    out.sort(key=lambda r: r["updatedAt"], reverse=True)
-    return out
-
-
-def cmd_runs(opts):
-    emit(all_runs())
-
-
-def run_signature():
-    sig = []
-    for run_id, d in iter_run_dirs():
-        meta_pid = read_pid(d)
-        sig.append((run_id, file_size(os.path.join(d, "out.jsonl")), file_size(os.path.join(d, "in.jsonl")),
-                    os.path.exists(os.path.join(d, "exit")), pid_alive(meta_pid)))
-    sig.sort()
-    return sig
-
-
 class ReaderGone(object):
     """Detects that whoever reads our stdout (the SSH channel) went away, without writing to it."""
 
@@ -1311,523 +857,15 @@ class ReaderGone(object):
         return False
 
 
-def cmd_follow(opts, run_id, offset):
-    d = run_dir(run_id)
-    path = os.path.join(d, "out.jsonl")
-    try:
-        pos = max(0, int(offset or 0))
-    except ValueError:
-        raise HelperError("Invalid offset.")
-    gone = ReaderGone()
-    out = sys.stdout.buffer
-    f = None
-    pending = b""
-    while True:
-        if f is None:
-            try:
-                f = open(path, "rb")
-                f.seek(pos)
-            except (OSError, IOError):
-                f = None
-                if gone.wait(0.5):
-                    return
-                continue
-        chunk = f.read(256 * 1024)
-        if chunk:
-            pending += chunk
-            nl = pending.rfind(b"\n")
-            if nl >= 0:
-                out.write(pending[:nl + 1])
-                out.flush()
-                pos += nl + 1
-                pending = pending[nl + 1:]
-            continue
-        size = file_size(path)
-        if size < pos + len(pending):
-            return  # truncated or replaced: let the app re-attach from scratch
-        if gone.wait(0.25):
-            return
-
-
-def cmd_watch(opts):
-    try:
-        signal.signal(signal.SIGPIPE, signal.SIG_DFL)
-    except (AttributeError, ValueError):
-        pass
-    gone = ReaderGone()
-    last_sig = None
-    last_line = None
-    last_emit = 0
-    last_full = 0
-    native_on = "--no-native" not in sys.argv
-    last_nsig = None
-    last_native = 0
-    last_nline = None
-    while True:
-        t = time.time()
-        sig = run_signature()
-        # Re-derive at least every 10 s even without file changes (STARTING -> IDLE ageing, etc.).
-        if sig != last_sig or t - last_full > 10:
-            last_sig = sig
-            last_full = t
-            line = json.dumps(all_runs(), ensure_ascii=False, separators=(",", ":"))
-            if line != last_line:
-                last_line = line
-                sys.stdout.write(line + "\n")
-                sys.stdout.flush()
-                last_emit = t
-        if native_on:
-            nsig = native_signature()
-            # The job files move on every change; `claude agents` (pids) is re-read at least every 5 s.
-            if nsig != last_nsig or t - last_native > 5:
-                last_nsig = nsig
-                last_native = t
-                try:
-                    nline = json.dumps({"native": native_list(opts)}, ensure_ascii=False, separators=(",", ":"))
-                except HelperError:
-                    native_on = False  # no claude here: nothing native to watch
-                    nline = None
-                except (OSError, IOError, ValueError):
-                    nline = None
-                if nline is not None and nline != last_nline:
-                    last_nline = nline
-                    sys.stdout.write(nline + "\n")
-                    sys.stdout.flush()
-                    last_emit = t
-        if t - last_emit >= 15:
-            sys.stdout.write('{"hb":%d}\n' % now_ms())
-            sys.stdout.flush()
-            last_emit = t
-        if gone.wait(1.0):
-            return
-
-
-def cmd_start(opts):
-    raw = sys.stdin.read()
-    try:
-        req = json.loads(raw) if raw.strip() else {}
-    except ValueError:
-        raise HelperError("The start request is not valid JSON.")
-    cwd = os.path.abspath(os.path.expanduser(req.get("cwd") or HOME))
-    if not os.path.isdir(cwd):
-        raise HelperError("The folder %s does not exist." % cwd)
-    claude_dir = os.path.join(HOME, ".claude")
-    if cwd == claude_dir or cwd.startswith(claude_dir + "/"):
-        raise HelperError("Claude Code will not work inside ~/.claude. Pick another folder.")
-    claude, login_path = resolve_claude(opts.get("claude") or req.get("claudePath"))
-    if not claude:
-        raise HelperError("Claude Code was not found on this machine. Install it, or set its path in the machine settings.")
-
-    ensure_dir(RUNS_DIR)
-    run_id = new_run_id()
-    d = os.path.join(RUNS_DIR, run_id)
-    ensure_dir(d)
-    started = now_ms()
-
-    args = [claude, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
-            "--include-partial-messages", "--replay-user-messages", "--permission-prompt-tool", "stdio"]
-    model = req.get("model")
-    if model and model != "default":
-        args += ["--model", model]
-    mode = req.get("permissionMode")
-    if mode and mode != "default":
-        args += ["--permission-mode", mode]
-    resume = req.get("resumeSessionId")
-    if resume:
-        if not SESSION_ID_RE.match(resume):
-            raise HelperError("Invalid session id.")
-        args += ["--resume", resume]
-        if req.get("forkSession"):
-            args += ["--fork-session"]
-        at = req.get("resumeAt")
-        if at:
-            # Branch point: the new session keeps history only up to (and including) this message.
-            if not SESSION_ID_RE.match(at):
-                raise HelperError("Invalid message id.")
-            args += ["--resume-session-at", at]
-
-    meta = {
-        "runId": run_id, "cwd": cwd, "title": req.get("title"), "model": model,
-        "permissionMode": mode, "resumeSessionId": resume, "forkSession": bool(req.get("forkSession")),
-        "resumeAt": req.get("resumeAt") if resume else None,
-        "startedAt": started, "claudePath": claude, "helperVersion": HELPER_VERSION,
-    }
-    write_json_atomic(os.path.join(d, "meta.json"), meta)
-
-    lines = [json.dumps({"type": "control_request", "request_id": "init_1", "request": {"subtype": "initialize"}})]
-    if mode == "default":
-        # --permission-mode rejects "default", and omitting the flag inherits the user's settings
-        # defaultMode (often "auto"). Ask mode must really ask, so set it explicitly.
-        lines.append(json.dumps({"type": "control_request", "request_id": "mode_init",
-                                 "request": {"subtype": "set_permission_mode", "mode": "default"}}))
-    prompt = req.get("prompt")
-    if isinstance(prompt, str) and prompt.strip():
-        lines.append(json.dumps({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": prompt}]}},
-                                ensure_ascii=False))
-    with open(os.path.join(d, "in.jsonl"), "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
-    open(os.path.join(d, "out.jsonl"), "a").close()
-
-    q = shlex.quote
-    env = claude_env(claude, login_path)
-    runner = "\n".join([
-        "#!/bin/bash",
-        "# Tether run %s -- started %s" % (run_id, time.strftime("%Y-%m-%d %H:%M:%S")),
-        "export PATH=%s" % q(env["PATH"]),
-        # File checkpoints make "restore files to before this message" (rewind_files) possible later.
-        "export CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=1",
-        "D=%s" % q(d),
-        "cd %s || { echo cannot cd to %s >> \"$D/err.log\"; echo 97 > \"$D/exit\"; exit 97; }" % (q(cwd), q(cwd)),
-        "tail -n +1 -f \"$D/in.jsonl\" | %s > \"$D/out.jsonl\" 2> \"$D/err.log\"" % " ".join(q(a) for a in args),
-        "echo $? > \"$D/exit.tmp\" && mv -f \"$D/exit.tmp\" \"$D/exit\"",
-        "kill 0",
-        "",
-    ])
-    rp = os.path.join(d, "runner.sh")
-    with open(rp, "w") as f:
-        f.write(runner)
-    os.chmod(rp, 0o700)
-    proc = subprocess.Popen(["/bin/bash", rp], cwd=d, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True, env=env)
-    with open(os.path.join(d, "pid"), "w") as f:
-        f.write(str(proc.pid))
-    tag = proc_start_tag(proc.pid)
-    if tag:
-        meta["pidStart"] = tag
-        write_json_atomic(os.path.join(d, "meta.json"), meta)
-    # Give the process a moment so an immediate failure (bad flag, auth) is reported as FAILED.
-    deadline = time.time() + 1.2
-    while time.time() < deadline:
-        if proc.poll() is not None:
-            break
-        time.sleep(0.1)
-    emit(run_info(run_id, d))
-
-
-def cmd_send(opts, run_id):
-    d = run_dir(run_id)
-    data = sys.stdin.buffer.read()
-    if not data.strip():
-        emit({"ok": True, "bytes": 0})
-        return
-    lines = []
-    for raw in iter_lines_bytes(data):
-        raw = raw.strip()
-        if not raw:
-            continue
-        try:
-            json.loads(raw.decode("utf-8"))
-        except ValueError:
-            raise HelperError("Refusing to send a line that is not JSON.")
-        lines.append(raw)
-    payload = b"\n".join(lines) + b"\n"
-    fd = os.open(os.path.join(d, "in.jsonl"), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        # Make sure we start on a fresh line even if a previous writer died mid-line.
-        size = os.fstat(fd).st_size
-        if size > 0:
-            with open(os.path.join(d, "in.jsonl"), "rb") as f:
-                f.seek(size - 1)
-                if f.read(1) != b"\n":
-                    payload = b"\n" + payload
-        view = memoryview(payload)
-        while view:
-            n = os.write(fd, view)
-            view = view[n:]
-        fcntl.flock(fd, fcntl.LOCK_UN)
-    finally:
-        os.close(fd)
-    meta = read_json(os.path.join(d, "meta.json"), {}) or {}
-    emit({"ok": True, "bytes": len(payload), "alive": pid_alive(read_pid(d), meta.get("pidStart"))})
-
-
-def cmd_input(opts, run_id):
-    d = run_dir(run_id)
-    try:
-        with open(os.path.join(d, "in.jsonl"), "rb") as f:
-            for raw in f:
-                raw = raw.strip()
-                if not raw:
-                    continue
-                if len(raw) > 32 * 1024 and b'"image"' in raw:
-                    o = parse_line(raw)
-                    if o:
-                        slim_line(o)
-                        raw = json.dumps(o, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-                sys.stdout.buffer.write(raw + b"\n")
-    except (OSError, IOError):
-        pass
-    sys.stdout.flush()
-
-
-def stop_run(d):
-    meta = read_json(os.path.join(d, "meta.json"), {}) or {}
-    pid = read_pid(d)
-    try:
-        open(os.path.join(d, "stopped"), "w").close()
-    except (OSError, IOError):
-        pass
-    if not pid or not pid_alive(pid, meta.get("pidStart")):
-        return False
-    for sig in (signal.SIGTERM, signal.SIGKILL):
-        try:
-            os.killpg(pid, sig)
-        except OSError:
-            try:
-                os.kill(pid, sig)
-            except OSError:
-                pass
-        deadline = time.time() + 3.0
-        while time.time() < deadline:
-            if not pid_alive(pid, meta.get("pidStart")):
-                try:
-                    os.killpg(pid, signal.SIGKILL)  # reap any straggler (tail) in the group
-                except OSError:
-                    pass
-                return True
-            time.sleep(0.1)
-    return True
-
-
-def cmd_stop(opts, run_id):
-    d = run_dir(run_id)
-    stop_run(d)
-    emit(run_info(run_id, d))
-
-
-def cmd_delete(opts, run_id):
-    d = run_dir(run_id)
-    stop_run(d)
-    import shutil
-    real = os.path.realpath(d)
-    if not real.startswith(os.path.realpath(RUNS_DIR) + os.sep):
-        raise HelperError("Refusing to delete outside ~/.tether/runs.")
-    shutil.rmtree(real, ignore_errors=True)
-    emit({"ok": True, "runId": run_id})
-
-
-# ───────────────────────────────────────── native background agents ─────────────────────────────────────────
-# Claude Code's own `claude --bg` sessions. `claude agents --json --all` is the list of record (it
-# knows pids and forgets removed ones); ~/.claude/jobs/<id>/state.json adds the live one-line
-# detail, subagent fan-out and tokens; timeline.jsonl is the activity history.
+# ───────────────────────────────────────── Claude Code's files ─────────────────────────────────────────
+# ~/.claude/jobs/<short>/state.json (daemon jobs), ~/.claude/sessions/<pid>.json (the live-process
+# registry), ~/.claude.json (folder trust).
 
 JOBS_DIR = os.path.join(HOME, ".claude", "jobs")
 CLAUDE_SESSIONS = os.path.join(HOME, ".claude", "sessions")
-# A running terminal `claude` session (kind "interactive" in `claude agents`) has no id of its own: term-<pid>.
-TERMINAL_PREFIX = "term-"
 CLAUDE_JSON = os.path.join(HOME, ".claude.json")
 NATIVE_ID_RE = re.compile(r"^[0-9A-Za-z_-]{4,64}$")
 ANSI_RE = re.compile(r"\x1b\[[0-9;?<=>]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][0-9A-Za-z]|\x1b[=>78DEHMc]")
-BG_ID_RE = re.compile(r"backgrounded\s*[·\-:]\s*([0-9A-Za-z_-]{4,64})")
-NATIVE_RESULT_CAP = 600
-
-
-def strip_ansi(s):
-    if not s:
-        return s
-    s = ANSI_RE.sub("", s)
-    s = s.replace("\r\n", "\n")
-    # A bare CR redraws the line: keep what was drawn last.
-    return "\n".join(l.rsplit("\r", 1)[-1] for l in s.split("\n"))
-
-
-TERM_TOKEN_RE = re.compile(r"\x1b\[([0-9;?<=>]*)([ -/]*)([@-~])|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b([()][0-9A-Za-z]|[=>78DEHMc])|([\r\n\b\t])|([^\x1b\r\n\b\t]+)")
-
-
-def render_terminal(raw, max_rows=5000, max_cols=4096):
-    """Replays a TUI byte stream (cursor moves, erases, redraws) onto a virtual screen and returns the
-    final screen as plain text -- what the terminal would show, not every intermediate frame."""
-    rows = {}
-    r = c = 0
-    saved = (0, 0)
-
-    def line(i):
-        l = rows.get(i)
-        if l is None:
-            l = rows[i] = []
-        return l
-
-    def put(text):
-        nonlocal c
-        l = line(r)
-        for ch in text:
-            if ord(ch) < 32 or ch == "\x7f":
-                continue
-            if c >= max_cols:  # cursor moved absurdly far right (e.g. CSI 2147483647 C): drop, don't allocate
-                continue
-            if c < len(l):
-                l[c] = ch
-            else:
-                l.extend(" " * (c - len(l)))
-                l.append(ch)
-            c += 1
-
-    for m in TERM_TOKEN_RE.finditer(raw):
-        params, _inter, final, esc, ctl, text = m.groups()
-        if text is not None:
-            put(text)
-        elif ctl is not None:
-            if ctl == "\r":
-                c = 0
-            elif ctl == "\n":
-                r += 1
-                c = 0
-            elif ctl == "\b":
-                c = max(0, c - 1)
-            elif ctl == "\t":
-                c = (c // 8 + 1) * 8
-        elif esc is not None:
-            if esc == "7":
-                saved = (r, c)
-            elif esc == "8":
-                r, c = saved
-            elif esc == "c":
-                rows.clear()
-                r = c = 0
-        elif final is not None:
-            ps = [int(x) if x.isdigit() else 0 for x in (params or "").lstrip("?<=>").split(";")] if params else []
-            n = ps[0] if ps and ps[0] else 1
-            if final == "A":
-                r = max(0, r - n)
-            elif final == "B":
-                r += n
-            elif final == "C":
-                c += n
-            elif final == "D":
-                c = max(0, c - n)
-            elif final == "E":
-                r += n
-                c = 0
-            elif final == "F":
-                r = max(0, r - n)
-                c = 0
-            elif final == "G":
-                c = n - 1
-            elif final in ("H", "f"):
-                r = (ps[0] - 1) if ps and ps[0] else 0
-                c = (ps[1] - 1) if len(ps) > 1 and ps[1] else 0
-            elif final == "d":
-                r = n - 1
-            elif final == "K":
-                mode = ps[0] if ps else 0
-                l = line(r)
-                if mode == 0:
-                    del l[c:]
-                elif mode == 1:
-                    for i in range(min(c + 1, len(l))):
-                        l[i] = " "
-                else:
-                    del l[:]
-            elif final == "J":
-                mode = ps[0] if ps else 0
-                if mode in (2, 3):
-                    rows.clear()
-                elif mode == 0:
-                    del line(r)[c:]
-                    for k in [k for k in rows if k > r]:
-                        del rows[k]
-                elif mode == 1:
-                    for k in [k for k in rows if k < r]:
-                        del rows[k]
-            if r > max_rows:
-                r = max_rows
-    if not rows:
-        return ""
-    out = ["".join(rows.get(i, [])).rstrip().replace("\xa0", " ") for i in range(0, max(rows) + 1)]
-    while out and not out[-1].strip():
-        out.pop()
-    while out and not out[0].strip():
-        out.pop(0)
-    # Collapse runs of blank lines left by full-screen layouts.
-    res = []
-    for l in out:
-        if not l.strip() and res and not res[-1].strip():
-            continue
-        res.append(l)
-    return "\n".join(res)
-
-
-def native_id(v, terminal_ok=False):
-    if not NATIVE_ID_RE.match(v or ""):
-        raise HelperError("Invalid background agent id.")
-    if not terminal_ok and v.startswith(TERMINAL_PREFIX):
-        raise HelperError("This Claude Code session runs in a terminal on your computer. Continue it there, "
-                          "or reply here to start a background copy.")
-    return v
-
-
-def terminal_pid(agent_id):
-    try:
-        return int(agent_id[len(TERMINAL_PREFIX):]) if agent_id.startswith(TERMINAL_PREFIX) else None
-    except ValueError:
-        return None
-
-
-def parent_pid(pid):
-    try:
-        with open("/proc/%d/stat" % pid) as f:
-            s = f.read()
-        return int(s[s.rindex(")") + 2:].split()[1])
-    except (OSError, IOError, ValueError, IndexError):
-        pass
-    out, _err, rc = run_cmd(["ps", "-o", "ppid=", "-p", str(pid)], timeout=5)
-    try:
-        return int(out.strip()) if rc == 0 and out else None
-    except ValueError:
-        return None
-
-
-def tether_runner_pids():
-    """Pids of Tether's live-run runners: their `claude -p` child also shows in `claude agents` as interactive."""
-    pids = set()
-    for _run_id, d in iter_run_dirs():
-        p = read_pid(d)
-        if p:
-            pids.add(p)
-    return pids
-
-
-def claude_run(opts, args, cwd=None, timeout=30, raw=False):
-    """Runs the resolved claude with args. Returns (stdout, stderr, rc) with ANSI stripped."""
-    claude, login_path = resolve_claude(opts.get("claude"))
-    if not claude:
-        raise HelperError("Claude Code was not found on this machine. Install it, or set its path in the machine settings.")
-    env = claude_env(claude, login_path)
-    env.setdefault("TERM", "dumb")
-    env["NO_COLOR"] = "1"
-    try:
-        p = subprocess.Popen([claude] + list(args), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                             stderr=subprocess.PIPE, env=env, cwd=cwd or HOME, start_new_session=True)
-        try:
-            out, err = p.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            p.kill()
-            out, err = p.communicate()
-            return strip_ansi(out.decode("utf-8", "replace")), strip_ansi(err.decode("utf-8", "replace")), -1
-    except OSError as e:
-        raise HelperError("Could not run Claude Code: %s" % e)
-    out = out.decode("utf-8", "replace")
-    err = err.decode("utf-8", "replace")
-    if raw:
-        return out, err, p.returncode
-    return strip_ansi(out), strip_ansi(err), p.returncode
-
-
-def agents_json(opts):
-    """`claude agents --json --all`, or None when it could not be read."""
-    out, _err, rc = claude_run(opts, ["agents", "--json", "--all"], timeout=20)
-    if rc != 0 or not out:
-        return None
-    t = out.strip()
-    i = t.find("[")
-    if i < 0:
-        return None
-    try:
-        v = json.loads(t[i:])
-    except ValueError:
-        return None
-    return [x for x in v if isinstance(x, dict)] if isinstance(v, list) else None
 
 
 def job_state(agent_id):
@@ -1843,218 +881,6 @@ def flag_value(flags, name):
         if isinstance(f, str) and f.startswith(name + "="):
             return f[len(name) + 1:]
     return None
-
-
-def timeline_entries(agent_id, limit=None, text_cap=4000):
-    path = os.path.join(JOBS_DIR, agent_id, "timeline.jsonl")
-    data = read_tail(path, 64 * 1024) if limit else read_tail(path, 4 * 1024 * 1024)
-    out = []
-    for raw in iter_lines_bytes(data):
-        o = parse_line(raw)
-        if not o:
-            continue
-        out.append({
-            "at": iso_to_ms(o.get("at")) or 0,
-            "state": o.get("state"),
-            "detail": one_line(o.get("detail"), 240),
-            "text": trim(o.get("text"), text_cap) if isinstance(o.get("text"), str) else None,
-        })
-    if limit:
-        out = out[-limit:]
-    return out
-
-
-def native_agent(item, want_timeline=True):
-    aid = item.get("id") or ""
-    st = job_state(aid) if NATIVE_ID_RE.match(aid) else {}
-    pid = item.get("pid") if isinstance(item.get("pid"), int) else None
-    fan = []
-    todos = []
-    for f in st.get("fan") or []:
-        if not isinstance(f, dict):
-            continue
-        started = f.get("startedAt") if isinstance(f.get("startedAt"), (int, float)) and f.get("startedAt") > 0 else None
-        done_at = f.get("doneAt") if isinstance(f.get("doneAt"), (int, float)) and f.get("doneAt") > 0 else None
-        if f.get("kind") == "todo":
-            todos.append({"label": one_line(f.get("label"), 200) or "", "done": "doneAt" in f})
-            continue
-        fan.append({
-            "id": str(f.get("id") or ""), "kind": f.get("kind") or "agent",
-            "label": one_line(f.get("label"), 200) or (f.get("kind") or "Subagent"),
-            "group": one_line(f.get("group"), 120),
-            "startedAt": int(started) if started else None,
-            "doneAt": int(done_at) if done_at else None,
-            "running": "doneAt" not in f,
-        })
-    in_flight = st.get("inFlight") if isinstance(st.get("inFlight"), dict) else {}
-    output = st.get("output") if isinstance(st.get("output"), dict) else {}
-    result = output.get("result") if isinstance(output.get("result"), str) else None
-    sid = item.get("sessionId") or st.get("sessionId")
-    tpath = st.get("linkScanPath") if isinstance(st.get("linkScanPath"), str) else None
-    if not (tpath and os.path.isfile(tpath)) and sid and SESSION_ID_RE.match(sid):
-        tpath = find_transcript(sid)
-    jd = os.path.join(JOBS_DIR, aid)
-    updated = iso_to_ms(st.get("updatedAt")) or 0
-    updated = max(updated, mtime_ms(os.path.join(jd, "timeline.jsonl")), mtime_ms(os.path.join(jd, "state.json")))
-    started = item.get("startedAt") if isinstance(item.get("startedAt"), (int, float)) else iso_to_ms(st.get("createdAt"))
-    flags = st.get("respawnFlags")
-    terminal = item.get("kind") == "interactive"
-    name = st.get("name") or item.get("name")
-    intent = st.get("intent")
-    if terminal:
-        # Claude derives a name from the folder ("tether-ac"); the conversation's own title says more.
-        titles = {}
-        if tpath:
-            updated = max(updated, mtime_ms(tpath))
-            scan_titles(read_tail(tpath, 256 * 1024), titles)
-        reg = read_json(os.path.join(CLAUDE_SESSIONS, "%d.json" % pid), {}) if pid else {}
-        if not (isinstance(reg, dict) and reg.get("nameSource") not in (None, "derived")):
-            name = titles.get("customTitle") or titles.get("aiTitle") or name
-        intent = titles.get("lastPrompt")
-    out = {
-        "id": aid,
-        "sessionId": sid,
-        "cwd": item.get("cwd") or st.get("cwd") or HOME,
-        "kind": item.get("kind") or "background",
-        "name": one_line(name, 160),
-        "intent": one_line(intent, 240),
-        "state": item.get("state") or st.get("state") or (
-            ("working" if item.get("status") == "busy" else "idle") if terminal else ("working" if pid else "done")),
-        "status": item.get("status"),
-        "pid": pid,
-        "alive": bool(pid) and pid_alive(pid),
-        "startedAt": int(started or updated or 0),
-        "updatedAt": int(updated or started or 0),
-        "detail": one_line(st.get("detail"), 240),
-        "tempo": st.get("tempo"),
-        "tasks": in_flight.get("tasks") if isinstance(in_flight.get("tasks"), int) else 0,
-        "queued": in_flight.get("queued") if isinstance(in_flight.get("queued"), int) else 0,
-        "fan": fan,
-        "todos": todos,
-        "tokens": st.get("tokens") if isinstance(st.get("tokens"), int) else 0,
-        "result": trim(result, NATIVE_RESULT_CAP),
-        "model": flag_value(flags, "--model"),
-        "permissionMode": flag_value(flags, "--permission-mode"),
-        "transcript": bool(tpath),
-    }
-    if item.get("status") == "waiting" and not terminal:
-        # A question lives in state.json ("block") — its tool_use reaches the transcript only once answered.
-        pt = question_pending(aid, st) or (pending_tool_use(tpath, out["cwd"]) if tpath else None)
-        if not pt:
-            # Nothing on disk describes it: almost always an AskUserQuestion — the app fetches it
-            # with native-question (reads the agent's screen) when the user opens it.
-            pt = {"toolUseId": "q-screen-%s" % (st.get("updatedAt") or out["updatedAt"]), "toolName": "AskUserQuestion",
-                  "summary": out.get("detail") or "Claude has a question",
-                  "inputJson": json.dumps({"questions": [], "needsFetch": True})}
-        out["pendingTool"] = pt
-    if want_timeline:
-        out["timeline"] = timeline_entries(aid, 4, 280) if st else []
-    return out
-
-
-def native_items(opts):
-    items = agents_json(opts)
-    if items is None:
-        # `claude agents` unavailable: fall back to the job directories themselves.
-        items = []
-        try:
-            names = os.listdir(JOBS_DIR)
-        except OSError:
-            names = []
-        for n in names:
-            st = read_json(os.path.join(JOBS_DIR, n, "state.json"), None)
-            if isinstance(st, dict) and NATIVE_ID_RE.match(n):
-                items.append({"id": n, "cwd": st.get("cwd"), "kind": "background", "sessionId": st.get("sessionId"),
-                              "name": st.get("name"), "state": st.get("state"), "startedAt": iso_to_ms(st.get("createdAt"))})
-    for item in items:
-        if item.get("kind") == "interactive" and isinstance(item.get("pid"), int) and not item.get("id"):
-            item["id"] = TERMINAL_PREFIX + str(item["pid"])
-    return items
-
-
-LINEAGE_PATH = os.path.join(TETHER_DIR, "native_lineage.json")
-
-
-def read_lineage():
-    """{successorId: [ancestorIds…]} for replies that claude continued under a new id."""
-    v = read_json(LINEAGE_PATH, {}) or {}
-    return v if isinstance(v, dict) else {}
-
-
-def record_fork(old_id, new_id):
-    lin = read_lineage()
-    ancestors = [old_id] + [a for a in lin.pop(old_id, []) if a != new_id]
-    lin[new_id] = ancestors
-    try:
-        ensure_dir(TETHER_DIR)
-        write_json_atomic(LINEAGE_PATH, lin)
-    except (OSError, IOError):
-        pass
-
-
-def native_list(opts):
-    out = []
-    items = native_items(opts)
-    present = set(i.get("id") for i in items)
-    lin = read_lineage()
-    hidden = set()
-    for succ, ancestors in lin.items():
-        if succ in present:
-            hidden.update(ancestors)  # the same conversation continues under succ
-    runners = None
-    for item in items:
-        if item.get("id") in hidden:
-            continue
-        kind = item.get("kind")
-        if kind == "interactive":
-            if not item.get("id"):
-                continue
-            if runners is None:
-                runners = tether_runner_pids()
-            if parent_pid(item["pid"]) in runners:
-                continue  # a Tether live run: listed by `runs` already
-        elif not item.get("id") or kind not in (None, "background"):
-            continue
-        try:
-            a = native_agent(item)
-            prev = [x for x in lin.get(a["id"], []) if x in present]
-            if prev:
-                a["previousIds"] = prev
-            out.append(a)
-        except (OSError, IOError, ValueError, KeyError, TypeError):
-            continue
-    out.sort(key=lambda a: a["updatedAt"], reverse=True)
-    return out
-
-
-def find_native(opts, agent_id):
-    for item in native_items(opts):
-        if item.get("id") == agent_id:
-            return item
-    return None
-
-
-def cmd_native_list(opts):
-    emit(native_list(opts))
-
-
-def native_signature():
-    sig = []
-    try:
-        names = sorted(os.listdir(JOBS_DIR))
-    except OSError:
-        return sig
-    for n in names:
-        d = os.path.join(JOBS_DIR, n)
-        sig.append((n, mtime_ms(os.path.join(d, "state.json")), file_size(os.path.join(d, "timeline.jsonl"))))
-    try:
-        # Terminal sessions: busy / idle / waiting live in ~/.claude/sessions/<pid>.json.
-        for n in sorted(os.listdir(CLAUDE_SESSIONS)):
-            if n.endswith(".json"):
-                sig.append((n, mtime_ms(os.path.join(CLAUDE_SESSIONS, n))))
-    except OSError:
-        pass
-    return sig
 
 
 # ── folder trust (~/.claude.json projects[<dir>].hasTrustDialogAccepted) ──
@@ -2120,61 +946,7 @@ def write_json_preserving(path, data):
     os.replace(tmp, path)
 
 
-# ── project MCP servers (.mcp.json in cwd or a parent). Claude Code asks once per folder which ones
-#    to enable; a `claude --bg` session would sit on that screen, so Tether asks on the phone instead
-#    and records the answer where Claude does: <cwd>/.claude/settings.local.json. ──
-
-def project_mcp_servers(cwd):
-    names = []
-    p = os.path.normpath(cwd)
-    while True:
-        data = read_json(os.path.join(p, ".mcp.json"))
-        servers = data.get("mcpServers") if isinstance(data, dict) else None
-        if isinstance(servers, dict):
-            names += [n for n in servers if isinstance(n, str) and n not in names]
-        parent = os.path.dirname(p)
-        if parent == p:
-            return names
-        p = parent
-
-
-def pending_mcp_servers(cwd):
-    """Project MCP servers Claude Code has not been told to enable or skip in cwd yet."""
-    names = project_mcp_servers(cwd)
-    if not names:
-        return []
-    cwd = os.path.normpath(cwd)
-    sources = [read_json(f) for f in ("/etc/claude-code/managed-settings.json",
-                                      os.path.join(HOME, ".claude", "settings.json"),
-                                      os.path.join(cwd, ".claude", "settings.json"),
-                                      os.path.join(cwd, ".claude", "settings.local.json"))]
-    data = read_json(CLAUDE_JSON, {}) or {}
-    projects = data.get("projects") if isinstance(data, dict) and isinstance(data.get("projects"), dict) else {}
-    sources.append(projects.get(cwd))
-    decided = set()
-    for s in sources:
-        if not isinstance(s, dict):
-            continue
-        if s.get("enableAllProjectMcpServers") is True:
-            return []
-        for key in ("enabledMcpjsonServers", "disabledMcpjsonServers"):
-            v = s.get(key)
-            if isinstance(v, list):
-                decided.update(x for x in v if isinstance(x, str))
-    return [n for n in names if n not in decided]
-
-
-def settle_mcp_servers(cwd, names, enable):
-    """Adds names to enabledMcpjsonServers (or disabledMcpjsonServers) in <cwd>/.claude/settings.local.json."""
-    d = os.path.join(os.path.normpath(cwd), ".claude")
-    path = os.path.join(d, "settings.local.json")
-    data = read_json_object(path, path.replace(HOME, "~", 1))
-    key = "enabledMcpjsonServers" if enable else "disabledMcpjsonServers"
-    cur = data.get(key) if isinstance(data.get(key), list) else []
-    data[key] = cur + [n for n in names if n not in cur]
-    os.makedirs(d, exist_ok=True)
-    write_json_preserving(path, data)
-
+# ── requests ──
 
 def read_request():
     raw = sys.stdin.read()
@@ -2187,7 +959,7 @@ def read_request():
     return req
 
 
-def native_cwd(v):
+def session_cwd(v):
     cwd = os.path.abspath(os.path.expanduser(v or HOME))
     if not os.path.isdir(cwd):
         raise HelperError("The folder %s does not exist." % cwd)
@@ -2195,94 +967,6 @@ def native_cwd(v):
     if cwd == claude_dir or cwd.startswith(claude_dir + "/"):
         raise HelperError("Claude Code will not work inside ~/.claude. Pick another folder.")
     return cwd
-
-
-def bg_args(model, mode):
-    args = ["--bg"]
-    if model and model != "default":
-        args += ["--model", model]
-    if mode and mode != "default":
-        args += ["--permission-mode", mode]
-    return args
-
-
-def launch_bg(opts, cwd, args):
-    """Runs `claude --bg …` in cwd; returns the new id, 'untrusted', or raises with Claude's sentence."""
-    out, err, rc = claude_run(opts, args, cwd=cwd, timeout=90)
-    text = (out or "") + "\n" + (err or "")
-    m = BG_ID_RE.search(text)
-    if m:
-        return m.group(1), text
-    if "not trusted" in text.lower():
-        return "untrusted", text
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    raise HelperError(lines[-1] if lines else "claude --bg exited with status %s." % rc)
-
-
-def wait_native(opts, agent_id, seconds=6.0):
-    deadline = time.time() + seconds
-    while True:
-        item = find_native(opts, agent_id)
-        if item or time.time() > deadline:
-            return item
-        time.sleep(0.5)
-
-
-def cmd_native_start(opts):
-    req = read_request()
-    cwd = native_cwd(req.get("cwd"))
-    prompt = req.get("prompt")
-    if not isinstance(prompt, str) or not prompt.strip():
-        raise HelperError("A background agent needs a first message.")
-    # "--" ends option parsing: a prompt starting with "-" must never be read as a claude flag.
-    args = bg_args(req.get("model"), req.get("permissionMode")) + ["--", prompt]
-    if not folder_trusted(cwd):
-        if not req.get("trust"):
-            emit({"error": "untrusted", "cwd": cwd})
-            return
-        trust_folder(cwd)
-    pending = pending_mcp_servers(cwd)
-    if pending:
-        choice = req.get("mcp")
-        if choice not in ("enable", "skip"):
-            emit({"error": "mcp", "cwd": cwd, "servers": pending})
-            return
-        settle_mcp_servers(cwd, pending, choice == "enable")
-    new_id, text = launch_bg(opts, cwd, args)
-    if new_id == "untrusted":
-        # Claude has its own notion (e.g. a parent entry we did not read the same way): trust exactly cwd.
-        if not req.get("trust"):
-            emit({"error": "untrusted", "cwd": cwd})
-            return
-        trust_folder(cwd)
-        new_id, text = launch_bg(opts, cwd, args)
-        if new_id == "untrusted":
-            raise HelperError("Claude Code still does not trust %s." % cwd)
-    item = wait_native(opts, new_id) or {"id": new_id, "cwd": cwd, "kind": "background", "state": "working",
-                                         "startedAt": now_ms()}
-    emit(native_agent(item))
-
-
-def stop_native(opts, agent_id, item):
-    if not (item and item.get("pid")):
-        return
-    claude_run(opts, ["stop", agent_id], timeout=30)
-    deadline = time.time() + 12
-    while time.time() < deadline:
-        cur = find_native(opts, agent_id)
-        if not cur or not cur.get("pid"):
-            return
-        time.sleep(0.5)
-
-
-def cmd_native_reply(opts, agent_id):
-    req = read_request()
-    msg = req.get("message")
-    if not isinstance(msg, str) or not msg.strip():
-        raise HelperError("Nothing to send.")
-    cmd_native_reply_with(opts, native_id(agent_id, terminal_ok=True), msg,
-                          model=setting_arg(req.get("model"), MODEL_ARG_RE, "model"),
-                          mode=setting_arg(req.get("permissionMode"), None, "permission mode"))
 
 
 MODEL_ARG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-\[\]]{0,80}$")
@@ -2299,52 +983,7 @@ def setting_arg(v, pattern, what):
     return v
 
 
-def cmd_native_reply_with(opts, agent_id, msg, model=None, mode=None):
-    item = find_native(opts, agent_id)
-    if not item:
-        raise HelperError("That background agent no longer exists.")
-    st = job_state(agent_id)
-    sid = item.get("sessionId") or st.get("sessionId")
-    if not sid or not SESSION_ID_RE.match(sid):
-        raise HelperError("This background agent has no conversation to continue.")
-    cwd = native_cwd(item.get("cwd") or st.get("cwd"))
-    terminal = item.get("kind") == "interactive"
-    if not terminal:
-        stop_native(opts, agent_id, item)
-    # No --model / --permission-mode here: the session keeps its own saved options, and passing any
-    # flag makes claude start a copy under a new id instead of continuing this one. A terminal session
-    # is still in use, so it gets exactly that: --fork-session copies it under a new session id rather
-    # than writing into the conversation the terminal is running.
-    # A model / mode chosen on the phone rides along as flags: they apply to this session only (unlike
-    # the TUI's /model, which also saves the choice as the default for every new session).
-    args = ["--bg", "--resume", sid] + (["--fork-session"] if terminal else [])
-    if (model or mode) and not terminal:
-        # Any flag starts a copy with only the flags given: keep the setting that isn't changing.
-        flags = st.get("respawnFlags")
-        model = model or flag_value(flags, "--model")
-        mode = mode or flag_value(flags, "--permission-mode")
-    if model:
-        args += ["--model", model]
-    if mode:
-        args += ["--permission-mode", mode]
-    new_id, _text = launch_bg(opts, cwd, args + ["--", msg])
-    if new_id == "untrusted":
-        raise HelperError("Claude Code no longer trusts %s." % cwd)
-    cur = wait_native(opts, new_id) or {"id": new_id, "cwd": cwd, "kind": "background", "sessionId": None if terminal else sid,
-                                        "state": "working", "startedAt": now_ms()}
-    if new_id != agent_id and not terminal:
-        record_fork(agent_id, new_id)
-    res = native_agent(cur)
-    res["previousId"] = agent_id
-    res["forked"] = new_id != agent_id
-    emit(res)
-
-
-# ── driving a running background agent through `claude attach` ──
-# A background agent is a TUI owned by Claude Code's daemon; `claude attach <id>` is the supported
-# way in. We open it in a pseudo-terminal, act like a person at the keyboard, and detach. The agent
-# keeps running throughout (verified on 2.1.283: text pasted while it works is queued, "1" answers
-# "Do you want to proceed? 1. Yes", Esc cancels a prompt / interrupts a turn).
+# ── reading a session's prompts (transcript + screen) ──
 
 def pending_tool_use(tpath, cwd):
     """The newest tool_use in the transcript that has no tool_result yet (what a prompt is about)."""
@@ -2382,172 +1021,7 @@ def pending_tool_use(tpath, cwd):
     return None
 
 
-def transcript_size(item):
-    sid = item.get("sessionId") or job_state(item.get("id") or "").get("sessionId")
-    path = find_transcript(sid) if sid and SESSION_ID_RE.match(sid) else None
-    return path, (file_size(path) if path else 0)
-
-
-def attach_session(opts, agent_id, actions, settle=1.2):
-    """Runs `claude attach <id>` in a pty and performs actions: a list of bytes (written) or floats
-    (seconds to wait while draining output). Waits for the TUI prompt before acting."""
-    import pty
-    import struct
-    import termios
-    claude, login_path = resolve_claude(opts.get("claude"))
-    if not claude:
-        raise HelperError("Claude Code was not found on this machine.")
-    env = claude_env(claude, login_path)
-    env["TERM"] = "xterm-256color"
-    env.pop("NO_COLOR", None)
-    pid, fd = pty.fork()
-    if pid == 0:  # child
-        try:
-            os.chdir(HOME)
-            os.execve(claude, [claude, "attach", agent_id], env)
-        finally:
-            os._exit(127)
-    seen = bytearray()
-    try:
-        fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
-
-        def pump(seconds, until=None):
-            end = time.time() + seconds
-            while time.time() < end:
-                r, _w, _x = select.select([fd], [], [], 0.05)
-                if not r:
-                    continue
-                try:
-                    d = os.read(fd, 65536)
-                except OSError:
-                    return False
-                if not d:
-                    return False
-                seen.extend(d)
-                if b"\x1b[6n" in d:  # cursor position query: answer so the TUI does not stall
-                    os.write(fd, b"\x1b[1;1R")
-                if until is not None and until in seen:
-                    return True
-            return until is None
-
-        # The input prompt glyph (❯) appears once the TUI has drawn.
-        if not pump(10.0, until="\u276f".encode("utf-8")):
-            raise HelperError("Couldn't open the background agent's terminal.")
-        pump(settle)
-        for a in actions:
-            if isinstance(a, (int, float)):
-                pump(float(a))
-            else:
-                os.write(fd, a)
-                pump(0.05)
-        pump(0.6)
-    finally:
-        try:
-            os.kill(pid, signal.SIGHUP)
-        except OSError:
-            pass
-        time.sleep(0.2)
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except OSError:
-            pass
-        try:
-            os.waitpid(pid, 0)
-        except OSError:
-            pass
-        try:
-            os.close(fd)
-        except OSError:
-            pass
-    return bytes(seen)
-
-
-def live_native(opts, agent_id):
-    agent_id = native_id(agent_id)
-    item = find_native(opts, agent_id)
-    if not item:
-        raise HelperError("That background agent no longer exists.")
-    pid = item.get("pid") if isinstance(item.get("pid"), int) else None
-    return agent_id, item, bool(pid) and pid_alive(pid)
-
-
-def cmd_native_send(opts, agent_id):
-    req = read_request()
-    msg = req.get("message")
-    if not isinstance(msg, str) or not msg.strip():
-        raise HelperError("Nothing to send.")
-    agent_id, item, alive = live_native(opts, agent_id)
-    if not alive:
-        # A stopped agent has no terminal to type into: continue its session instead.
-        return cmd_native_reply_with(opts, agent_id, msg)
-    if item.get("status") == "waiting":
-        raise HelperError("Claude is waiting for your approval — answer it first.")
-    text = msg.replace("\r\n", "\n").replace("\r", "\n").strip()
-    path, before = transcript_size(item)
-    paste = b"\x1b[200~" + text.encode("utf-8") + b"\x1b[201~"
-    attach_session(opts, agent_id, [paste, 1.5, b"\r", 1.5])
-    delivered = wait_transcript_growth(path, before, 6.0)
-    if not delivered:
-        # One retry, typed in small chunks (newlines as backslash+Enter), for TUIs that drop pastes.
-        body = text.replace("\n", "\\\r").encode("utf-8")
-        chunks = [body[i:i + 48] for i in range(0, len(body), 48)]
-        acts = []
-        for c in chunks:
-            acts += [c, 0.03]
-        attach_session(opts, agent_id, acts + [0.4, b"\r", 1.5])
-        delivered = wait_transcript_growth(path, before, 6.0)
-    if not delivered:
-        raise HelperError("The agent didn't take the message. Try again in a moment.")
-    cur = find_native(opts, agent_id) or item
-    res = native_agent(cur)
-    res["messageQueued"] = cur.get("status") == "busy"
-    emit(res)
-
-
-def wait_transcript_growth(path, before, seconds):
-    if not path:
-        time.sleep(min(seconds, 2.0))
-        return True  # cannot verify without a transcript; assume the keystrokes landed
-    end = time.time() + seconds
-    while time.time() < end:
-        if file_size(path) > before:
-            return True
-        time.sleep(0.25)
-    return False
-
-
-def cmd_native_answer(opts, agent_id):
-    req = read_request()
-    decision = req.get("decision")
-    if decision not in ("allow", "deny"):
-        raise HelperError("decision must be allow or deny.")
-    agent_id, item, alive = live_native(opts, agent_id)
-    if not alive:
-        raise HelperError("That background agent has stopped.")
-    if item.get("status") != "waiting":
-        raise HelperError("There is no pending approval any more.")
-    # "1" is always "Yes" in Claude Code's prompt; Esc always cancels it (numbering of "No" varies).
-    attach_session(opts, agent_id, [b"1" if decision == "allow" else b"\x1b", 1.0])
-    deadline = time.time() + 5.0
-    cur = item
-    while time.time() < deadline:
-        cur = find_native(opts, agent_id) or cur
-        if cur.get("status") != "waiting":
-            break
-        time.sleep(0.4)
-    emit(native_agent(cur))
-
-
-def cmd_native_interrupt(opts, agent_id):
-    agent_id, item, alive = live_native(opts, agent_id)
-    if not alive:
-        raise HelperError("That background agent has stopped.")
-    if item.get("status") == "busy":
-        attach_session(opts, agent_id, [b"\x1b", 1.0])
-    emit(native_agent(find_native(opts, agent_id) or item))
-
-
-# The mode line under the prompt, as Tui.text() reads it (whitespace removed), e.g. "⏸ manual mode on",
+# The mode line under the prompt, as DaemonTui.text() reads it (whitespace removed), e.g. "⏸ manual mode on",
 # "⏵⏵ accept edits on (shift+tab to cycle)". "auto mode unavailable for this model" matches none.
 SCREEN_MODES = (("manualmodeon", "default"), ("accepteditson", "acceptEdits"), ("planmodeon", "plan"),
                 ("automodeon", "auto"), ("bypasspermissionson", "bypassPermissions"))
@@ -2561,62 +1035,6 @@ def screen_mode(text):
         if i > at:
             best, at = mode, i
     return best
-
-
-def cmd_native_mode(opts, agent_id):
-    """Switches a running agent's permission mode with Shift+Tab, like a person at its terminal.
-    The cycle (manual → accept edits → plan → auto → bypass) skips modes the agent can't use; when the
-    wanted one never comes up, the agent is put back where it was."""
-    req = read_request()
-    want = setting_arg(req.get("mode"), None, "permission mode")
-    if not want:
-        raise HelperError("Unknown permission mode.")
-    agent_id, item, alive = live_native(opts, agent_id)
-    if not alive:
-        raise HelperError("That background agent has stopped.")
-    if item.get("status") == "waiting":
-        raise HelperError("Answer Claude's request first.")
-    tui = Tui(opts, agent_id)
-    try:
-        orig = cur = screen_mode(tui.text(0))
-        if cur is None:
-            raise HelperError("Couldn't read the agent's mode.")
-
-        def press():
-            m = tui.mark()
-            tui.send(b"\x1b[Z", 0.8)
-            mode = screen_mode(tui.text(m))
-            if mode is None:
-                tui.pump(1.0)
-                mode = screen_mode(tui.text(m))
-            if mode is None:
-                raise HelperError("Couldn't read the agent's mode.")
-            return mode
-
-        for _ in range(len(SCREEN_MODES)):
-            if cur == want:
-                break
-            cur = press()
-        if cur != want:
-            for _ in range(len(SCREEN_MODES)):
-                if cur == orig:
-                    break
-                cur = press()
-            raise HelperError("That mode isn't available for this agent.")
-    finally:
-        tui.close()
-    # The daemon mirrors the mode into the job's respawn flags, which native_agent reports.
-    deadline = time.time() + 3.0
-    cur_item = item
-    while time.time() < deadline:
-        cur_item = find_native(opts, agent_id) or cur_item
-        if flag_value(job_state(agent_id).get("respawnFlags"), "--permission-mode") == want or \
-                (want == "default" and not flag_value(job_state(agent_id).get("respawnFlags"), "--permission-mode")):
-            break
-        time.sleep(0.3)
-    res = native_agent(cur_item)
-    res["permissionMode"] = want
-    emit(res)
 
 
 def question_block(st):
@@ -2818,9 +1236,9 @@ def parse_question_screen(lines):
     return {"question": qtext, "options": options, "multiSelect": multi, "tabs": tabs}
 
 
-def read_questions_from_tui(opts, agent_id, tui_factory=None):
-    """Renders the agent's screen, walking the question tabs with → (answers nothing)."""
-    tui = tui_factory() if tui_factory else Tui(opts, agent_id)
+def read_questions_from_tui(tui_factory):
+    """Renders the session's screen, walking the question tabs with → (answers nothing)."""
+    tui = tui_factory()
     sc = Screen(40, 120)
     fed = 0
     found = []
@@ -2870,87 +1288,6 @@ def read_questions_from_tui(opts, agent_id, tui_factory=None):
     return found
 
 
-class Tui(object):
-    """A `claude attach <id>` pty we can drive step by step and read back (ANSI stripped)."""
-
-    def __init__(self, opts, agent_id):
-        import pty
-        import struct
-        import termios
-        claude, login_path = resolve_claude(opts.get("claude"))
-        if not claude:
-            raise HelperError("Claude Code was not found on this machine.")
-        env = claude_env(claude, login_path)
-        env["TERM"] = "xterm-256color"
-        env.pop("NO_COLOR", None)
-        self.buf = bytearray()
-        self.pid, self.fd = pty.fork()
-        if self.pid == 0:
-            try:
-                os.chdir(HOME)
-                os.execve(claude, [claude, "attach", agent_id], env)
-            finally:
-                os._exit(127)
-        fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
-        if not self.pump(10.0, until="\u276f".encode("utf-8")):
-            self.close()
-            raise HelperError("Couldn't open the background agent's terminal.")
-        self.pump(1.0)
-
-    def pump(self, seconds, until=None):
-        end = time.time() + seconds
-        while time.time() < end:
-            r, _w, _x = select.select([self.fd], [], [], 0.05)
-            if not r:
-                continue
-            try:
-                d = os.read(self.fd, 65536)
-            except OSError:
-                return False
-            if not d:
-                return False
-            self.buf.extend(d)
-            if b"\x1b[6n" in d:
-                os.write(self.fd, b"\x1b[1;1R")
-            if until is not None and until in self.buf:
-                return True
-        return until is None
-
-    def send(self, data, wait=0.8):
-        os.write(self.fd, data)
-        self.pump(wait)
-
-    def mark(self):
-        return len(self.buf)
-
-    def text(self, since=0):
-        """Screen output since a mark, ANSI-free with ALL whitespace removed (the TUI positions
-        words with cursor moves, so spaces are unreliable)."""
-        # Not strip_ansi(): it keeps only the last CR segment of a line, and the TUI redraws with
-        # bare CRs — that would drop the very text we look for.
-        t = ANSI_RE.sub("", bytes(self.buf[since:]).decode("utf-8", "replace"))
-        return re.sub(r"\s+", "", t)
-
-    def close(self):
-        try:
-            os.kill(self.pid, signal.SIGHUP)
-        except OSError:
-            pass
-        time.sleep(0.2)
-        try:
-            os.kill(self.pid, signal.SIGKILL)
-        except OSError:
-            pass
-        try:
-            os.waitpid(self.pid, 0)
-        except OSError:
-            pass
-        try:
-            os.close(self.fd)
-        except OSError:
-            pass
-
-
 def _norm(s):
     return re.sub(r"\s+", "", s or "")
 
@@ -2998,14 +1335,14 @@ def goto_question(tui, qs, target, seen=None):
     return tui.qcur == target
 
 
-def ensure_multi(opts, agent_id, st, tui_factory=None):
+def ensure_multi(agent_id, st, tui_factory):
     qs = question_block(st)
     if not qs:
         c = read_json(qcache_path(agent_id), {}) or {}
         if isinstance(c.get("questions"), list) and c.get("questions") and c.get("status_at") == st.get("updatedAt"):
             qs = c["questions"]
             return qs, [bool(q.get("multiSelect")) for q in qs]
-        qs = read_questions_from_tui(opts, agent_id, tui_factory)
+        qs = read_questions_from_tui(tui_factory)
         if not qs:
             return None, None
         try:
@@ -3020,7 +1357,7 @@ def ensure_multi(opts, agent_id, st, tui_factory=None):
     multi = cached_multi(agent_id, key)
     if multi is None or len(multi) != len(qs):
         seen = {}
-        tui = tui_factory() if tui_factory else Tui(opts, agent_id)
+        tui = tui_factory()
         try:
             for i in range(len(qs)):
                 goto_question(tui, qs, i, seen)
@@ -3036,271 +1373,6 @@ def ensure_multi(opts, agent_id, st, tui_factory=None):
         except (OSError, IOError):
             pass
     return qs, multi
-
-
-def cmd_native_question(opts, agent_id):
-    agent_id, item, alive = live_native(opts, agent_id)
-    if not alive or item.get("status") != "waiting":
-        raise HelperError("Claude isn't asking anything right now.")
-    st = job_state(agent_id)
-    qs, _multi = ensure_multi(opts, agent_id, st)
-    if not qs:
-        raise HelperError("The pending prompt isn't a question.")
-    emit(question_pending(agent_id, job_state(agent_id)))
-
-
-def cmd_native_ask(opts, agent_id):
-    """Answers an AskUserQuestion prompt in the agent's TUI, keystroke for keystroke (2.1.283):
-    single choice = its digit (advances); multi = digits toggle, → advances; "Type something" =
-    digit n+1, paste, Enter; with >1 question or any multi-select, a review screen needs "1" (Submit)."""
-    req = read_request()
-    answers = req.get("answers")
-    if not isinstance(answers, list) or not answers:
-        raise HelperError("No answers given.")
-    agent_id, item, alive = live_native(opts, agent_id)
-    if not alive:
-        raise HelperError("That background agent has stopped.")
-    if item.get("status") != "waiting":
-        raise HelperError("Claude isn't waiting for an answer any more.")
-    st = job_state(agent_id)
-    qs, multi = ensure_multi(opts, agent_id, st)
-    if not qs:
-        raise HelperError("The pending prompt isn't a question.")
-    questions = [dict(q, multiSelect=bool(multi[i]) if multi and i < len(multi) else bool(q.get("multiSelect")))
-                 for i, q in enumerate(qs)]
-    plan = question_plan(questions, answers)
-    tui = Tui(opts, agent_id)
-    try:
-        press_answers(tui, qs, questions, plan)
-    finally:
-        tui.close()
-    deadline = time.time() + 6.0
-    cur = item
-    while time.time() < deadline:
-        cur = find_native(opts, agent_id) or cur
-        if cur.get("status") != "waiting":
-            break
-        time.sleep(0.4)
-    if cur.get("status") == "waiting":
-        raise HelperError("Claude is still waiting — the answer may not have gone through. Try again.")
-    emit(native_agent(cur))
-
-
-def cmd_rewind(opts):
-    """Restores files to how they were before a user message (Claude Code's checkpoints).
-    stdin {sessionId, messageId, cwd, dryRun, runId?}. Uses the live run's control channel when
-    it drives this session; otherwise resumes the session briefly (sending no message) just to
-    issue the rewind. Emits {canRewind, filesChanged, insertions, deletions, error?}."""
-    req = read_request()
-    sid, mid = req.get("sessionId"), req.get("messageId")
-    if not sid or not SESSION_ID_RE.match(sid) or not mid or not SESSION_ID_RE.match(mid):
-        raise HelperError("Invalid session or message id.")
-    dry = bool(req.get("dryRun"))
-    rid = "rw_%d" % random.randint(100000, 999999)
-    ctl = {"type": "control_request", "request_id": rid,
-           "request": {"subtype": "rewind_files", "user_message_id": mid, "dry_run": dry}}
-    run_id = req.get("runId")
-    if run_id and RUN_ID_RE.match(run_id):
-        d = os.path.join(RUNS_DIR, run_id)
-        pid = read_pid(d) if os.path.isdir(d) else None
-        if pid and pid_alive(pid):
-            out_path = os.path.join(d, "out.jsonl")
-            start = file_size(out_path)
-            with open(os.path.join(d, "in.jsonl"), "a", encoding="utf-8") as f:
-                fcntl.flock(f, fcntl.LOCK_EX)
-                f.write(json.dumps(ctl) + "\n")
-            deadline = time.time() + 25
-            while time.time() < deadline:
-                with open(out_path, "rb") as f:
-                    f.seek(start)
-                    for raw in f.read().splitlines():
-                        o = parse_line(raw)
-                        if o and o.get("type") == "control_response" and (o.get("response") or {}).get("request_id") == rid:
-                            return emit_rewind(o["response"])
-                time.sleep(0.3)
-            raise HelperError("Claude didn't answer the rewind request.")
-    cwd = os.path.abspath(os.path.expanduser(req.get("cwd") or HOME))
-    claude, login_path = resolve_claude(opts.get("claude"))
-    if not claude:
-        raise HelperError("Claude Code was not found on this machine.")
-    env = claude_env(claude, login_path)
-    env["CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING"] = "1"
-    p = subprocess.Popen([claude, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
-                          "--resume", sid], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                         cwd=cwd if os.path.isdir(cwd) else HOME, env=env, start_new_session=True)
-    try:
-        init = {"type": "control_request", "request_id": "init_rw", "request": {"subtype": "initialize"}}
-        p.stdin.write((json.dumps(init) + "\n" + json.dumps(ctl) + "\n").encode())
-        p.stdin.flush()
-        deadline = time.time() + 40
-        while time.time() < deadline:
-            r, _w, _x = select.select([p.stdout], [], [], 0.5)
-            if not r:
-                if p.poll() is not None:
-                    break
-                continue
-            raw = p.stdout.readline()
-            if not raw:
-                break
-            o = parse_line(raw)
-            if o and o.get("type") == "control_response" and (o.get("response") or {}).get("request_id") == rid:
-                return emit_rewind(o["response"])
-        raise HelperError("Couldn't reach Claude Code to restore files.")
-    finally:
-        try:
-            p.stdin.close()
-        except (OSError, IOError):
-            pass
-        try:
-            os.killpg(p.pid, signal.SIGTERM)
-        except OSError:
-            pass
-        try:
-            p.wait(timeout=3)
-        except Exception:  # noqa
-            try:
-                os.killpg(p.pid, signal.SIGKILL)
-            except OSError:
-                pass
-
-
-def emit_rewind(resp):
-    if resp.get("subtype") == "error":
-        emit({"canRewind": False, "filesChanged": [], "insertions": 0, "deletions": 0, "error": resp.get("error") or "Rewind failed."})
-        return
-    body = resp.get("response") or {}
-    emit({"canRewind": bool(body.get("canRewind")), "filesChanged": body.get("filesChanged") or [],
-          "insertions": body.get("insertions") or 0, "deletions": body.get("deletions") or 0,
-          "error": body.get("error")})
-
-
-def cmd_native_stop(opts, agent_id):
-    agent_id = native_id(agent_id)
-    item = find_native(opts, agent_id)
-    if not item:
-        raise HelperError("That background agent no longer exists.")
-    if item.get("pid"):
-        out, err, rc = claude_run(opts, ["stop", agent_id], timeout=30)
-        if rc != 0:
-            raise HelperError(((err or out or "").strip().splitlines() or ["claude stop failed."])[-1])
-        deadline = time.time() + 12
-        while time.time() < deadline:
-            item = find_native(opts, agent_id)
-            if not item or not item.get("pid"):
-                break
-            time.sleep(0.5)
-    emit(native_agent(item) if item else {"ok": True, "id": agent_id})
-
-
-def cmd_native_rm(opts, agent_id):
-    agent_id = native_id(agent_id)
-    out, err, rc = claude_run(opts, ["rm", agent_id], timeout=45)
-    if rc != 0 and find_native(opts, agent_id):
-        raise HelperError(((err or out or "").strip().splitlines() or ["claude rm failed."])[-1])
-    # Earlier ids of the same conversation (hidden forks) go with it.
-    lin = read_lineage()
-    removed = [agent_id]
-    for old in lin.pop(agent_id, []):
-        if NATIVE_ID_RE.match(old or ""):
-            claude_run(opts, ["rm", old], timeout=45)
-            removed.append(old)
-    for k in list(lin.keys()):
-        lin[k] = [a for a in lin[k] if a not in removed]
-    try:
-        write_json_atomic(LINEAGE_PATH, lin)
-    except (OSError, IOError):
-        pass
-    emit({"ok": True, "id": agent_id, "removed": removed})
-
-
-def cmd_native_timeline(opts, agent_id):
-    agent_id = native_id(agent_id)
-    emit(timeline_entries(agent_id)[-500:])
-
-
-def cmd_native_logs(opts, agent_id):
-    agent_id = native_id(agent_id)
-    out, err, rc = claude_run(opts, ["logs", agent_id], timeout=30, raw=True)
-    text = render_terminal(out) if (out or "").strip() else strip_ansi(err)
-    if rc != 0 and not (text or "").strip():
-        raise HelperError("claude logs exited with status %s." % rc)
-    text = (text or "").strip("\n")
-    if len(text) > 400 * 1024:
-        text = "… (earlier output trimmed)\n" + text[-400 * 1024:]
-    emit({"id": agent_id, "text": text})
-
-
-def native_transcript_path(agent_id, sid):
-    pid = terminal_pid(agent_id)
-    if pid is not None and not sid:
-        reg = read_json(os.path.join(CLAUDE_SESSIONS, "%d.json" % pid), {}) or {}
-        sid = reg.get("sessionId") if isinstance(reg, dict) and isinstance(reg.get("sessionId"), str) else None
-    st = job_state(agent_id)
-    p = st.get("linkScanPath")
-    if isinstance(p, str) and os.path.isfile(p) and p.startswith(CLAUDE_PROJECTS + os.sep):
-        return p
-    sid = sid or st.get("sessionId")
-    return find_transcript(sid) if sid and SESSION_ID_RE.match(sid) else None
-
-
-def cmd_native_follow(opts, agent_id, sid=None):
-    """All (filtered) transcript lines so far, then each new one as it is written, until the reader goes.
-    `{"tether":"caught-up"}` separates history from live lines."""
-    agent_id = native_id(agent_id, terminal_ok=True)
-    if sid and not SESSION_ID_RE.match(sid):
-        raise HelperError("Invalid session id.")
-    try:
-        signal.signal(signal.SIGPIPE, signal.SIG_DFL)
-    except (AttributeError, ValueError):
-        pass
-    gone = ReaderGone()
-    out = sys.stdout
-    path = None
-    waited = 0.0
-    while path is None:
-        path = native_transcript_path(agent_id, sid)
-        if path is None:
-            if waited == 0.0:
-                out.write('{"tether":"caught-up"}\n')
-                out.flush()
-            if gone.wait(1.0):
-                return
-            waited += 1.0
-    pos = 0
-    pending = b""
-    first = True
-    last_hb = time.time()
-    with open(path, "rb") as f:
-        while True:
-            chunk = f.read(1024 * 1024)
-            if chunk:
-                pending += chunk
-                nl = pending.rfind(b"\n")
-                if nl >= 0:
-                    block = pending[:nl + 1]
-                    pending = pending[nl + 1:]
-                    pos += len(block)
-                    for raw in iter_lines_bytes(block):
-                        s = transcript_line_out(raw)
-                        if s is not None:
-                            out.write(s)
-                            out.write("\n")
-                    out.flush()
-                continue
-            if first:
-                first = False
-                if waited == 0.0:
-                    out.write('{"tether":"caught-up"}\n')
-                    out.flush()
-            if file_size(path) < pos + len(pending):
-                return  # replaced: let the app re-attach
-            t = time.time()
-            if t - last_hb > 15:
-                out.write('{"hb":%d}\n' % now_ms())
-                out.flush()
-                last_hb = t
-            if gone.wait(0.5):
-                return
 
 
 # ───────────────────────────────────────── ls ─────────────────────────────────────────
@@ -3704,8 +1776,21 @@ def daemon_request(req, timeout=DAEMON_REPLY_TIMEOUT, path=None, retry_starting=
     req = dict(req)
     req.setdefault("proto", DAEMON_PROTO)
     tries = 40 if retry_starting else 1
+    down_until = None
     while True:
-        with DaemonConn(path) as c:
+        try:
+            c = DaemonConn(path)
+        except DaemonError as e:
+            # Refused / missing while the daemon restarts or upgrades itself: retry ~8 s when it looks like a
+            # daemon is (or was just) there; fail at once when there is no daemon at all.
+            if e.code != "ENODAEMON" or not retry_starting or not daemon_may_be_restarting(path):
+                raise
+            down_until = down_until or time.time() + DAEMON_RESTART_GRACE
+            if time.time() >= down_until:
+                raise
+            time.sleep(0.4)
+            continue
+        with c:
             c.send(req)
             reply = c.read_line(timeout)
         if reply is None:
@@ -3717,6 +1802,23 @@ def daemon_request(req, timeout=DAEMON_REPLY_TIMEOUT, path=None, retry_starting=
             time.sleep(0.2)
             continue
         raise daemon_error_from_reply(reply, req.get("op"))
+
+
+DAEMON_RESTART_GRACE = 8.0
+
+
+def daemon_may_be_restarting(path=None):
+    """The daemon is coming back rather than absent: its daemon.lock pid is alive, or its socket / lock was
+    touched in the last minute (a restart or self-upgrade between two daemon processes)."""
+    lock = daemon_lock() or {}
+    pid = lock.get("pid") if isinstance(lock.get("pid"), int) else None
+    if pid and pid_alive(pid):
+        return True
+    recent = now_ms() - 60000
+    for p in (path or find_daemon_socket(), os.path.join(claude_config_dir(), "daemon.lock")):
+        if p and os.path.exists(p) and mtime_ms(p) > recent:
+            return True
+    return False
 
 
 def need_key():
@@ -3978,9 +2080,36 @@ def coded_error(message, code):
 
 
 def is_session_arg(v):
-    """A session id (uuid) or short (8 hex): the new protocol. Tether run ids ("r…") are the old one."""
+    """A session id (uuid) or short (8 hex)."""
     v = (v or "").strip().lower()
     return bool(UUID_RE.match(v) or SHORT_RE.match(v))
+
+
+def wake_flags(flags, tpath):
+    """resume_flags plus the model the transcript last ran on. The job's --model flag is not reliable: the CLI
+    rewrites respawnFlags (on Shift+Tab, after a resume) and can drop the launch --model or write the settings
+    default there (seen: launched --model haiku, after a wake the flags said opus while replies came from haiku)."""
+    out = resume_flags(flags)
+    facts = scan_tail_facts(read_tail(tpath, TAIL_BYTES)) if tpath else {}
+    mode = facts.get("permissionMode")
+    if mode in PERMISSION_MODES and not flag_value(out, "--permission-mode"):
+        # The CLI can leave respawnFlags empty (seen right after a launch with --permission-mode default):
+        # without the flag a wake starts in the user's settings defaultMode, not the session's own mode.
+        out += ["--permission-mode", mode]
+    model = facts.get("model")
+    if not model or not MODEL_ARG_RE.match(model):
+        return out
+    kept, i = [], 0
+    while i < len(out):
+        if out[i] == "--model":
+            i += 2
+            continue
+        if out[i].startswith("--model="):
+            i += 1
+            continue
+        kept.append(out[i])
+        i += 1
+    return kept + ["--model", model]
 
 
 def resume_flags(flags):
@@ -4068,20 +2197,33 @@ def read_removed():
     return v if isinstance(v, dict) else {}
 
 
+def registry_records(registry):
+    """Stand-in daemon records from the live background workers in the registry, for when the daemon can't be
+    asked (restarting, self-upgrading, busy): a worker whose pid is alive is live, so a blip in the daemon never
+    shows running sessions as retired (false "finished" alerts, a resume dispatched for a live session)."""
+    out = {}
+    for r in registry:
+        short, sid = r.get("jobId"), r.get("sessionId")
+        if r.get("kind") != "bg" or not (isinstance(short, str) and NATIVE_ID_RE.match(short)) or \
+                not (isinstance(sid, str) and UUID_RE.match(sid)):
+            continue
+        out[short] = {"short": short, "sessionId": sid, "pid": r.get("pid"), "cwd": r.get("cwd"),
+                      "createdAt": r.get("startedAt"), "state": "running", "fromRegistry": True,
+                      "tempo": {"busy": "active", "waiting": "blocked"}.get(r.get("status"), "idle")}
+    return out
+
+
 class Sources(object):
-    """One read of everything a Session is built from."""
+    """One read of everything a Session is built from. records=None with daemon=False (or a daemon that can't
+    be asked) falls back to registry_records."""
 
     def __init__(self, daemon=True, jobs=None, registry=None, records=None):
         self.jobs = job_states() if jobs is None else jobs
         self.registry = registry_entries() if registry is None else registry
         self.daemon = (daemon_records() if daemon else None) if records is None else records
         self.removed = read_removed()
-        self._runners = None
-
-    def runner_pids(self):
-        if self._runners is None:
-            self._runners = tether_runner_pids()
-        return self._runners
+        if self.daemon is None:
+            self.daemon = registry_records(self.registry)
 
     def slots(self):
         """sessionId -> {sid, jobs:[(short, st)], rec, term, bg} for every session the daemon or a terminal knows."""
@@ -4108,13 +2250,35 @@ class Sources(object):
             if not (isinstance(sid, str) and UUID_RE.match(sid)):
                 continue
             if r.get("kind") == "interactive":
-                if self._runners is not None or os.path.isdir(RUNS_DIR):
-                    if parent_pid(r["pid"]) in self.runner_pids():
-                        continue  # a Tether live run's `claude -p`: listed by `runs`
                 slot(sid)["term"] = r
             elif r.get("kind") == "bg" and sid in by:
                 by[sid]["bg"] = r
+        for sid, flags in roster_launch_flags().items():
+            if sid in by:
+                by[sid]["launch"] = flags
         return by
+
+
+def roster_launch_flags():
+    """sessionId -> the flags its live worker was launched with (daemon roster.json). The job's respawnFlags can be
+    empty right after a launch (the CLI rewrites them), so this is what tells the first turn's --model."""
+    roster = read_json(os.path.join(claude_config_dir(), "daemon", "roster.json"), {}) or {}
+    workers = roster.get("workers") if isinstance(roster, dict) else None
+    out = {}
+    for w in (workers.values() if isinstance(workers, dict) else []):
+        d = w.get("dispatch") if isinstance(w, dict) else None
+        launch = d.get("launch") if isinstance(d, dict) else None
+        sid = d.get("sessionId") if isinstance(d, dict) else None
+        if not isinstance(launch, dict) or not isinstance(sid, str):
+            continue
+        if launch.get("mode") == "resume":
+            flags = launch.get("flagArgs")
+        else:
+            args = launch.get("args") if isinstance(launch.get("args"), list) else []
+            flags = args[:args.index("--")] if "--" in args else args[:-1]
+        if isinstance(flags, list):
+            out[sid] = [f for f in flags if isinstance(f, str)]
+    return out
 
 
 # ── transcript facts (cached by size + mtime) ──
@@ -4123,7 +2287,13 @@ def scan_tail_facts(data):
     """lastText, model, permissionMode, PR links from the end of a transcript."""
     f = {"lastText": None, "model": None, "permissionMode": None, "prs": []}
     for raw in iter_lines_bytes(data):
-        if b'"permission-mode"' in raw:
+        if b'"type":"user"' in raw and b'"permissionMode"' in raw:
+            # Each prompt records the mode it ran in; it can differ from the last permission-mode line (a wake
+            # without the flag starts in the settings defaultMode).
+            o = parse_line(raw)
+            if o and o.get("type") == "user" and not o.get("isSidechain") and isinstance(o.get("permissionMode"), str):
+                f["permissionMode"] = o["permissionMode"]
+        elif b'"permission-mode"' in raw:
             o = parse_line(raw)
             if o and o.get("type") == "permission-mode" and isinstance(o.get("permissionMode"), str):
                 f["permissionMode"] = o["permissionMode"]
@@ -4244,7 +2414,9 @@ def session_state(held, live, st, rec, term, bg):
     if live:
         tempo = (rec or {}).get("tempo") or st.get("tempo")
         status = (bg or {}).get("status")
-        if tempo == "blocked" or status == "waiting":
+        # A startup dialog (project MCP servers, trust) blocks before the worker registers in ~/.claude/sessions:
+        # its state.json says blocked ("send a prompt to start") while the daemon's record still says active.
+        if tempo == "blocked" or status == "waiting" or (st.get("tempo") == "blocked" and bg is None):
             return "needs_you"
         if tempo == "active" or status == "busy":
             return "working"
@@ -4257,13 +2429,168 @@ def session_state(held, live, st, rec, term, bg):
     return "done"
 
 
-def session_dialog(short, st, reg, tpath, cwd):
-    """pending {kind:"dialog", ...} for a blocking startup / session dialog (decision 5). Filled in by H4b."""
+# ── blocking dialogs (decision 5): cut from the session's screen ──
+
+DIALOG_WAITING = ("dialog open", "input needed")
+DIALOG_RULE_CHARS = frozenset(u"─━▔▁═ ")
+DIALOG_OPT_NUM_RE = re.compile(u"^\\s*(❯\\s*)?(\\d)\\.\\s+(\\S.*?)\\s*$")
+DIALOG_OPT_BOX_RE = re.compile(u"^\\s*(❯\\s*)?\\[([^\\]]?)\\]\\s+(\\S.*?)\\s*$")
+DIALOG_HINT_RE = re.compile(u"(?:^|·)\\s*(?:Enter|Esc|Space|Tab|Shift\\+Tab|↑/↓|↑↓|←/→|Ctrl\\+\\w)\\s+to\\s+\\w")
+DIALOG_CHECKED = u"✔✓√xX■◼●"
+DIALOG_KEYS_LIST = ["up", "down", "enter", "esc"]
+DIALOG_KEYS_CHECKLIST = ["up", "down", "space", "enter", "esc"]
+DIALOG_SCREEN_TTL = 1.5
+_dialog_screens = {}  # short -> (time, lines)
+
+
+def dialog_rule(line):
+    t = line.strip()
+    return len(t) > 20 and set(t) <= DIALOG_RULE_CHARS
+
+
+def box_edge(line):
+    """A rule edge of the prompt box, plain or carrying the session name ("──── my session ─")."""
+    t = line.strip()
+    return len(t) > 20 and t[0] in u"─━" and t[-1] in u"─━"
+
+
+def prompt_box_at(lines, i):
+    """lines[i] is the prompt box's "❯ <typed text>" line: right under a box edge (a ❯ in a dialog is the list
+    cursor, under another row)."""
+    if not lines[i].lstrip().startswith(u"❯"):
+        return False
+    j = i - 1
+    while j >= 0 and not lines[j].strip():
+        j -= 1
+    return j >= 0 and box_edge(lines[j])
+
+
+def prompt_box_shown(lines, window=12):
+    """The ordinary prompt box is at the bottom of the screen: no dialog is drawn (yet: the registry can say
+    "dialog open" a moment before the dialog replaces the prompt box)."""
+    rows = [l.rstrip() for l in lines or []]
+    while rows and not rows[-1].strip():
+        rows.pop()
+    lo = max(0, len(rows) - window)
+    return any(prompt_box_at(rows, i) for i in range(lo, len(rows)))
+
+
+def dialog_kind(title, body):
+    if re.search(r"\bMCP servers?\b.*\bfound\b", title, re.I):
+        return "mcp_servers"
+    if re.search(r"\btrust\b", title, re.I) or re.search(r"\bDo you trust\b|\bone you trust\b", body, re.I):
+        return "trust"
+    return "other"
+
+
+def cut_dialog(lines):
+    """{kind:"dialog", dialog, title, body, options, keys} for the dialog drawn at the bottom of a rendered
+    screen (it replaces the prompt box: a rule, a title, text, a numbered list or a checklist, a key hint), or
+    None. Numbered options carry their digit as key; checklist rows carry checked (toggled with Space)."""
+    lines = [l.rstrip() for l in lines or []]
+    while lines and not lines[-1].strip():
+        lines.pop()
+    for r in range(len(lines) - 1, -1, -1):
+        if not dialog_rule(lines[r]):
+            if prompt_box_at(lines, r):
+                return None  # the prompt box is up: anything above it is history
+            continue
+        block = lines[r + 1:]
+        opts = [i for i, l in enumerate(block) if DIALOG_OPT_NUM_RE.match(l) or DIALOG_OPT_BOX_RE.match(l)]
+        hints = [i for i, l in enumerate(block) if DIALOG_HINT_RE.search(l)]
+        if not opts and not hints:
+            continue
+        width = len(lines[r])
+        texts = [i for i, l in enumerate(block) if l.strip()]
+        ti = texts[0] if texts and texts[0] not in opts and texts[0] not in hints else None
+        title = block[ti].strip() if ti is not None else ""
+        body_lines = block[(ti + 1) if ti is not None else 0:min(opts + hints)]
+        indent = min([len(l) - len(l.lstrip()) for l in body_lines if l.strip()] or [0])
+        out, prev = [], ""
+        for raw in body_lines:
+            text = raw[indent:].rstrip() if raw.strip() else ""
+            if out and text and out[-1] and soft_wrapped(prev, text, width):
+                out[-1] = out[-1] + " " + text.strip()
+            elif text or (out and out[-1]):
+                out.append(text)
+            prev = raw
+        body = "\n".join(out).strip("\n")
+        options, checklist = [], False
+        for i in opts:
+            m = DIALOG_OPT_NUM_RE.match(block[i])
+            if m:
+                options.append({"label": m.group(3), "key": m.group(2)})
+                continue
+            m = DIALOG_OPT_BOX_RE.match(block[i])
+            checklist = True
+            options.append({"label": m.group(3), "checked": bool(m.group(2)) and m.group(2) in DIALOG_CHECKED})
+        keys = DIALOG_KEYS_CHECKLIST if checklist or not options else DIALOG_KEYS_LIST
+        return {"kind": "dialog", "dialog": dialog_kind(title, body), "title": title, "body": body,
+                "options": options, "keys": list(keys)}
     return None
 
 
-def session_pending(short, st, reg, tpath, cwd):
-    """What a needs_you session is waiting for: a question, a tool permission, or a dialog."""
+def screen_fallback(lines, cap=16):
+    """The bottom of the screen as plain text, for a dialog cut_dialog can't read."""
+    rows = [l.rstrip() for l in lines or [] if l.strip() and not dialog_rule(l)][-cap:]
+    indent = min([len(l) - len(l.lstrip()) for l in rows] or [0])
+    return "\n".join(l[indent:] for l in rows)
+
+
+def fetch_screen(short, settle=0.4):
+    """The session's current screen (lines) from a short subscribe: the snapshot's ring tail plus whatever
+    streams in during `settle` seconds. Cached briefly (watch / sessions ask for every blocked session)."""
+    hit = _dialog_screens.get(short)
+    if hit and time.time() - hit[0] < DIALOG_SCREEN_TTL:
+        return hit[1]
+    tr = ScreenTracker()
+    try:
+        with DaemonConn() as c:
+            c.send({"proto": DAEMON_PROTO, "op": "subscribe", "short": short, "tail": FOLLOW_TAIL_CHUNKS})
+            first = c.read_line(5.0)
+            if not first or first.get("ok") is False or first.get("type") != "snapshot":
+                return None
+            tr.feed_tail(first.get("streamTail") or [])
+            end = time.time() + settle
+            while time.time() < end:
+                try:
+                    ev = c.read_line(max(0.05, end - time.time()))
+                except DaemonError:
+                    break
+                if ev is None:
+                    break
+                if ev.get("type") == "stream":
+                    tr.feed(ev.get("line") or "")
+    except DaemonError:
+        return None
+    lines = tr.screen.lines()
+    _dialog_screens[short] = (time.time(), lines)
+    return lines
+
+
+def session_dialog(short, st, reg, screen=None):
+    """pending {kind:"dialog", ...} for a blocking startup / session dialog (decision 5), cut from the
+    session's screen. screen: a callable giving the current screen lines (follow keeps one); otherwise a
+    short subscribe reads it. A blocked session whose screen can't be read as a dialog gets the screen text
+    and the key pad. short: the live worker's short (None when nothing live can be asked)."""
+    if not short:
+        return None
+    lines = screen() if screen else fetch_screen(short)
+    d = cut_dialog(lines) if lines else None
+    if d:
+        return d
+    # The screen-text fallback needs a registered worker that says it waits (before registering, a worker's
+    # state.json says blocked between dispatch and its first prompt too).
+    blocked = (reg or {}).get("waitingFor") in DIALOG_WAITING or (bool(reg) and (st or {}).get("tempo") == "blocked")
+    if blocked and lines and not prompt_box_shown(lines):
+        return {"kind": "dialog", "dialog": "other", "title": "", "body": screen_fallback(lines), "options": [],
+                "keys": list(DIALOG_KEYS_CHECKLIST)}
+    return None
+
+
+def session_pending(short, st, reg, tpath, cwd, live_short=None, screen=None):
+    """What a needs_you session is waiting for: a question, a tool permission, or a dialog (read from the live
+    worker live_short's screen)."""
     wf = (reg or {}).get("waitingFor")
     q = question_pending(short, st) if short else None
     if q:
@@ -4272,14 +2599,17 @@ def session_pending(short, st, reg, tpath, cwd):
         pt = pending_tool_use(tpath, cwd)
         if pt:
             return dict(pt, kind="question" if pt.get("toolName") == "AskUserQuestion" else "permission")
-    d = session_dialog(short, st, reg, tpath, cwd)
-    if d:
-        return d
-    return None
+    return session_dialog(live_short, st, reg, screen)
 
 
-def make_session(slot, facts=None, tfile=None):
-    """The protocol's Session object for one slot. tfile = (path, stat) when the caller already found it."""
+def cwd_hint(info, st, rec, reg, path):
+    return info.get("cwd") or st.get("cwd") or (rec or {}).get("cwd") or reg.get("cwd") or \
+        (decode_dir_name(os.path.basename(os.path.dirname(path))) if path else HOME)
+
+
+def make_session(slot, facts=None, tfile=None, screen=None):
+    """The protocol's Session object for one slot. tfile = (path, stat) when the caller already found it;
+    screen = a callable giving the session's current screen lines (follow keeps one), for dialogs."""
     sid = slot["sid"]
     short, st = best_job(slot)
     st = st or {}
@@ -4302,8 +2632,16 @@ def make_session(slot, facts=None, tfile=None):
     held = "terminal" if term else ("daemon" if live else "none")
     state = session_state(held, live, st, rec, term, bg)
     reg = term or bg or {}
-    cwd = info.get("cwd") or st.get("cwd") or (rec or {}).get("cwd") or reg.get("cwd") or \
-        (decode_dir_name(os.path.basename(os.path.dirname(path))) if path else HOME)
+    pending = None
+    if state == "needs_you":
+        pending = session_pending(short, st, reg, path, cwd_hint(info, st, rec, reg, path),
+                                  rec["short"] if live and not term else None, screen)
+        if pending is None and live and not term and bg is None and (rec or {}).get("tempo") != "blocked":
+            # Only the worker's state.json says blocked, before it registered: a startup dialog when one is on
+            # its screen, else the moment between dispatch and the first prompt landing (seen on every new
+            # session): still starting.
+            state = "working"
+    cwd = cwd_hint(info, st, rec, reg, path)
     waiting = reg.get("waitingFor") if isinstance(reg.get("waitingFor"), str) else None
     if state == "needs_you" and not waiting:
         waiting = one_line((rec or {}).get("needs") or st.get("needs"), 240) or None
@@ -4319,7 +2657,11 @@ def make_session(slot, facts=None, tfile=None):
     updated = max([0, iso_to_ms(st.get("updatedAt")) or 0, mtime_ms(path) if path else 0,
                    mtime_ms(os.path.join(jd, "state.json")) if jd else 0] +
                   [v for v in (reg.get("updatedAt"), reg.get("statusUpdatedAt")) if isinstance(v, (int, float))])
-    started = (rec or {}).get("createdAt") or iso_to_ms(st.get("createdAt")) or info.get("firstAt") or \
+    # The session's own start: every wake makes a new daemon record (and may make a new job), so the live
+    # record's createdAt is only the fallback.
+    job_created = [iso_to_ms(j[1].get("createdAt")) for j in slot.get("jobs") or [] if isinstance(j[1], dict)]
+    job_created = [t for t in job_created if t]
+    started = info.get("firstAt") or (min(job_created) if job_created else None) or (rec or {}).get("createdAt") or \
         reg.get("startedAt") or (int(tst.st_mtime * 1000) if tst is not None else None) or updated
     children = st.get("children") if isinstance(st.get("children"), list) else None
     if not children:
@@ -4332,7 +2674,7 @@ def make_session(slot, facts=None, tfile=None):
         "intent": one_line(st.get("intent") or (rec or {}).get("intent") or info.get("firstPrompt"), 240) or None,
         "state": state,
         "waitingFor": waiting,
-        "pending": session_pending(short, st, reg, path, cwd) if state == "needs_you" else None,
+        "pending": pending,
         "process": "live" if (live or term) else "retired",
         "heldBy": held,
         "terminalPid": term.get("pid") if term else None,
@@ -4340,7 +2682,10 @@ def make_session(slot, facts=None, tfile=None):
         "updatedAt": int(updated or started or 0),
         "lastText": trim(output.get("result"), LAST_TEXT_CAP) if isinstance(output.get("result"), str) else tail.get("lastText"),
         "tokens": st.get("tokens") if isinstance(st.get("tokens"), int) else None,
-        "model": flag_value(flags, "--model") or tail.get("model"),
+        # What the transcript last ran on wins: the job's --model flag can be stale or the settings default
+        # (see wake_flags); the flag only covers the first turn, before any reply landed.
+        "model": tail.get("model") or flag_value(flags, "--model") or
+        (flag_value(slot.get("launch"), "--model") if live else None),
         # The daemon mirrors Shift+Tab into the job's respawn flags at once (the transcript only gets a
         # permission-mode line on the next turn), and a wake resumes with them: they win unless a
         # terminal holds the session.
@@ -4432,7 +2777,7 @@ class SessionRef(object):
     def __init__(self, arg, src=None):
         arg = (arg or "").strip().lower()
         if not is_session_arg(arg):
-            raise HelperError("Invalid session id.")
+            raise coded_error("Invalid session id.", "ENOSESSION")
         self.src = src or Sources()
         slots = self.src.slots()
         sid = arg if UUID_RE.match(arg) else None
@@ -4465,8 +2810,8 @@ class SessionRef(object):
             return rec["short"]
         return self.sid[:8]
 
-    def session(self, facts=None):
-        return make_session(self.slot, facts)
+    def session(self, facts=None, screen=None):
+        return make_session(self.slot, facts, screen=screen)
 
     def held_by_terminal(self):
         t = self.slot.get("term")
@@ -4506,16 +2851,21 @@ def cmd_watch_v2(opts):
     last_save = time.time()
     records = None
     last_records = 0.0
+    records_ok = 0.0
     while True:
         t = time.time()
         sig = watch_signature(want_cwd)
         if t - last_records >= 5 or sig != last_sig:
-            records = daemon_records()
+            fresh = daemon_records()
             last_records = t
+            if fresh is not None:
+                records, records_ok = fresh, t
+            elif t - records_ok > WATCH_RECORDS_STALE:
+                records = None  # down for a while: registry_records stand in (see Sources)
         if sig != last_sig or t - last_build >= 10 or last is None:
             last_sig = sig
             last_build = t
-            src = Sources(daemon=False, records=records if records is not None else {})
+            src = Sources(daemon=False, records=records)
             sessions = build_sessions(src, facts, want_cwd, limit)
             cur = collections.OrderedDict((s["sessionId"], json.dumps(s, ensure_ascii=False, separators=(",", ":")))
                                           for s in sessions)
@@ -4541,6 +2891,9 @@ def cmd_watch_v2(opts):
         if gone.wait(1.0):
             facts.save()
             return
+
+
+WATCH_RECORDS_STALE = 30.0  # seconds a daemon blip may last before watch stops trusting its last list
 
 
 def watch_signature(want_cwd=None):
@@ -4584,6 +2937,9 @@ class WideScreen(Screen):
 
 PARTIAL_ESC_RE = re.compile(r"\x1b(?:\[[0-9;?<=>]*[ -/]*|\][^\x07\x1b]*|[()])?$")
 SPINNER_RE = re.compile(u"^\\s{0,4}[·✢✳✶✻✽*∗]\\s+(\\S[^()…]*…)\\s*(?:\\((.*?)\\)?)?\\s*$")
+# The turn's closing line ("✻ Crunched for 10s · done 9:41 PM", "✻ Worked for 1s"): at column 0, unlike the
+# reply's own lines (indented under the ●). Nothing below it belongs to the reply.
+TURN_DONE_RE = re.compile(u"^\\s?[·✢✳✶✻✽*∗]\\s+\\S[^…]*\\bfor\\s+(?:\\d+h\\s*)?(?:\\d+m\\s*)?\\d+s\\b")
 MESSAGE_GLYPHS = (u"●", u"⏺")  # ● (Linux) / ⏺ (macOS)
 TOOL_LINE_RE = re.compile(r"^[A-Za-z_][\w.:-]*\(.*\)?\s*$|.*\(ctrl\+o to expand\)\s*$")
 LIST_START_RE = re.compile(u"^(?:[-*+•]\\s|\\d+[.)]\\s|#|>|\\||```|⎿)")
@@ -4621,6 +2977,13 @@ def soft_wrapped(prev_raw, nxt, width):
 def is_rule(line):
     t = line.strip()
     return len(t) > 20 and set(t) <= set(u"─━ ")
+
+
+def right_aligned_chrome(line):
+    """A short line pushed far right (the token counter above the prompt box), not part of a reply."""
+    t = line.strip()
+    lead = len(line) - len(line.lstrip())
+    return bool(t) and lead >= 40 and lead > 2 * len(t)
 
 
 def input_box_top(lines):
@@ -4664,7 +3027,13 @@ def screen_draft(lines, working=False):
     if start is None:
         return None, status
     block = lines[start:spin]
-    while block and not block[-1].strip():
+    for k in range(1, len(block)):
+        if TURN_DONE_RE.match(block[k]):
+            block = block[:k]  # the turn ended (the state lags): the closing line is not part of the reply
+            break
+    # Right-aligned chrome just above the prompt box ("…        34781 tokens", seen live with a statusline
+    # setup): not reply text. Reply lines sit at the ● indent, never 40+ columns in.
+    while block and (not block[-1].strip() or right_aligned_chrome(block[-1])):
         block.pop()
     if not block:
         return None, status
@@ -4975,6 +3344,7 @@ class Follower(object):
         self.last_render = 0.0
         self.session_json = None
         self.working = False  # the session is mid-turn (state "working"): lets drafts anchor without a spinner
+        self.needs_you = False  # blocked: screen changes may change its dialog pending
         self.state_dirty = True
         self.next_state = 0.0
         self.next_live_check = 0.0
@@ -5128,8 +3498,10 @@ class Follower(object):
         if self.ref.tpath and self.ref.tpath != self.tpath and not self.tpath:
             self.tpath = self.ref.tpath
             self.tev.tpath = self.tpath
-        sess = self.ref.session(self.facts)
+        # While subscribed, a dialog is cut from the screen this follow already keeps (no second subscribe).
+        sess = self.ref.session(self.facts, screen=self.screen.screen.lines if self.sub is not None else None)
         s = json.dumps(sess, ensure_ascii=False, separators=(",", ":"))
+        self.needs_you = sess.get("state") == "needs_you"
         working = sess.get("state") == "working"
         if working != self.working:
             self.working = working
@@ -5181,6 +3553,8 @@ class Follower(object):
                 self.screen.feed_tail(ev.get("streamTail") or [])
             elif t == "stream":
                 self.screen.feed(ev.get("line") or "")
+                if self.needs_you:
+                    self.state_dirty = True  # a dialog's screen changed (a checkbox toggled, the cursor moved)
             elif t == "state":
                 self.state_dirty = True
             elif t == "settled":
@@ -5379,8 +3753,8 @@ def press_keys(short, chunks, gap=0.15):
         drain(att, 0.4)
 
 
-class DaemonTui(Tui):
-    """Tui over the daemon's attach (same interface as the `claude attach` pty: pump/send/mark/text/close)."""
+class DaemonTui(object):
+    """The session's screen over the daemon's attach, driven step by step and read back (pump/send/mark/text/close)."""
 
     def __init__(self, short, cols=KEY_COLS, rows=KEY_ROWS):
         self.buf = bytearray()
@@ -5406,6 +3780,15 @@ class DaemonTui(Tui):
         self.att.send_keys(data)
         self.pump(wait)
 
+    def mark(self):
+        return len(self.buf)
+
+    def text(self, since=0):
+        """Screen output since a mark, ANSI-free with ALL whitespace removed (the TUI positions
+        words with cursor moves, so spaces are unreliable)."""
+        t = ANSI_RE.sub("", bytes(self.buf[since:]).decode("utf-8", "replace"))
+        return re.sub(r"\s+", "", t)
+
     def close(self):
         self.att.close()
 
@@ -5417,7 +3800,10 @@ def ensure_daemon(opts):
     except DaemonError as e:
         if e.code != "ENODAEMON":
             raise
-    claude, login_path = resolve_claude(opts.get("claude"))
+    try:
+        claude, login_path = resolve_claude(opts.get("claude"))
+    except HelperError as e:
+        raise coded_error("The Claude Code daemon is not running and can't be started: %s" % e, "ENODAEMON")
     if not claude:
         raise coded_error("The Claude Code daemon is not running and Claude Code was not found to start it.", "ENODAEMON")
     spawned_by = json.dumps({"label": "tether", "cwd": HOME, "pid": os.getpid()}, separators=(",", ":"))
@@ -5491,7 +3877,7 @@ def wait_session(sid, pred, seconds):
 
 def cmd_new(opts):
     req = read_request()
-    cwd = native_cwd(req.get("cwd"))
+    cwd = session_cwd(req.get("cwd"))
     prompt = req.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
         raise HelperError("A new session needs a first message.")
@@ -5504,7 +3890,9 @@ def cmd_new(opts):
     flags = []
     if model and model != "default":
         flags += ["--model", model]
-    if mode and mode != "default":
+    if mode:
+        # Always explicit, "default" too: without the flag the CLI starts in the user's settings defaultMode
+        # (e.g. "auto"), not in the mode the phone showed and asked for.
         flags += ["--permission-mode", mode]
     text = with_images(prompt, req.get("images"))
     ensure_daemon(opts)
@@ -5528,7 +3916,7 @@ def cmd_new(opts):
                                                          "createdAt": d["createdAt"]}, "term": None, "bg": None})
     # The daemon writes the respawn flags a moment later: report what was asked for meanwhile.
     s["model"] = s["model"] or (model if model and model != "default" else None)
-    s["permissionMode"] = s["permissionMode"] or (mode if mode and mode != "default" else None)
+    s["permissionMode"] = s["permissionMode"] or mode or None
     emit(s)
 
 
@@ -5542,9 +3930,9 @@ def wake(opts, ref):
     if not cwd:
         cwd = st.get("cwd") if isinstance(st.get("cwd"), str) and os.path.isdir(st["cwd"]) else None
     if not cwd:
-        raise HelperError("The session's folder no longer exists on this machine.")
+        raise coded_error("The session's folder no longer exists on this machine.", "ENOSESSION")
     ensure_daemon(opts)
-    spec = daemon_resume_spec(ref.sid, cwd, flags=resume_flags(st.get("respawnFlags")), transcript_path=ref.tpath,
+    spec = daemon_resume_spec(ref.sid, cwd, flags=wake_flags(st.get("respawnFlags"), ref.tpath), transcript_path=ref.tpath,
                               intent=st.get("intent") or "")
     if st.get("name"):
         spec["seed"]["name"] = st["name"]
@@ -5587,8 +3975,55 @@ def live_ref(arg):
     return ref
 
 
+MODE_NAMES = tuple(m for _l, m in SCREEN_MODES)
+
+
+def read_mode(tui, since, settle=0.9):
+    """The mode the footer shows after a Shift+Tab (since a mark). Waits out a bounce: on a model without auto
+    mode the CLI shows "auto mode on", then "auto mode unavailable for this model" and falls back to manual."""
+    tui.pump(settle)
+    mode = screen_mode(tui.text(since))
+    if mode == "auto":
+        tui.pump(0.8)
+        mode = screen_mode(tui.text(since)) or mode
+    return mode
+
+
+def cycle_mode(short, target=None, max_presses=6):
+    """Shift+Tab in the session's terminal, reading the footer after each press: once (target None), or until
+    the footer shows target. The mode cycle depends on the model and settings (auto mode is not offered on
+    every model), so it is read back instead of counted. Returns the mode it landed on."""
+    tui = DaemonTui(short)
+    try:
+        cur = screen_mode(tui.text())
+        if target is not None and cur == target:
+            return cur
+        seen = set([cur]) if cur else set()
+        for _ in range(max_presses):
+            m = tui.mark()
+            tui.att.send_keys(KEY_BYTES["shift-tab"])
+            cur = read_mode(tui, m) or cur
+            if target is None or cur == target:
+                return cur
+            if cur in seen:
+                break  # went all the way round
+            seen.add(cur)
+    finally:
+        tui.close()
+    raise coded_error("%s mode isn't offered in this session (Shift+Tab never reached it)." % target, "EINVAL")
+
+
 def cmd_key(opts, arg):
     req = read_request()
+    mode = req.get("mode")
+    if mode is not None:
+        # {mode: "<permission mode>"}: Shift+Tab until the footer shows it; {mode: ""}: one Shift+Tab. Both
+        # answer with the mode the footer shows afterwards.
+        if not isinstance(mode, str) or (mode and mode not in MODE_NAMES):
+            raise HelperError("Unknown permission mode: %s" % (json.dumps(mode)[:40],))
+        ref = live_ref(arg)
+        emit({"ok": True, "permissionMode": cycle_mode(ref.short, mode or None)})
+        return
     chunks = key_chunks(req.get("keys"))
     ref = live_ref(arg)
     press_keys(ref.short, chunks)
@@ -5603,7 +4038,14 @@ def cmd_answer(opts, arg):
     ref = live_ref(arg)
     s = ref.session()
     if s["state"] != "needs_you":
-        raise HelperError("There is no pending approval any more.")
+        raise coded_error("There is no pending approval any more.", "ESTALE")
+    # The keys answer whatever prompt is open now: with the prompt the phone showed (toolUseId), refuse when
+    # another prompt has taken its place (a stale notification must never approve a newer prompt).
+    want = req.get("toolUseId")
+    if isinstance(want, str) and want:
+        got = (s.get("pending") or {}).get("toolUseId")
+        if got != want:
+            raise coded_error("Claude is asking something else now. Open the session to see it.", "ESTALE")
     # "1" is always Yes, "2" the "don't ask again" variant; Esc always cancels (numbering of "No" varies).
     press_keys(ref.short, [{"allow": b"1", "allow_always": b"2", "deny": b"\x1b"}[decision]])
     msg = req.get("message")
@@ -5667,11 +4109,11 @@ def cmd_ask(opts, arg):
         raise HelperError("No answers given.")
     ref = live_ref(arg)
     if ref.session()["state"] != "needs_you":
-        raise HelperError("Claude isn't waiting for an answer any more.")
+        raise coded_error("Claude isn't waiting for an answer any more.", "ESTALE")
     short = ref.short
     st = job_state(short)
     factory = lambda: DaemonTui(short)  # noqa: E731
-    qs, multi = ensure_multi(opts, short, st, tui_factory=factory)
+    qs, multi = ensure_multi(short, st, factory)
     if not qs:
         raise HelperError("The pending prompt isn't a question.")
     questions = [dict(q, multiSelect=bool(multi[i]) if multi and i < len(multi) else bool(q.get("multiSelect")))
@@ -5783,42 +4225,17 @@ def main(argv):
     elif cmd == "projects":
         cmd_projects(opts)
     elif cmd == "sessions":
-        if "--legacy" in pos:
-            cmd_sessions(opts)
-        else:
-            cmd_sessions_v2(opts)
+        cmd_sessions_v2(opts)
     elif cmd == "transcript":
         cmd_transcript(opts, need())
-    elif cmd == "history":
-        cmd_history(opts, need())
-    elif cmd == "start":
-        cmd_start(opts)
-    elif cmd == "runs":
-        cmd_runs(opts)
     elif cmd == "watch":
-        if "--legacy" in pos:
-            cmd_watch(opts)
-        else:
-            cmd_watch_v2(opts)
+        cmd_watch_v2(opts)
     elif cmd == "follow":
-        if is_session_arg(need()):
-            cmd_follow_v2(opts, arg)
-        else:
-            cmd_follow(opts, arg, pos[2] if len(pos) > 2 else "0")
-    elif cmd == "send":
-        if is_session_arg(need()):
-            cmd_send_v2(opts, arg)
-        else:
-            cmd_send(opts, arg)
-    elif cmd == "input":
-        cmd_input(opts, need())
-    elif cmd == "stop":
-        if is_session_arg(need()):
-            cmd_stop_v2(opts, arg)
-        else:
-            cmd_stop(opts, arg)
+        cmd_follow_v2(opts, need())
     elif cmd == "new":
         cmd_new(opts)
+    elif cmd == "send":
+        cmd_send_v2(opts, need())
     elif cmd == "key":
         cmd_key(opts, need())
     elif cmd == "answer":
@@ -5827,46 +4244,16 @@ def main(argv):
         cmd_ask(opts, need())
     elif cmd == "interrupt":
         cmd_interrupt(opts, need())
+    elif cmd == "stop":
+        cmd_stop_v2(opts, need())
     elif cmd == "rm":
         cmd_rm_v2(opts, need())
-    elif cmd == "delete":
-        cmd_delete(opts, need())
     elif cmd == "ls":
         cmd_ls(opts, arg)
     elif cmd == "commands":
         cmd_commands(opts)
     elif cmd == "daemon-status":
         cmd_daemon_status(opts)
-    elif cmd == "rewind":
-        cmd_rewind(opts)
-    elif cmd == "native-list":
-        cmd_native_list(opts)
-    elif cmd == "native-start":
-        cmd_native_start(opts)
-    elif cmd == "native-reply":
-        cmd_native_reply(opts, need())
-    elif cmd == "native-send":
-        cmd_native_send(opts, need())
-    elif cmd == "native-answer":
-        cmd_native_answer(opts, need())
-    elif cmd == "native-interrupt":
-        cmd_native_interrupt(opts, need())
-    elif cmd == "native-mode":
-        cmd_native_mode(opts, need())
-    elif cmd == "native-ask":
-        cmd_native_ask(opts, need())
-    elif cmd == "native-question":
-        cmd_native_question(opts, need())
-    elif cmd == "native-stop":
-        cmd_native_stop(opts, need())
-    elif cmd == "native-rm":
-        cmd_native_rm(opts, need())
-    elif cmd == "native-timeline":
-        cmd_native_timeline(opts, need())
-    elif cmd == "native-logs":
-        cmd_native_logs(opts, need())
-    elif cmd == "native-follow":
-        cmd_native_follow(opts, need(), pos[2] if len(pos) > 2 else None)
     else:
         raise HelperError("Unknown command: %s" % cmd)
 
@@ -5875,9 +4262,8 @@ if __name__ == "__main__":
     try:
         main(sys.argv[1:])
     except HelperError as e:
-        err = {"error": str(e)}
-        if getattr(e, "code", None):
-            err["code"] = e.code
+        # Every error carries a code: a plain HelperError is a request the helper refused (bad input).
+        err = {"error": str(e), "code": getattr(e, "code", None) or "EINVAL"}
         if getattr(e, "daemon_code", None):
             err["daemonCode"] = e.daemon_code
         emit(err)
@@ -5891,5 +4277,5 @@ if __name__ == "__main__":
             pass
         sys.exit(0)
     except Exception as e:  # noqa -- last-resort: always answer in JSON
-        emit({"error": "%s: %s" % (type(e).__name__, e)})
+        emit({"error": "%s: %s" % (type(e).__name__, e), "code": "EDAEMON"})
         sys.exit(1)

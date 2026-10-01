@@ -8,13 +8,15 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import app.tether.AppContainer
 import app.tether.BuildConfig
-import app.tether.core.AgentHub
+import app.tether.core.AskAnswer
 import app.tether.core.ImageAttachment
 import app.tether.core.LinkState
-import app.tether.core.PermissionDecision
-import app.tether.core.RunRef
+import app.tether.core.NewSessionRequest
+import app.tether.core.NewSessionResult
+import app.tether.core.SessionDecision
+import app.tether.core.SessionHub
+import app.tether.core.SessionRef
 import app.tether.core.SettingsRepository
-import app.tether.core.StartRunRequest
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
@@ -39,7 +41,7 @@ import kotlin.random.Random
  * enough to know whether people use Tether and which features matter. See PRIVACY.md in the repo.
  *
  * Sent: an event name with the coarse properties listed at each [track] call (see [install] and
- * [TrackedAgentHub]), app version/build, Android version, locale, debug flag and a random session
+ * [TrackedSessionHub]), app version/build, Android version, locale, debug flag and a random session
  * id that rotates after an hour of inactivity. Never sent: device or advertising ids, accounts,
  * machine names, hosts, IPs, usernames, paths, prompts, code or any session content.
  *
@@ -193,46 +195,38 @@ class Analytics(private val settings: SettingsRepository, private val scope: Cor
     }
 }
 
-/** Counts agent activity on its way through; never looks at prompts, paths or output. */
-class TrackedAgentHub(private val hub: AgentHub, private val analytics: Analytics) : AgentHub by hub {
-    override suspend fun start(connectionId: String, request: StartRunRequest, images: List<ImageAttachment>): RunRef =
-        hub.start(connectionId, request, images).also {
-            analytics.track(
-                "agent_started",
-                mapOf(
-                    "model" to (request.model ?: "default"),
-                    "mode" to (request.permissionMode ?: "default"),
-                    "resumed" to (request.resumeSessionId != null),
-                    "images" to images.size,
-                ),
-            )
+/** Counts session activity on its way through; never looks at prompts, paths or output. */
+class TrackedSessionHub(private val hub: SessionHub, private val analytics: Analytics) : SessionHub by hub {
+    override suspend fun new(connectionId: String, request: NewSessionRequest, images: List<ImageAttachment>): NewSessionResult =
+        hub.new(connectionId, request, images).also { res ->
+            if (res is NewSessionResult.Started) startedEvent(request.model, request.permissionMode, resumed = false, images = images.size)
         }
 
-    override suspend fun send(ref: RunRef, text: String, images: List<ImageAttachment>) {
-        hub.send(ref, text, images)
-        analytics.track("message_sent", mapOf("images" to images.size))
-    }
+    override suspend fun send(ref: SessionRef, text: String, images: List<ImageAttachment>): Boolean =
+        hub.send(ref, text, images).also { woke ->
+            if (woke) startedEvent(null, null, resumed = true, images = images.size)
+            analytics.track("message_sent", mapOf("images" to images.size))
+        }
 
-    override suspend fun respond(ref: RunRef, requestId: String, decision: PermissionDecision) {
-        hub.respond(ref, requestId, decision)
+    override suspend fun setMode(ref: SessionRef, mode: String?): String? = hub.setMode(ref, mode)
+
+    override suspend fun answer(ref: SessionRef, decision: SessionDecision, message: String?, toolUseId: String?) {
+        hub.answer(ref, decision, message, toolUseId)
         val kind = when (decision) {
-            is PermissionDecision.Allow -> if (decision.alwaysAllow.isNotEmpty()) "always" else "allow"
-            is PermissionDecision.Deny -> "deny"
-            is PermissionDecision.Answer -> "answer"
+            SessionDecision.ALLOW -> "allow"
+            SessionDecision.ALLOW_ALWAYS -> "always"
+            SessionDecision.DENY -> "deny"
         }
         analytics.track("permission_answered", mapOf("decision" to kind))
     }
 
-    override suspend fun branch(
-        connectionId: String,
-        sessionId: String?,
-        cwd: String,
-        atUuid: String?,
-        prompt: String?,
-        title: String?,
-        restoreBefore: String?,
-        sourceRunId: String?,
-    ): RunRef = hub.branch(connectionId, sessionId, cwd, atUuid, prompt, title, restoreBefore, sourceRunId).also {
-        analytics.track("conversation_branched", mapOf("rewind" to (restoreBefore != null)))
+    override suspend fun ask(ref: SessionRef, answers: List<AskAnswer>) {
+        hub.ask(ref, answers)
+        analytics.track("permission_answered", mapOf("decision" to "answer"))
     }
+
+    private fun startedEvent(model: String?, mode: String?, resumed: Boolean, images: Int) = analytics.track(
+        "agent_started",
+        mapOf("model" to (model ?: "default"), "mode" to (mode ?: "default"), "resumed" to resumed, "images" to images),
+    )
 }

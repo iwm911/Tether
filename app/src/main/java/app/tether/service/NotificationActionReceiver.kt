@@ -7,13 +7,12 @@ import android.content.Intent
 import android.util.Log
 import androidx.core.app.RemoteInput
 import app.tether.TetherApp
-import app.tether.core.AgentEvent
-import app.tether.core.PermissionDecision
-import app.tether.core.RunRef
 import app.tether.core.SessionDecision
+import app.tether.core.SessionErrorCodes
 import app.tether.core.SessionEvent
 import app.tether.core.SessionPending
 import app.tether.core.SessionRef
+import app.tether.remote.RemoteException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -33,72 +32,11 @@ class NotificationActionReceiver : BroadcastReceiver() {
             return
         }
         val connectionId = intent.getStringExtra(Notifications.EXTRA_CONNECTION_ID) ?: return
-        intent.getStringExtra(Notifications.EXTRA_SESSION_ID)?.let { sid ->
-            onSessionAnswer(context, intent, action, SessionRef(connectionId, sid))
-            return
-        }
-        val runId = intent.getStringExtra(Notifications.EXTRA_RUN_ID) ?: return
-        val requestId = intent.getStringExtra(Notifications.EXTRA_REQUEST_ID) ?: return
-        val ref = RunRef(connectionId, runId)
-        val notificationId = intent.getIntExtra(Notifications.EXTRA_NOTIFICATION_ID, Notifications.permissionId(ref, requestId))
-
-        val decision: PermissionDecision = when (action) {
-            Notifications.ACTION_ALLOW -> PermissionDecision.Allow()
-            Notifications.ACTION_DENY -> PermissionDecision.Deny()
-            Notifications.ACTION_REPLY -> {
-                val text = RemoteInput.getResultsFromIntent(intent)
-                    ?.getCharSequence(Notifications.KEY_REPLY_TEXT)?.toString()?.trim()
-                if (text.isNullOrEmpty()) PermissionDecision.Deny() else PermissionDecision.Deny(message = text)
-            }
-            else -> return
-        }
-
-        val app = context.applicationContext as? TetherApp ?: return
-        // Never act from the lock screen: an answer can make Claude run commands. Android 12+ already
-        // asks for unlock on these buttons; this covers older versions and launchers that ignore it.
-        if (context.getSystemService(KeyguardManager::class.java)?.isDeviceLocked != false) {
-            Log.i(TAG, "Ignored $action for $requestId: device is locked")
-            Notifications.showPermission(
-                context.applicationContext,
-                pendingEvent(intent, ref, requestId),
-                app.container.connections.get(connectionId)?.name,
-                reason = "Unlock your phone to answer.",
-            )
-            return
-        }
-
-        val container = app.container
-        Notifications.cancel(context, notificationId)
-        ServiceController.forgetPermission(notificationId)
-
-        val pending = goAsync()
-        val job = container.scope.launch {
-            try {
-                container.agents.respond(ref, requestId, decision)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.w(TAG, "Couldn't deliver decision for $requestId", e)
-                Notifications.showPermission(
-                    context.applicationContext,
-                    pendingEvent(intent, ref, requestId),
-                    container.connections.get(connectionId)?.name,
-                    reason = "Couldn't reach the machine to send your answer — try again or open Tether.",
-                )
-                ServiceController.rememberPermission(notificationId, ref, requestId)
-            }
-        }
-        // goAsync() grants ~10 s; the decision keeps going in the app scope if it takes longer.
-        container.scope.launch {
-            try {
-                withTimeoutOrNull(9_000) { job.join() }
-            } finally {
-                pending.finish()
-            }
-        }
+        val sid = intent.getStringExtra(Notifications.EXTRA_SESSION_ID) ?: return
+        onSessionAnswer(context, intent, action, SessionRef(connectionId, sid))
     }
 
-    /** Allow / Deny / "Tell Claude" on a session's permission notification (one-session model). */
+    /** Allow / Deny / "Tell Claude" on a session's permission notification. */
     private fun onSessionAnswer(context: Context, intent: Intent, action: String, ref: SessionRef) {
         val (decision, message) = when (action) {
             Notifications.ACTION_ALLOW -> SessionDecision.ALLOW to null
@@ -129,17 +67,31 @@ class NotificationActionReceiver : BroadcastReceiver() {
         }
         Notifications.cancel(context, notificationId)
         ServiceController.forgetSessionNotification(notificationId)
-        // `answer` answers whatever is open now: never let a stale notification answer a newer prompt.
-        if (!SessionAlerts.stillWaiting(container.sessions.sessions.value, ref, identity)) {
+        // Never let a stale notification answer a newer prompt. With the prompt's toolUseId the helper checks it
+        // on the machine (ESTALE when another prompt is open); without one, only a session this process knows to
+        // still be waiting on that prompt is answered (after a cold start the list is empty: not answered).
+        val toolUseId = (event.pending as SessionPending.Permission).toolUseId.ifBlank { null }
+        if (!SessionAlerts.stillWaiting(container.sessions.sessions.value, ref, identity, unknownDefault = toolUseId != null)) {
             Log.i(TAG, "Session ${ref.short} is no longer waiting on that prompt; not answering")
             return
         }
         val pending = goAsync()
         val job = container.scope.launch {
             try {
-                container.sessions.answer(ref, decision, message)
+                container.sessions.answer(ref, decision, message, toolUseId)
             } catch (e: CancellationException) {
                 throw e
+            } catch (e: RemoteException) {
+                if (e.code != SessionErrorCodes.ESTALE) {
+                    Log.w(TAG, "Couldn't deliver decision for session ${ref.short}", e)
+                    Notifications.showSessionNeedsYou(
+                        context.applicationContext, event, machine,
+                        reason = "Couldn't reach the machine to send your answer — try again or open Tether.",
+                    )
+                    ServiceController.rememberSessionNotification(notificationId, ref, identity)
+                } else {
+                    Log.i(TAG, "Session ${ref.short} moved on to another prompt; not answering")
+                }
             } catch (e: Exception) {
                 Log.w(TAG, "Couldn't deliver decision for session ${ref.short}", e)
                 Notifications.showSessionNeedsYou(
@@ -157,15 +109,6 @@ class NotificationActionReceiver : BroadcastReceiver() {
             }
         }
     }
-
-    /** The request as carried by the notification's intent, for re-posting it. */
-    private fun pendingEvent(intent: Intent, ref: RunRef, requestId: String) = AgentEvent.PermissionRequested(
-        ref = ref,
-        title = intent.getStringExtra(Notifications.EXTRA_TITLE) ?: "Agent",
-        requestId = requestId,
-        toolName = intent.getStringExtra(Notifications.EXTRA_TOOL) ?: "Tool",
-        summary = intent.getStringExtra(Notifications.EXTRA_SUMMARY) ?: "",
-    )
 
     private companion object {
         const val TAG = "TetherNotifAction"

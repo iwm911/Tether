@@ -18,10 +18,6 @@ import androidx.core.content.ContextCompat
 import app.tether.MainActivity
 import app.tether.R
 import app.tether.TetherApp
-import app.tether.core.AgentEvent
-import app.tether.core.AgentSummary
-import app.tether.core.RunRef
-import app.tether.core.RunStatus
 import app.tether.core.Session
 import app.tether.core.SessionEvent
 import app.tether.core.SessionPending
@@ -43,8 +39,6 @@ object Notifications {
     const val ACTION_REPLY = "app.tether.action.DENY_WITH_MESSAGE"
 
     const val EXTRA_CONNECTION_ID = "connectionId"
-    const val EXTRA_RUN_ID = "runId"
-    const val EXTRA_REQUEST_ID = "requestId"
     const val EXTRA_NOTIFICATION_ID = "notificationId"
     const val EXTRA_TITLE = "title"
     const val EXTRA_TOOL = "toolName"
@@ -54,8 +48,6 @@ object Notifications {
     private const val ACCENT = 0xFFD97757.toInt()
     private const val GROUP_APPROVALS = "app.tether.group.APPROVALS"
     private const val GROUP_UPDATES = "app.tether.group.UPDATES"
-
-    private val LIVE = setOf(RunStatus.STARTING, RunStatus.WORKING, RunStatus.AWAITING_PERMISSION)
 
     fun ensureChannels(context: Context) {
         val nm = context.getSystemService(NotificationManager::class.java) ?: return
@@ -110,31 +102,20 @@ object Notifications {
         return setVisibility(NotificationCompat.VISIBILITY_PRIVATE).setPublicVersion(public)
     }
 
-    fun permissionId(ref: RunRef, requestId: String): Int = "perm:${ref.connectionId}/${ref.runId}/$requestId".hashCode()
-
-    fun updateId(ref: RunRef): Int = "upd:${ref.connectionId}/${ref.runId}".hashCode()
-
     // ───────────────────────────── ongoing watch ─────────────────────────────
 
     /** The foreground-service notification: "2 agents working · 1 needs you". */
     fun buildWatch(
         context: Context,
-        agents: List<AgentSummary>,
+        sessions: List<Session>,
         links: Map<String, app.tether.core.LinkState> = emptyMap(),
         machines: List<app.tether.core.Connection> = emptyList(),
-        sessions: List<Session> = emptyList(),
     ): Notification {
-        val live = agents.filter { it.run.displayStatus in LIVE && !it.run.terminal }
         val liveSessions = SessionAlerts.live(sessions).sortedByDescending { it.needsYou }
-        val (working, needs) = SessionAlerts.watchCounts(
-            live.count { it.run.status != RunStatus.AWAITING_PERMISSION },
-            live.count { it.run.status == RunStatus.AWAITING_PERMISSION },
-            sessions,
-        )
+        val (working, needs) = SessionAlerts.watchCounts(sessions)
         val summary = watchSummary(working, needs)
-        val names = liveSessions.map { it.title } + live.sortedByDescending { it.run.status == RunStatus.AWAITING_PERMISSION }.map { agentTitle(it) }
-        val single = live.singleOrNull()?.takeIf { liveSessions.isEmpty() }
-        val singleSession = liveSessions.singleOrNull()?.takeIf { live.isEmpty() }
+        val names = liveSessions.map { it.title }
+        val singleSession = liveSessions.singleOrNull()
 
         // Termius-style session line: "Connected to Workstation" / "Reconnecting to Workstation".
         val names2 = machines.associate { it.id to it.name }
@@ -146,7 +127,7 @@ object Notifications {
             retrying.isNotEmpty() -> "Reconnecting to " + retrying.joinToString(", ")
             else -> null
         }
-        val anyLive = live.isNotEmpty() || liveSessions.isNotEmpty()
+        val anyLive = liveSessions.isNotEmpty()
         val title = if (!anyLive) sessionLine ?: summary else summary
         val text = when {
             names.isNotEmpty() -> names.joinToString(" · ")
@@ -173,19 +154,17 @@ object Notifications {
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .setContentIntent(
                 if (singleSession != null) openSession(context, singleSession.ref, WATCH_NOTIFICATION_ID)
-                else openApp(context, single?.ref, WATCH_NOTIFICATION_ID),
+                else openApp(context, WATCH_NOTIFICATION_ID),
             )
             .guard(context, CHANNEL_WATCH, "Tether")
         if (links.isNotEmpty()) builder.addAction(0, "Disconnect", disconnect)
 
         val machineNames = machines.associate { it.id to it.name }
-        val total = live.size + liveSessions.size
+        val total = liveSessions.size
         if (total > 1) {
             val inbox = NotificationCompat.InboxStyle().setBigContentTitle(summary)
             val lines = liveSessions.map { s ->
                 "${s.title} — ${if (s.needsYou) "Needs you" else "Working"}" + (machineNames[s.connectionId]?.let { " · $it" } ?: "")
-            } + live.sortedByDescending { it.run.status == RunStatus.AWAITING_PERMISSION }.map { a ->
-                "${agentTitle(a)} — ${statusLabel(a.run.displayStatus)} · ${a.connection.name}"
             }
             lines.take(6).forEach { inbox.addLine(it) }
             if (total > 6) inbox.setSummaryText("+${total - 6} more")
@@ -197,12 +176,6 @@ object Notifications {
             else singleSession.lastText?.takeIf { it.isNotBlank() } ?: "Working"
             builder.setContentText(head)
             builder.setStyle(NotificationCompat.BigTextStyle().bigText("$head\n$detail"))
-        } else if (single != null) {
-            val detail = single.run.pending?.let { "Wants to use ${it.toolName}: ${it.summary}" }
-                ?: single.run.lastText?.takeIf { it.isNotBlank() }
-                ?: "${statusLabel(single.run.displayStatus)} on ${single.connection.name}"
-            builder.setContentText("${agentTitle(single)} · ${single.connection.name}")
-            builder.setStyle(NotificationCompat.BigTextStyle().bigText("${agentTitle(single)} · ${single.connection.name}\n$detail"))
         }
         return builder.build()
     }
@@ -215,112 +188,7 @@ object Notifications {
         return if (parts.isEmpty()) "Watching your agents" else parts.joinToString(" · ")
     }
 
-    // ───────────────────────────── events ─────────────────────────────
-
-    @SuppressLint("MissingPermission")
-    fun showPermission(context: Context, event: AgentEvent.PermissionRequested, machineName: String?, reason: String? = null) {
-        if (!canPost(context)) return
-        val id = permissionId(event.ref, event.requestId)
-        val text = if (event.toolName == app.tether.core.ASK_USER_QUESTION) event.summary else "${event.toolName}: ${event.summary}"
-        fun action(action: String, code: Int): PendingIntent {
-            val intent = Intent(context, NotificationActionReceiver::class.java).apply {
-                this.action = action
-                data = Uri.parse("tether://permission/${Uri.encode(event.ref.connectionId)}/${Uri.encode(event.ref.runId)}/${Uri.encode(event.requestId)}/$code")
-                putExtra(EXTRA_CONNECTION_ID, event.ref.connectionId)
-                putExtra(EXTRA_RUN_ID, event.ref.runId)
-                putExtra(EXTRA_REQUEST_ID, event.requestId)
-                putExtra(EXTRA_NOTIFICATION_ID, id)
-                putExtra(EXTRA_TITLE, event.title)
-                putExtra(EXTRA_TOOL, event.toolName)
-                putExtra(EXTRA_SUMMARY, event.summary)
-            }
-            val mutability = if (action == ACTION_REPLY && Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else PendingIntent.FLAG_IMMUTABLE
-            return PendingIntent.getBroadcast(context, id + code, intent, mutability or PendingIntent.FLAG_UPDATE_CURRENT)
-        }
-
-        // An answer can make Claude run commands on the user's machine, so it always needs the phone
-        // unlocked: Android 12+ enforces that on the buttons, and the receiver refuses answers from the
-        // keyguard on every version. With app lock on, older versions get no inline actions at all, so
-        // the only way in is the app, behind its own lock.
-        val inlineActions = !appLockOn(context) || Build.VERSION.SDK_INT >= 31
-        fun button(label: String, intent: PendingIntent) =
-            NotificationCompat.Action.Builder(0, label, intent).setAuthenticationRequired(true)
-        val reply = button("Tell Claude", action(ACTION_REPLY, 3))
-            .addRemoteInput(RemoteInput.Builder(KEY_REPLY_TEXT).setLabel("What should Claude do instead?").build())
-            .setAllowGeneratedReplies(false)
-            .build()
-
-        val question = event.toolName == app.tether.core.ASK_USER_QUESTION
-        val builder = NotificationCompat.Builder(context, CHANNEL_APPROVALS)
-            .setSmallIcon(R.drawable.ic_notification)
-            .setColor(ACCENT)
-            .setContentTitle(if (question) "${event.title} has a question" else "${event.title} needs approval")
-            .setContentText(text)
-            .setSubText(machineName)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(if (reason != null) "$text\n\n$reason" else text))
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setCategory(NotificationCompat.CATEGORY_REMINDER)
-            .setAutoCancel(true)
-            .setGroup(GROUP_APPROVALS)
-            .setContentIntent(openApp(context, event.ref, id))
-            .guard(context, CHANNEL_APPROVALS, if (question) "An agent has a question" else "An agent needs your approval", always = true)
-        // A question needs the picker: tapping opens it; Allow/Deny would answer nothing.
-        if (question) builder.addAction(0, "Answer", openApp(context, event.ref, id))
-        else if (inlineActions) {
-            builder.addAction(button("Allow", action(ACTION_ALLOW, 1)).build())
-                .addAction(button("Deny", action(ACTION_DENY, 2)).build())
-                .addAction(reply)
-        } else builder.addAction(0, "Review", openApp(context, event.ref, id))
-        val notification = builder.build()
-        NotificationManagerCompat.from(context).notify(id, notification)
-    }
-
-    @SuppressLint("MissingPermission")
-    fun showTurnCompleted(context: Context, event: AgentEvent.TurnCompleted, machineName: String?) {
-        if (!canPost(context)) return
-        val id = updateId(event.ref)
-        val title = if (event.success) "✓ ${event.title}" else "${event.title} hit an error"
-        val text = event.snippet?.trim()?.takeIf { it.isNotEmpty() }
-            ?: if (event.success) "Finished — your turn" else "The turn ended with an error"
-        val notification = NotificationCompat.Builder(context, CHANNEL_UPDATES)
-            .setSmallIcon(R.drawable.ic_notification)
-            .setColor(ACCENT)
-            .setContentTitle(title)
-            .setContentText(text)
-            .setSubText(machineName)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
-            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-            .setCategory(if (event.success) NotificationCompat.CATEGORY_STATUS else NotificationCompat.CATEGORY_ERROR)
-            .setAutoCancel(true)
-            .setGroup(GROUP_UPDATES)
-            .setContentIntent(openApp(context, event.ref, id))
-            .guard(context, CHANNEL_UPDATES, if (event.success) "An agent finished" else "An agent hit an error")
-            .build()
-        NotificationManagerCompat.from(context).notify(id, notification)
-    }
-
-    @SuppressLint("MissingPermission")
-    fun showEnded(context: Context, event: AgentEvent.Ended, machineName: String?) {
-        val error = event.error ?: return
-        if (!canPost(context)) return
-        val id = updateId(event.ref)
-        val notification = NotificationCompat.Builder(context, CHANNEL_UPDATES)
-            .setSmallIcon(R.drawable.ic_notification)
-            .setColor(ACCENT)
-            .setContentTitle("${event.title} stopped")
-            .setContentText(error)
-            .setSubText(machineName)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(error))
-            .setCategory(NotificationCompat.CATEGORY_ERROR)
-            .setAutoCancel(true)
-            .setGroup(GROUP_UPDATES)
-            .setContentIntent(openApp(context, event.ref, id))
-            .guard(context, CHANNEL_UPDATES, "An agent stopped")
-            .build()
-        NotificationManagerCompat.from(context).notify(id, notification)
-    }
-
-    // ───────────────────────────── sessions (one-session model) ─────────────────────────────
+    // ───────────────────────────── session events ─────────────────────────────
 
     const val EXTRA_SESSION_ID = "sessionId"
     /** Identity of the prompt a session notification was posted for (see [SessionAlerts.identityOf]). */
@@ -371,7 +239,10 @@ object Notifications {
             .setGroup(GROUP_APPROVALS)
             .setContentIntent(open)
             .guard(context, CHANNEL_APPROVALS, "A session needs you", always = true)
-        // Same rule as run approvals: inline answers need an unlocked phone (enforced on 12+, and by the receiver).
+        // An answer can make Claude run commands on the user's machine, so it always needs the phone
+        // unlocked: Android 12+ enforces that on the buttons, and the receiver refuses answers from the
+        // keyguard on every version. With app lock on, older versions get no inline actions at all, so
+        // the only way in is the app, behind its own lock.
         val inlineActions = SessionAlerts.answerableInline(event.pending) && (!appLockOn(context) || Build.VERSION.SDK_INT >= 31)
         if (inlineActions) {
             val reply = button("Tell Claude", action(ACTION_REPLY, 3))
@@ -458,7 +329,7 @@ object Notifications {
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setCategory(NotificationCompat.CATEGORY_RECOMMENDATION)
             .setAutoCancel(true)
-            .setContentIntent(openApp(context, null, APP_UPDATE_NOTIFICATION_ID))
+            .setContentIntent(openApp(context, APP_UPDATE_NOTIFICATION_ID))
             .addAction(0, "Update", installUpdate(context))
             .build()
         NotificationManagerCompat.from(context).notify(APP_UPDATE_NOTIFICATION_ID, notification)
@@ -470,15 +341,10 @@ object Notifications {
 
     // ───────────────────────────── helpers ─────────────────────────────
 
-    /** Opens MainActivity, deep-linking to [ref] when given. */
-    fun openApp(context: Context, ref: RunRef?, requestCode: Int): PendingIntent {
+    /** Opens MainActivity on Home. */
+    fun openApp(context: Context, requestCode: Int): PendingIntent {
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            if (ref != null) {
-                data = Uri.parse("tether://agent/${Uri.encode(ref.connectionId)}/${Uri.encode(ref.runId)}")
-                putExtra(MainActivity.EXTRA_CONNECTION_ID, ref.connectionId)
-                putExtra(MainActivity.EXTRA_RUN_ID, ref.runId)
-            }
         }
         return PendingIntent.getActivity(context, requestCode, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
     }
@@ -489,18 +355,5 @@ object Notifications {
             action = MainActivity.ACTION_INSTALL_UPDATE
         }
         return PendingIntent.getActivity(context, APP_UPDATE_NOTIFICATION_ID + 1, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-    }
-
-    fun agentTitle(a: AgentSummary): String =
-        a.run.title?.trim()?.takeIf { it.isNotEmpty() }
-            ?: a.run.cwd.trimEnd('/').substringAfterLast('/').ifEmpty { a.run.cwd.ifEmpty { "Agent" } }
-
-    private fun statusLabel(s: RunStatus): String = when (s) {
-        RunStatus.STARTING -> "Starting"
-        RunStatus.WORKING -> "Working"
-        RunStatus.AWAITING_PERMISSION -> "Needs you"
-        RunStatus.IDLE -> "Idle"
-        RunStatus.ENDED -> "Ended"
-        RunStatus.FAILED -> "Failed"
     }
 }

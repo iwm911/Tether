@@ -4,12 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Tether: Claude Code in your pocket</title>
-  <meta name="description" content="An open-source Android app that connects to your own machines over SSH, so you can start, watch, steer and approve Claude Code agents from your phone.">
+  <meta name="description" content="An open-source Android app that connects to your own machines over SSH, so you can start, watch, steer and approve Claude Code sessions from your phone.">
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#FAF9F5" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#262624" media="(prefers-color-scheme: dark)">
   <meta property="og:title" content="Tether: Claude Code in your pocket">
-  <meta property="og:description" content="Start, watch, steer and approve Claude Code agents on your own machines, from your Android phone, over SSH.">
+  <meta property="og:description" content="Start, watch, steer and approve Claude Code sessions on your own machines, from your Android phone, over SSH.">
   <meta property="og:type" content="website">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="preload" href="fonts/source_serif_regular.ttf" as="font" type="font/ttf" crossorigin>
@@ -57,7 +57,7 @@
     <div class="wrap hero" id="top">
       <div>
         <h1>Claude Code, in your pocket.</h1>
-        <p class="lede">Start, watch, steer and approve Claude Code agents on your own machines from your Android phone, over SSH. Agents keep running when your phone sleeps. There are no servers and no accounts.</p>
+        <p class="lede">Start, watch, steer and approve Claude Code sessions on your own machines from your Android phone, over SSH. They are the same sessions <code>claude agents</code> shows on the computer, and they keep running when your phone sleeps. There are no servers and no accounts.</p>
         <div class="actions">
           <a class="btn btn-primary" href="https://github.com/iwm911/Tether/releases/latest">
             <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 19.5h14"/></svg>
@@ -76,8 +76,8 @@
 
         <div class="machine" aria-hidden="true">
           <div class="mhead"><span class="dot"></span>workstation</div>
-<pre>$ tail -f in.jsonl |
-    claude -p …
+<pre>$ claude agents
+  shop-api  needs you
 <b>✻ Pondering… 42s</b>
 can_use_tool: Bash
   npm test -- login</pre>
@@ -133,41 +133,37 @@ can_use_tool: Bash
     <section id="features" aria-labelledby="features-h">
       <div class="wrap">
         <div class="sec-head">
-          <h2 id="features-h">Your agents keep working after you leave the desk.</h2>
-          <p>Long runs tend to stop and ask a question just after you’ve walked away. Tether sends that question to your phone, so you can answer it and the run carries on.</p>
+          <h2 id="features-h">Your sessions keep working after you leave the desk.</h2>
+          <p>Long sessions tend to stop and ask a question just after you’ve walked away. Tether sends that question to your phone, so you can answer it and the work carries on.</p>
         </div>
 
         <dl class="features">
           <div class="lead">
             <dt>Approve from anywhere.</dt>
-            <dd>Choose <em>Allow once</em>, <em>Always allow</em> a rule, or <em>Deny</em> and tell Claude what to do instead. You can do it from the chat, from the home screen without opening the agent, or straight from the notification.</dd>
+            <dd>Choose <em>Allow once</em>, <em>Always allow</em> a rule, or <em>Deny</em> and tell Claude what to do instead. You can do it from the chat, from the home screen without opening the session, or straight from the notification.</dd>
           </div>
           <div>
             <dt>A conversation, not a terminal</dt>
-            <dd>Replies render as Markdown. Tool calls are quiet one-line rows that expand into diffs, command output and file previews.</dd>
+            <dd>Replies stream in word by word and render as Markdown. Tool calls are quiet one-line rows that expand into diffs, command output and file previews.</dd>
           </div>
           <div>
             <dt>Survives the phone</dt>
-            <dd>Agents run detached on your machine. If the phone sleeps, loses signal or closes the app, Tether re-attaches where it left off.</dd>
+            <dd>Sessions live in Claude Code’s own background service on your machine. If the phone sleeps, loses signal or closes the app, Tether picks up where it left off.</dd>
           </div>
           <div>
-            <dt>Steer while it runs</dt>
-            <dd>Stop a turn, cycle permission modes (Ask, Accept edits, Plan, Auto) and switch models mid-run. Messages sent while Claude is busy are queued.</dd>
+            <dt>Everything a terminal can do</dt>
+            <dd>Stop a turn (Esc), cycle permission modes (Shift+Tab), switch models, run any slash command and attach images. Messages sent while Claude is busy are queued.</dd>
           </div>
           <div>
             <dt>Plans and questions</dt>
-            <dd>Claude’s todo list becomes a pinned checklist with progress. When Claude asks a question, you answer by tapping a choice.</dd>
+            <dd>Claude’s todo list becomes a pinned checklist with progress. Questions, and Claude Code’s own dialogs such as new MCP servers or folder trust, are answered with a tap.</dd>
           </div>
           <div>
             <dt>Every session, on every machine</dt>
-            <dd>Browse past Claude Code sessions, including ones started at the desk, and continue any of them from the phone.</dd>
+            <dd>One list, like <code>claude agents</code>: running sessions, last week’s, and ones open in a terminal at the desk. Open any of them and reply; a stopped one wakes up under its own id.</dd>
           </div>
           <div>
-            <dt>Branch and retry</dt>
-            <dd>Edit an earlier message and branch from it. You see Claude Code’s file checkpoints first and choose whether to restore files.</dd>
-          </div>
-          <div>
-            <dt>Start agents anywhere</dt>
+            <dt>Start sessions anywhere</dt>
             <dd>Pick a machine, browse to a folder, choose a model and mode, and write the prompt. You can dictate it or attach images, and <code>/</code> brings up slash commands.</dd>
           </div>
           <div>
@@ -175,23 +171,6 @@ can_use_tool: Bash
             <dd>SSH keepalives and instant reconnects when the network changes. An optional background service keeps links open so approval requests still arrive.</dd>
           </div>
         </dl>
-
-        <div class="table-scroll">
-          <table class="kinds">
-            <caption>Two kinds of agents</caption>
-            <thead>
-              <tr><th scope="col"><span class="sr">Capability</span></th><th scope="col">Background (default)</th><th scope="col">Live</th></tr>
-            </thead>
-            <tbody>
-              <tr><th scope="row">Runs as</th><td>native <code>claude --bg</code></td><td><code>claude -p</code> stream-json, driven by Tether</td></tr>
-              <tr><th scope="row">Approve tool use from the phone</th><td class="y">Yes, in the chat and from notifications</td><td class="y">Yes, in the chat and from notifications</td></tr>
-              <tr><th scope="row">Listed in <code>claude agents</code></th><td class="y">Yes: attach, logs, stop</td><td>Only while it runs</td></tr>
-              <tr><th scope="row">Streaming</th><td>Message by message</td><td class="y">Token by token</td></tr>
-              <tr><th scope="row">Images, rewind, mode and model switch</th><td>No</td><td class="y">Yes</td></tr>
-              <tr><th scope="row">Reply</th><td>Any time (queues while busy)</td><td>Any time (queues while busy)</td></tr>
-            </tbody>
-          </table>
-        </div>
       </div>
     </section>
 
@@ -199,7 +178,7 @@ can_use_tool: Bash
       <div class="wrap">
         <div class="sec-head">
           <h2 id="how-h">How it works</h2>
-          <p>Your phone connects to your own machine over SSH, and a small helper script there starts Claude Code for you. Nothing runs anywhere else.</p>
+          <p>Your phone connects to your own machine over SSH, and a small helper script there talks to Claude Code’s own background service for you. Nothing runs anywhere else.</p>
         </div>
 
         <ol class="chain">
@@ -214,14 +193,14 @@ can_use_tool: Bash
             <code>~/.tether/bin/tether_helper.py</code>
           </li>
           <li>
-            <h3>Start Claude Code</h3>
-            <p>The helper starts Claude Code detached from SSH, so the run keeps going if the connection drops.</p>
-            <code>~/.tether/runs/&lt;id&gt;/out.jsonl</code>
+            <h3>Talk to Claude Code</h3>
+            <p>The helper starts, wakes and messages sessions through Claude Code’s daemon, the service behind <code>claude agents</code>, so the work keeps going if the connection drops.</p>
+            <code>claude daemon</code>
           </li>
           <li>
             <h3>Follow on the phone</h3>
-            <p>The app follows the output from where it left off, and sends your replies and approvals back.</p>
-            <code>in.jsonl</code>
+            <p>The app follows the session’s transcript from where it left off, streams the reply being written, and sends your messages, keys and approvals back.</p>
+            <code>~/.claude/projects/…/&lt;session&gt;.jsonl</code>
           </li>
         </ol>
 
@@ -229,7 +208,7 @@ can_use_tool: Bash
           <h3>What each machine needs</h3>
           <dl>
           <dt>SSH</dt><dd>An SSH server your phone can reach, such as on your LAN or over Tailscale or WireGuard.</dd>
-          <dt>Claude Code</dt><dd>Installed and logged in, so <code>claude --version</code> works for that user.</dd>
+          <dt>Claude Code</dt><dd>Version 2.1.286 or newer, installed and logged in, so <code>claude agents</code> works for that user.</dd>
           <dt>Python 3.6+</dt><dd><code>python3</code> on Linux or macOS. There’s nothing to <code>pip install</code>.</dd>
           </dl>
         </div>
@@ -255,7 +234,7 @@ can_use_tool: Bash
           <div class="privacy">
             <h3>Privacy</h3>
             <p class="never">Tether never collects device IDs, hostnames, IPs, usernames, paths, prompts, code or session content.</p>
-            <p>It sends anonymous, coarse usage events (such as app opened or agent started) through <a href="https://aptabase.com">Aptabase</a>, an open-source analytics service. The events include the app version, OS version, locale and a random session id that rotates. Nothing is sent until you acknowledge a notice on Home, and one tap in Settings → Privacy turns it off. Builds without an analytics key, such as forks, send nothing.</p>
+            <p>It sends anonymous, coarse usage events (such as app opened or session started) through <a href="https://aptabase.com">Aptabase</a>, an open-source analytics service. The events include the app version, OS version, locale and a random session id that rotates. Nothing is sent until you acknowledge a notice on Home, and one tap in Settings → Privacy turns it off. Builds without an analytics key, such as forks, send nothing.</p>
             <p><a href="https://github.com/iwm911/Tether/blob/main/PRIVACY.md">Read the privacy policy</a></p>
           </div>
         </div>

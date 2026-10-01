@@ -324,6 +324,8 @@ private fun HomeHeader(state: HomeUiState, onOpenSettings: () -> Unit, onOpenMac
     val subtitle = when {
         state.connections.isEmpty() -> "Claude Code, on your own machines"
         state.showSkeleton -> "Checking in with your machines…"
+        // Still connecting (e.g. waiting on the trust-this-machine dialog): "No sessions yet" would be a guess.
+        !state.hasSessions && state.links.values.any { it == LinkState.Connecting } -> "Connecting to your machines…"
         else -> {
             val parts = buildList {
                 if (state.needsYouCount > 0) add(if (state.needsYouCount == 1) "One session needs you" else "${state.needsYouCount} sessions need you")

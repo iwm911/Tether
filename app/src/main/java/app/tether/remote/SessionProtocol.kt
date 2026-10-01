@@ -147,9 +147,12 @@ object SessionProtocol {
         })
     }.toString()
 
-    fun answerBody(decision: SessionDecision, message: String?): String = buildJsonObject {
+    fun modeBody(mode: String?): String = buildJsonObject { put("mode", mode.orEmpty()) }.toString()
+
+    fun answerBody(decision: SessionDecision, message: String?, toolUseId: String? = null): String = buildJsonObject {
         put("decision", decision.wire)
         message?.trim()?.takeIf { it.isNotEmpty() }?.let { put("message", it) }
+        toolUseId?.takeIf { it.isNotBlank() }?.let { put("toolUseId", it) }
     }.toString()
 
     fun askBody(answers: List<AskAnswer>): String = buildJsonObject {

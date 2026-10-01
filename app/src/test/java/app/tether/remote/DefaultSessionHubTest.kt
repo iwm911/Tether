@@ -1,62 +1,119 @@
 package app.tether.remote
 
 import app.tether.core.AskAnswer
+
 import app.tether.core.AuthMethod
+
 import app.tether.core.ChatItem
+
 import app.tether.core.Connection
+
 import app.tether.core.ConnectionRepository
-import app.tether.core.ConversationState
+
 import app.tether.core.DaemonStatus
+
 import app.tether.core.ExecResult
+
 import app.tether.core.FollowEvent
+
 import app.tether.core.Holder
+
 import app.tether.core.ImageAttachment
+
 import app.tether.core.LinkState
+
 import app.tether.core.NewSessionRequest
+
 import app.tether.core.NewSessionResult
+
 import app.tether.core.ProbeResult
+
 import app.tether.core.RunStatus
+
 import app.tether.core.Session
+
 import app.tether.core.SessionDecision
+
 import app.tether.core.SessionErrorCodes
+
 import app.tether.core.SessionEvent
+
 import app.tether.core.SessionKey
+
 import app.tether.core.SessionPending
+
 import app.tether.core.SessionRef
+
 import app.tether.core.SessionRemote
+
 import app.tether.core.SessionState
+
+import app.tether.core.SlashCommand
+
 import app.tether.core.SshManager
+
 import app.tether.core.TestProgress
+
 import app.tether.core.WatchMessage
+
 import kotlinx.coroutines.CompletableDeferred
+
 import kotlinx.coroutines.CoroutineScope
+
 import kotlinx.coroutines.Dispatchers
+
 import kotlinx.coroutines.SupervisorJob
+
 import kotlinx.coroutines.async
+
 import kotlinx.coroutines.awaitCancellation
+
 import kotlinx.coroutines.cancel
+
 import kotlinx.coroutines.delay
+
 import kotlinx.coroutines.flow.Flow
+
 import kotlinx.coroutines.flow.FlowCollector
+
 import kotlinx.coroutines.flow.MutableSharedFlow
+
 import kotlinx.coroutines.flow.MutableStateFlow
+
 import kotlinx.coroutines.flow.StateFlow
+
 import kotlinx.coroutines.flow.emptyFlow
+
 import kotlinx.coroutines.flow.first
+
 import kotlinx.coroutines.flow.flow
+
 import kotlinx.coroutines.launch
+
 import kotlinx.coroutines.runBlocking
+
 import kotlinx.coroutines.withTimeout
+
 import org.junit.After
+
 import org.junit.Assert.assertEquals
+
 import org.junit.Assert.assertFalse
+
 import org.junit.Assert.assertNull
+
 import org.junit.Assert.assertTrue
+
 import org.junit.Assert.fail
+
 import org.junit.Test
+
 import java.io.IOException
+
 import java.util.Collections
+
 import java.util.concurrent.ConcurrentLinkedQueue
+
 
 /** [DefaultSessionHub] against a fake [SessionRemote]: watch → list + events, open → follow reducer, writes. */
 class DefaultSessionHubTest {
@@ -199,6 +256,30 @@ class DefaultSessionHubTest {
     }
 
     @Test
+    fun aNewFollowNeverKeepsTheLastFollowsSpinnerOrDraft() = runBlocking {
+        val ref = SessionRef(CONN, SID)
+        // First follow: a turn in progress (spinner + draft), then the stream ends (the screen was left, the
+        // helper process went). Meanwhile the turn ends; the next follow only has history and caughtUp.
+        remote.followScripts.add {
+            emit(FollowEvent.CaughtUp(100))
+            emit(FollowEvent.Status("Improvising…", 4, null))
+            emit(FollowEvent.Draft("half a rep"))
+            delay(300)
+        }
+        remote.followScripts.add {
+            emit(FollowEvent.CaughtUp(100))
+            awaitCancellation()
+        }
+        val flow = hub.open(ref)
+        val job = launch(Dispatchers.Default) { flow.collect { } }
+        flow.waitFor { it.live?.draft == "half a rep" && it.live?.status != null }
+        val st = flow.waitFor(timeoutMs = 10_000) { remote.followCalls.size >= 2 && it.live?.status == null && it.live?.draft == null }
+        assertNull(st.workingSince)
+        assertEquals(listOf(0L, 100L), remote.followCalls.map { it.third }.take(2))
+        job.cancel()
+    }
+
+    @Test
     fun watchListFeedsTheOpenConversation() = runBlocking {
         val ref = SessionRef(CONN, SID)
         remote.followScripts.add { emit(FollowEvent.CaughtUp(10)); awaitCancellation() }
@@ -298,8 +379,9 @@ class DefaultSessionHubTest {
         remote.sessionList = listOf(s(SID, SessionState.NEEDS_YOU, 1, SessionPending.Permission("t")))
         hub.refresh(CONN)
         remote.writeResult = s(SID, SessionState.WORKING, 2)
-        hub.answer(ref, SessionDecision.DENY, "no")
+        hub.answer(ref, SessionDecision.DENY, "no", toolUseId = "t")
         assertEquals(Triple(SID, SessionDecision.DENY, "no"), remote.lastAnswer)
+        assertEquals("t", remote.lastAnswerToolUseId)
         assertEquals(SessionState.WORKING, hub.session(ref)!!.state)
         assertEquals(CONN, hub.session(ref)!!.connectionId)
 
@@ -327,9 +409,27 @@ class DefaultSessionHubTest {
         assertNull(hub.session(ref))
     }
 
+    @Test
+    fun slashCommandsAreCachedPerFolderOnceKnown() = runBlocking {
+        remote.commands = emptyList()
+        assertTrue(hub.slashCommands(CONN, "/p").isEmpty())
+        remote.commands = listOf(SlashCommand("compact", "Compact the conversation"))
+        assertEquals(listOf("compact"), hub.slashCommands(CONN, "/p").map { it.name })
+        remote.commands = listOf(SlashCommand("other", ""))
+        assertEquals(listOf("compact"), hub.slashCommands(CONN, "/p").map { it.name }) // cached
+        assertEquals(listOf("other"), hub.slashCommands(CONN, "/q").map { it.name })
+        assertEquals(3, remote.commandCalls) // the empty answer was not cached, the cached one was not asked again
+    }
+
     // ───────────── fakes ─────────────
 
     private class FakeRemote : SessionRemote {
+        @Volatile var commands: List<SlashCommand> = emptyList()
+        @Volatile var commandCalls = 0
+        override suspend fun listCommands(connectionId: String, cwd: String): List<SlashCommand> {
+            commandCalls++
+            return commands
+        }
         val watch = MutableSharedFlow<WatchMessage>(replay = 0, extraBufferCapacity = 64)
         @Volatile var watchCalls = 0
         @Volatile var watchError: Throwable? = null
@@ -344,6 +444,7 @@ class DefaultSessionHubTest {
         var newError: Throwable? = null
         var writeResult: Session? = null
         var lastAnswer: Triple<String, SessionDecision, String?>? = null
+        var lastAnswerToolUseId: String? = null
         var lastAsk: List<AskAnswer>? = null
         var lastKeys: List<SessionKey>? = null
         var stopped: String? = null
@@ -377,8 +478,9 @@ class DefaultSessionHubTest {
             return true
         }
         override suspend fun key(connectionId: String, sessionId: String, keys: List<SessionKey>) { lastKeys = keys }
-        override suspend fun answer(connectionId: String, sessionId: String, decision: SessionDecision, message: String?): Session {
+        override suspend fun answer(connectionId: String, sessionId: String, decision: SessionDecision, message: String?, toolUseId: String?): Session {
             lastAnswer = Triple(sessionId, decision, message)
+            lastAnswerToolUseId = toolUseId
             return writeResult!!
         }
         override suspend fun ask(connectionId: String, sessionId: String, answers: List<AskAnswer>): Session {
