@@ -177,7 +177,8 @@ approve actions from anywhere; sessions keep running when your phone sleeps.
 
 ### Settings (C) + App lock (C)
 Sections: Appearance (Theme: System/Dark/Light segmented; Dynamic colour; Code text size slider),
-Agents (default model, default permission mode, show thinking, compact tool rows), Notifications
+Agents (default model, default permission mode, show thinking, compact tool rows, show terminal
+sessions), Notifications
 (permission requests, turn complete, background watch), Security (biometric lock, known hosts list
 with remove), Machines & keys links, About (version, "Tether is an independent client for Claude
 Code"). `AppLockGate`: when `biometricLock` on, show a blurred/branded lock screen and
@@ -189,7 +190,8 @@ MainActivity is a `FragmentActivity`.
 - One list of sessions from `sessions.sessions`: **needs you** first (amber-edged rows with the
   pending tool summary and inline Allow / Deny via `sessions.answer`; questions and dialogs open the
   session), then by most recent activity. Rows show title, project, machine, state, last message,
-  an "in terminal" mark for terminal-held sessions.
+  an "in terminal" mark for terminal-held sessions (hidden entirely when the "Show terminal sessions"
+  setting is off; Machine detail follows the same setting).
 - Empty state (no machines): welcoming EmptyState → add machine. Machines but no sessions: hero card
   "Start an agent" with recent projects quick-start. "Connecting to your machines…" while connecting.
 - Pull-to-refresh, extended FAB "New agent" that shrinks on scroll; per-machine errors from

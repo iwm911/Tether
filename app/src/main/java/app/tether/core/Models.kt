@@ -380,6 +380,8 @@ data class AppSettings(
     val compactTools: Boolean = true,
     /** Keep the screen awake while a conversation is open. */
     val keepScreenOn: Boolean = false,
+    /** List sessions a `claude` open in a terminal holds (read-only on the phone) on Home and Machine. */
+    val showTerminalSessions: Boolean = true,
     /** Anonymous usage analytics (see app.tether.analytics.Analytics); on unless turned off. */
     val analyticsEnabled: Boolean = true,
     /** The one-time analytics notice on Home was acknowledged; nothing is sent before that. */

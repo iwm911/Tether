@@ -20,6 +20,7 @@ import app.tether.ui.home.humanMessage
 import app.tether.ui.home.mergeSessions
 import app.tether.ui.home.projectChips
 import app.tether.ui.home.visibleSessions
+import app.tether.ui.home.withTerminal
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
@@ -28,6 +29,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -63,7 +65,12 @@ private data class MachineLocal(
     val disconnecting: Boolean = false,
 )
 
-private data class MachineList(val filter: SessionFilter, val pages: Map<PageKey, Page>, val decisions: Map<String, Boolean>)
+private data class MachineList(
+    val filter: SessionFilter,
+    val pages: Map<PageKey, Page>,
+    val decisions: Map<String, Boolean>,
+    val showTerminal: Boolean,
+)
 
 /** One machine: its header (probe) and the session list filtered to it. */
 class MachineViewModel(private val container: AppContainer, val connectionId: String) : ViewModel() {
@@ -74,7 +81,7 @@ class MachineViewModel(private val container: AppContainer, val connectionId: St
 
     val list = SessionListController(viewModelScope, hub, SessionFilter(machine = connectionId), onError = { messages.trySend(it) })
 
-    private val listBits = combine(list.filter, list.pages, list.decisions) { f, p, d -> MachineList(f, p, d) }
+    private val listBits = combine(list.filter, list.pages, list.decisions, container.settings.settings.map { it.showTerminalSessions }) { f, p, d, t -> MachineList(f, p, d, t) }
 
     val state: StateFlow<MachineUiState> = combine(
         container.connections.connections,
@@ -104,16 +111,16 @@ class MachineViewModel(private val container: AppContainer, val connectionId: St
     }
 
     private fun reduce(conn: Connection?, link: LinkState?, error: String?, all: List<Session>, l: MachineLocal, b: MachineList): MachineUiState {
-        val mine = all.filter { it.connectionId == connectionId }
+        val mine = all.filter { it.connectionId == connectionId }.withTerminal(b.showTerminal)
         val filter = b.filter.copy(machine = connectionId)
-        val everything = mergeSessions(mine, SessionPaging.olderFor(SessionFilter(machine = connectionId), b.pages))
+        val everything = mergeSessions(mine, SessionPaging.olderFor(SessionFilter(machine = connectionId), b.pages).withTerminal(b.showTerminal))
         return MachineUiState(
             connection = conn,
             known = conn != null,
             link = link,
             machineError = error,
             probe = l.probe,
-            sessions = visibleSessions(mine, b.pages, filter),
+            sessions = visibleSessions(mine, b.pages, filter).withTerminal(b.showTerminal),
             totalSessions = everything.size,
             filter = filter,
             projectChips = projectChips(everything, connectionId, filter.project),

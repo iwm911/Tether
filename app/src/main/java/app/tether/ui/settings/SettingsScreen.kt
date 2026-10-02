@@ -63,6 +63,7 @@ import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.SmartToy
 import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material.icons.rounded.SystemUpdate
+import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.material.icons.rounded.Timer
 import androidx.compose.material.icons.rounded.Vibration
 import androidx.compose.material.icons.rounded.ViewAgenda
@@ -243,6 +244,14 @@ fun SettingsScreen(onBack: () -> Unit, onOpenKeys: () -> Unit, onOpenMachines: (
                     icon = Icons.Rounded.ViewAgenda,
                     checked = s.compactTools,
                     onCheckedChange = { on -> vm.update { it.copy(compactTools = on) } },
+                )
+                RowDivider()
+                ToggleRow(
+                    title = "Show terminal sessions",
+                    subtitle = "List sessions open in a terminal on your computer (read-only here)",
+                    icon = Icons.Rounded.Terminal,
+                    checked = s.showTerminalSessions,
+                    onCheckedChange = { on -> vm.update { it.copy(showTerminalSessions = on) } },
                 )
                 RowDivider()
                 ToggleRow(

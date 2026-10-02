@@ -3,6 +3,7 @@ package app.tether.ui.home
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.tether.AppContainer
+import app.tether.core.AppSettings
 import app.tether.core.Connection
 import app.tether.core.LinkState
 import app.tether.core.ProjectSummary
@@ -16,6 +17,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -63,7 +65,12 @@ private data class Local(
     val quickStart: QuickStart? = null,
 )
 
-private data class ListBits(val filter: SessionFilter, val pages: Map<PageKey, Page>, val decisions: Map<String, Boolean>)
+private data class ListBits(
+    val filter: SessionFilter,
+    val pages: Map<PageKey, Page>,
+    val decisions: Map<String, Boolean>,
+    val showTerminal: Boolean,
+)
 
 /** Home: one list of every session on every machine (one-session model). */
 class HomeViewModel(
@@ -71,6 +78,7 @@ class HomeViewModel(
     private val connections: StateFlow<List<Connection>>,
     private val links: StateFlow<Map<String, LinkState>>,
     private val loadProjects: suspend (connectionId: String) -> List<ProjectSummary>,
+    private val settings: StateFlow<AppSettings> = MutableStateFlow(AppSettings()),
     /** False in tests: skip the skeleton timers. */
     loadTimers: Boolean = true,
 ) : ViewModel() {
@@ -79,6 +87,7 @@ class HomeViewModel(
         connections = container.connections.connections,
         links = container.ssh.states,
         loadProjects = { id -> container.remote.listProjects(id) },
+        settings = container.settings.settings,
     )
 
     private val local = MutableStateFlow(Local(loadPhase = if (loadTimers) 0 else 2))
@@ -88,7 +97,7 @@ class HomeViewModel(
 
     val list = SessionListController(viewModelScope, hub, onError = { messages.trySend(HomeMessage.Error(it)) })
 
-    private val listBits = combine(list.filter, list.pages, list.decisions) { f, p, d -> ListBits(f, p, d) }
+    private val listBits = combine(list.filter, list.pages, list.decisions, settings.map { it.showTerminalSessions }) { f, p, d, t -> ListBits(f, p, d, t) }
 
     val state: StateFlow<HomeUiState> = combine(connections, links, hub.sessions, hub.machineErrors, combine(local, listBits) { l, b -> l to b }) { conns, lk, sessions, errors, (l, b) ->
         reduce(conns, lk, sessions, errors, l, b)
@@ -96,7 +105,7 @@ class HomeViewModel(
         viewModelScope,
         SharingStarted.WhileSubscribed(5_000),
         // Seed from current values so the first frame is already the right state (no empty-state flash).
-        reduce(connections.value, links.value, hub.sessions.value, hub.machineErrors.value, local.value, ListBits(list.filter.value, list.pages.value, list.decisions.value)),
+        reduce(connections.value, links.value, hub.sessions.value, hub.machineErrors.value, local.value, ListBits(list.filter.value, list.pages.value, list.decisions.value, settings.value.showTerminalSessions)),
     )
 
     init {
@@ -122,12 +131,12 @@ class HomeViewModel(
     ): HomeUiState {
         val order = conns.map { it.id }
         val known = order.toSet()
-        val watched = all.filter { it.connectionId in known }
+        val watched = all.filter { it.connectionId in known }.withTerminal(b.showTerminal)
         // A filter on a machine that was deleted (or a project that is gone) is dropped, not a dead end.
         val filter = b.filter.let { f -> if (f.machine != null && f.machine !in known) SessionFilter() else f }
-        val older = SessionPaging.olderFor(SessionFilter(machine = filter.machine), b.pages).filter { it.connectionId in known }
+        val older = SessionPaging.olderFor(SessionFilter(machine = filter.machine), b.pages).filter { it.connectionId in known }.withTerminal(b.showTerminal)
         val everything = mergeSessions(watched, older)
-        val visible = visibleSessions(watched, b.pages, filter).filter { it.connectionId in known }
+        val visible = visibleSessions(watched, b.pages, filter).filter { it.connectionId in known }.withTerminal(b.showTerminal)
         val anyConnecting = conns.any { lk[it.id] == LinkState.Connecting }
         val stillLoading = when (l.loadPhase) {
             0 -> true

@@ -133,6 +133,7 @@ object DebugSeeder {
         codeFontScale = (o["codeFontScale"] as? JsonPrimitive)?.floatOrNull ?: s.codeFontScale,
         onboardingDone = o.bool("onboardingDone") ?: s.onboardingDone,
         compactTools = o.bool("compactTools") ?: s.compactTools,
+        showTerminalSessions = o.bool("showTerminalSessions") ?: s.showTerminalSessions,
     )
 
     private fun JsonObject.string(key: String): String? = (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull

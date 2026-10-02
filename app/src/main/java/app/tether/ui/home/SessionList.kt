@@ -155,6 +155,9 @@ object SessionPaging {
 }
 
 /** The list a screen shows: watched + paged, filtered, ordered. */
+/** [show] off = leave out sessions a terminal holds (the "Show terminal sessions" setting). */
+fun List<Session>.withTerminal(show: Boolean): List<Session> = if (show) this else filterNot { it.heldByTerminal }
+
 fun visibleSessions(watched: List<Session>, pages: Map<PageKey, Page>, filter: SessionFilter): List<Session> =
     mergeSessions(watched, SessionPaging.olderFor(filter, pages))
         .filter { filter.matches(it) }
