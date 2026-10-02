@@ -29,6 +29,7 @@ class FakeHome(object):
         self.h.daemon_runtime_root = lambda: self.run_root
         self.server = None
         self.model = None
+        self.extra_env = {}
 
     def close(self):
         if self.server:
@@ -99,6 +100,7 @@ class FakeHome(object):
     def env(self):
         env = dict(os.environ, HOME=self.root, TERMUX_VERSION="1", PREFIX=self.root)
         env.pop("CLAUDE_CONFIG_DIR", None)
+        env.update(self.extra_env)
         return env
 
     def run(self, *args, stdin=None, timeout=60):
@@ -127,6 +129,7 @@ class DaemonModel(object):
         self.attach_screen = b"\x1b[2J\x1b[H\xe2\x9d\xaf \r\n"
         self.subscribe_events = []  # list of dicts / ("sleep", s) / callables
         self.on_keys = None
+        self.on_reply = None  # (short, text): what the worker does with a reply (write settings, transcript lines)
         self.lock = threading.Lock()
 
     def add(self, short, sid, **rec):
@@ -168,6 +171,8 @@ class DaemonModel(object):
             if not r or r.get("dying") or r.get("outcome"):
                 return {"ok": False, "error": "job not found — it may have already exited", "code": "ENOJOB"}
             self.replies.append((req["short"], req["text"]))
+            if self.on_reply:
+                self.on_reply(req["short"], req["text"])
             return {"ok": True, "op": "reply"}
         if op == "kill":
             r = self.records.get(req.get("short"))

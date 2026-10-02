@@ -2513,10 +2513,29 @@ def roster_launch_flags():
 
 # ── transcript facts (cached by size + mtime) ──
 
+LOCAL_COMMAND_PREFIXES = ("<local-command-", "<command-name>", "<command-message>")
+
+
+def local_command_line(o):
+    """A user line that a slash command run inside Claude Code wrote (its caveat, name or output): no model turn."""
+    msg = o.get("message") if isinstance(o.get("message"), dict) else {}
+    content = msg.get("content")
+    if isinstance(content, list):
+        texts = [b.get("text") for b in content if isinstance(b, dict) and b.get("type") == "text"]
+        if len(texts) != len(content):
+            return False  # tool results, images: part of a model turn
+        content = "\n".join(t for t in texts if isinstance(t, str))
+    return isinstance(content, str) and content.lstrip().startswith(LOCAL_COMMAND_PREFIXES)
+
+
 def scan_tail_facts(data):
     """lastText, model, permissionMode, PR links from the end of a transcript."""
-    f = {"lastText": None, "model": None, "permissionMode": None, "prs": []}
+    f = {"lastText": None, "model": None, "permissionMode": None, "prs": [], "lastEntry": None}
     for raw in iter_lines_bytes(data):
+        if b'"type":"user"' in raw and b'"isSidechain":true' not in raw:
+            o = parse_line(raw)
+            if o and o.get("type") == "user" and not o.get("isSidechain"):
+                f["lastEntry"] = "local" if local_command_line(o) else "user"
         if b'"type":"user"' in raw and b'"permissionMode"' in raw:
             # Each prompt records the mode it ran in; it can differ from the last permission-mode line (a wake
             # without the flag starts in the settings defaultMode).
@@ -2538,6 +2557,7 @@ def scan_tail_facts(data):
             msg = o.get("message") if o and o.get("type") == "assistant" and isinstance(o.get("message"), dict) else None
             if not msg or o.get("isSidechain"):
                 continue
+            f["lastEntry"] = "assistant"
             if isinstance(msg.get("model"), str) and not msg["model"].startswith("<"):
                 f["model"] = msg["model"]
             parts = [b.get("text") for b in (msg.get("content") or []) if isinstance(b, dict)
@@ -2567,7 +2587,7 @@ class TranscriptFacts(object):
             return cur
         facts = scan_tail_facts(read_tail(path, TAIL_BYTES))
         if cur and cur.get("size", 0) <= size:
-            for k in ("lastText", "model", "permissionMode"):
+            for k in ("lastText", "model", "permissionMode", "lastEntry"):
                 if facts.get(k) is None:
                     facts[k] = cur.get(k)
             facts["prs"] = (cur.get("prs") or []) + [p for p in facts["prs"] if p not in (cur.get("prs") or [])]
@@ -2638,7 +2658,9 @@ def best_job(slot):
     return None, {}
 
 
-def session_state(held, live, st, rec, term, bg):
+def session_state(held, live, st, rec, term, bg, last_entry=None):
+    """last_entry = the transcript's last main-thread entry ("user", "assistant", "local" for a slash command's
+    output), from the tail facts."""
     if held == "terminal":
         return {"busy": "working", "waiting": "needs_you"}.get((term or {}).get("status"), "idle")
     if live:
@@ -2648,7 +2670,16 @@ def session_state(held, live, st, rec, term, bg):
         # its state.json says blocked ("send a prompt to start") while the daemon's record still says active.
         if tempo == "blocked" or status == "waiting" or (st.get("tempo") == "blocked" and bg is None):
             return "needs_you"
-        if tempo == "active" or status == "busy":
+        if status == "busy":
+            return "working"
+        if tempo == "active":
+            # A worker woken (resumed) by a slash command such as `/model x` runs no model turn, so the daemon's
+            # record stays "active" for good while the worker itself says idle. Its transcript ends on the
+            # command's own output: the command is over.
+            in_flight = st.get("inFlight") if isinstance(st.get("inFlight"), dict) else {}
+            if status == "idle" and last_entry == "local" and st.get("tempo") != "active" and \
+                    not in_flight.get("tasks") and not in_flight.get("queued"):
+                return "idle"
             return "working"
         if ((rec or {}).get("state") or st.get("state")) in ("starting", "resuming"):
             return "working"
@@ -2860,7 +2891,7 @@ def make_session(slot, facts=None, tfile=None, screen=None):
         tail = facts.tail(path, tst)
     live = record_live(rec)
     held = "terminal" if term else ("daemon" if live else "none")
-    state = session_state(held, live, st, rec, term, bg)
+    state = session_state(held, live, st, rec, term, bg, tail.get("lastEntry"))
     reg = term or bg or {}
     pending = None
     if state == "needs_you":
@@ -4249,19 +4280,220 @@ def cmd_send_v2(opts, arg):
         raise HelperError("Nothing to send.")
     ref = SessionRef(arg)
     require_not_held(ref)
+    guard = model_guard_begin(ref.sid, ref.tpath) if MODEL_CMD_RE.match(text) else None
+    try:
+        woke = send_text(opts, ref, text, bool(req.get("images")))
+    except BaseException:
+        if guard:
+            model_guard_release(guard[0])
+        raise
+    if guard:
+        model_guard_spawn(guard[0], ref.sid, guard[1])
+    emit({"ok": True, "woke": woke})
+
+
+def send_text(opts, ref, text, paste):
+    """Types text into the session, waking it first when it is retired. Returns whether it woke."""
     if ref.live():
         require_no_startup_dialog(ref)
         try:
             daemon_reply(ref.short, text)
-            emit({"ok": True, "woke": False})
-            return
+            return False
         except DaemonError as e:
             if e.code != "ENOSESSION":
                 raise
-    short, sent = wake(opts, ref, text, paste=bool(req.get("images")))
+    short, sent = wake(opts, ref, text, paste=paste)
     if not sent:
         reply_retrying(short, text)
-    emit({"ok": True, "woke": True})
+    return True
+
+
+# ── the model chip changes THIS session only ──
+# Claude Code (2.1.287) also saves `/model X` typed in an interactive session as the machine's default for new
+# sessions (the "model" key of ~/.claude/settings.json). The phone's model chip means this session only, so a
+# `/model X` sent through `send` is guarded: the key is read before sending and put back exactly once the session
+# has applied the switch (its transcript gets the command's output), by a detached `model-guard` process because
+# the switch may wait on a "Switch model?" dialog the phone answers later. Guards share one record of the
+# original value, so back-to-back switches restore the value from before the first.
+
+MODEL_CMD_RE = re.compile(r"^\s*/model\s+\S+\s*$")
+MODEL_GUARD_PATH = os.path.join(TETHER_DIR, "model_guard.json")
+MODEL_GUARD_SECONDS = 600
+MODEL_GUARD_SETTLE = 1.5
+
+
+def claude_settings_path():
+    return os.path.join(claude_config_dir(), "settings.json")
+
+
+class model_guard_lock(object):
+    def __enter__(self):
+        import fcntl
+        ensure_dir(TETHER_DIR)
+        self.f = open(MODEL_GUARD_PATH + ".lock", "a")
+        fcntl.flock(self.f, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc):
+        self.f.close()  # releases the lock
+
+
+def settings_model_key(raw):
+    """(present, value) of settings.json's "model" key; None when the text is not a JSON object."""
+    if raw is None:
+        return (False, None)
+    try:
+        obj = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    return ("model" in obj, obj.get("model"))
+
+
+def read_guard():
+    g = read_json(MODEL_GUARD_PATH)
+    if not isinstance(g, dict) or not isinstance(g.get("tokens"), dict) or not isinstance(g.get("original"), dict):
+        return None
+    now = time.time()
+    g["tokens"] = dict((k, v) for k, v in g["tokens"].items() if isinstance(v, dict) and (v.get("until") or 0) > now)
+    return g if g["tokens"] else None
+
+
+def model_guard_begin(sid, tpath):
+    """Records settings.json's model key (unless a guard already holds the value from before an earlier switch).
+    Returns (token, transcript offset to watch from)."""
+    try:
+        offset = os.path.getsize(tpath) if tpath else 0
+    except OSError:
+        offset = 0
+    token = "%016x" % random.getrandbits(64)
+    with model_guard_lock():
+        g = read_guard()
+        if g is None:
+            g = {"original": {"raw": read_text(claude_settings_path())}, "tokens": {}}
+        g["tokens"][token] = {"sid": sid, "until": time.time() + MODEL_GUARD_SECONDS}
+        write_json_atomic(MODEL_GUARD_PATH, g)
+    return token, offset
+
+
+def model_guard_release(token):
+    with model_guard_lock():
+        g = read_guard()
+        if g is None:
+            remove_quietly(MODEL_GUARD_PATH)
+            return
+        g["tokens"].pop(token, None)
+        if g["tokens"]:
+            write_json_atomic(MODEL_GUARD_PATH, g)
+        else:
+            remove_quietly(MODEL_GUARD_PATH)
+
+
+def remove_quietly(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def write_text_like(path, text, like_path):
+    """Atomic write keeping the permission bits of the file it replaces."""
+    tmp = "%s.tether%d" % (path, os.getpid())
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+    try:
+        os.chmod(tmp, stat.S_IMODE(os.stat(like_path).st_mode))
+    except OSError:
+        pass
+    os.replace(tmp, path)
+
+
+def model_guard_restore():
+    """Puts settings.json's "model" key back to the guarded value, touching nothing else. Byte-identical to the
+    original when nothing else changed meanwhile. Returns True when it wrote."""
+    with model_guard_lock():
+        g = read_guard()
+        if g is None:
+            return False
+        path = claude_settings_path()
+        orig_raw = g["original"].get("raw")
+        cur_raw = read_text(path)
+        orig, cur = settings_model_key(orig_raw), settings_model_key(cur_raw)
+        if orig is None or cur is None or orig == cur:
+            return False
+        cur_obj = json.loads(cur_raw)
+        fixed = dict(cur_obj)
+        if orig[0]:
+            fixed["model"] = orig[1]  # replaced in place: the key keeps its position
+        else:
+            fixed.pop("model", None)
+        if orig_raw is not None and fixed == json.loads(orig_raw):
+            write_text_like(path, orig_raw, path)
+        elif orig_raw is None and not fixed:
+            remove_quietly(path)  # the CLI created the file just for the model
+        else:
+            text = json.dumps(fixed, indent=2, ensure_ascii=False) + ("\n" if cur_raw.endswith("\n") else "")
+            write_text_like(path, text, path)
+        return True
+
+
+def model_command_done(tpath, offset):
+    """The transcript, past offset, has the output of a slash command: the switch is applied (or refused)."""
+    if not tpath:
+        return False
+    try:
+        with open(tpath, "rb") as f:
+            f.seek(offset)
+            data = f.read()
+    except OSError:
+        return False
+    for raw in iter_lines_bytes(data):
+        if b"<local-command-std" in raw:
+            o = parse_line(raw)
+            msg = o.get("message") if o and o.get("type") == "user" and isinstance(o.get("message"), dict) else {}
+            content = msg.get("content")
+            if isinstance(content, str) and content.lstrip().startswith(("<local-command-stdout>", "<local-command-stderr>")):
+                return True
+    return False
+
+
+def model_guard_watch(token, sid, offset, seconds=MODEL_GUARD_SECONDS, poll=0.3):
+    """Until the session's transcript shows the switch done (then a short settle for the settings write), or
+    seconds pass: keeps settings.json's model key at the guarded value."""
+    end = time.time() + seconds
+    done_at = None
+    tpath = None
+    try:
+        while time.time() < end:
+            model_guard_restore()
+            tpath = tpath or find_transcript(sid)
+            if done_at is None and model_command_done(tpath, offset):
+                done_at = time.time()
+            if done_at is not None and time.time() - done_at >= MODEL_GUARD_SETTLE:
+                break
+            time.sleep(poll)
+        model_guard_restore()
+    finally:
+        model_guard_release(token)
+
+
+def model_guard_spawn(token, sid, offset):
+    if os.environ.get("TETHER_MODEL_GUARD_INLINE"):
+        model_guard_watch(token, sid, offset, seconds=float(os.environ["TETHER_MODEL_GUARD_INLINE"]), poll=0.05)
+        return
+    try:
+        subprocess.Popen([sys.executable, os.path.abspath(__file__), "model-guard", token, sid, str(offset)],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         close_fds=True, start_new_session=True)
+    except OSError:
+        model_guard_watch(token, sid, offset, seconds=20)
+
+
+def cmd_model_guard(pos):
+    if len(pos) < 4:
+        raise HelperError("usage: model-guard <token> <sid> <offset>")
+    model_guard_watch(pos[1], pos[2], int(pos[3]))
 
 
 def live_ref(arg):
@@ -4585,6 +4817,8 @@ def main(argv):
         cmd_commands(opts)
     elif cmd == "daemon-status":
         cmd_daemon_status(opts)
+    elif cmd == "model-guard":
+        cmd_model_guard(pos)
     else:
         raise HelperError("Unknown command: %s" % cmd)
 

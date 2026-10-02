@@ -56,6 +56,9 @@ one that is running now: same id, same history, reply box always live, word-by-w
   Client writes keys as raw bytes (Shift+Tab = `\x1b[Z`, Esc = `\x1b`).
 - Permission mode is not in state.json or the registry: read it from the screen footer
   ("manual mode on", "accept edits on", …) or the transcript's `permission-mode` lines.
+- A retired session woken by a slash command (e.g. `/model x`) runs no model turn: the daemon's `list` record
+  stays `tempo:"active"` for good while the worker's registry entry and state.json say idle. The helper reports
+  idle when the worker is idle and the transcript ends on the command's `<local-command-stdout>` (2.1.287).
 - The daemon does not enforce folder trust: the helper checks trust itself (`EUNTRUSTED`).
 - The daemon may upgrade itself mid-session (2.1.286 → 2.1.287 seen); retry `ESTARTING`/`ERESPAWNING`.
 - Files: `~/.claude/jobs/<short>/state.json` (state, detail, tempo, needs, block.questions, inFlight,
@@ -99,7 +102,7 @@ screen is not the one the app answered). Errors may also carry `daemonCode`.
 | `watch` | — | first `{"snapshot":[Session…]}`, then `{"changed":[Session…],"removed":[sid…]}` per change, `{"hb":ms}` every 15 s |
 | `follow <sid> [--agent ID] [--from OFFSET]` | — | event lines (below), `{"e":"caughtUp","offset":N}` after history, runs until the reader goes |
 | `new` | `{cwd,prompt,model?,permissionMode?,images?:[remotePath]}` | Session, or error `EUNTRUSTED` |
-| `send <sid>` | `{text,images?:[remotePath]}` | `{"ok":true,"woke":bool}`; `EHELD` when a terminal holds it; `EINVAL` while a new session still waits on its startup dialog; a session stopped before its first turn is relaunched under the same id with the text as its first prompt |
+| `send <sid>` | `{text,images?:[remotePath]}` | `{"ok":true,"woke":bool}`; `EHELD` when a terminal holds it; `EINVAL` while a new session still waits on its startup dialog; a session stopped before its first turn is relaunched under the same id with the text as its first prompt; a text that is exactly `/model X` (the model chip) changes this session only: Claude Code 2.1.287 also saves it as the machine default (`model` in `~/.claude/settings.json`), so the helper records that key before sending and a detached `model-guard` process puts it back exactly (removed if it was absent, rest of the file untouched, byte-identical when nothing else changed) once the transcript shows the command's output (≤10 min, e.g. while a "Switch model?" dialog waits) |
 | `key <sid>` | `{keys:["shift-tab"|"esc"|"enter"|"up"|"down"|"left"|"right"|"tab"|"space"|"1".."9"|{"text":"…"}]}` or `{mode:"default|acceptEdits|plan|auto|…"}` (Shift+Tabs until the footer shows it) | `{"ok":true}` (+ `permissionMode` for `mode`) |
 | `answer <sid>` | `{decision:"allow|allow_always|deny", message?, toolUseId?}` — `ESTALE` if the open prompt isn't `toolUseId`; `allow_always` picks the matching "Yes, …" row from the screen | Session |
 | `ask <sid>` | `{answers:[{choices:[i…],other:str|null}]}` (current format) | Session |
