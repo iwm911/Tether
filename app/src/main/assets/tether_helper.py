@@ -3244,6 +3244,21 @@ TURN_DONE_RE = re.compile(u"^\\s?[·✢✳✶✻✽*∗]\\s+\\S[^…]*\\bfor\\s+
 MESSAGE_GLYPHS = (u"●", u"⏺")  # ● (Linux) / ⏺ (macOS)
 TOOL_LINE_RE = re.compile(r"^[A-Za-z_][\w.:-]*\(.*\)?\s*$|.*\(ctrl\+o to expand\)\s*$")
 LIST_START_RE = re.compile(u"^(?:[-*+•]\\s|\\d+[.)]\\s|#|>|\\||```|⎿)")
+# A tool header's name: "Bash", "TodoWrite", "Web Search", "context7 - resolve-library-id (MCP)", "mcp__x__y".
+# While the input streams the CLI shows the bare name ("● Bash"); then "● Bash(cmd", wrapped over rows when long,
+# for a moment before its "⎿" line. Neither is a reply.
+TOOL_NAMES = frozenset(("Agent", "Bash", "Edit", "Explore", "Fetch", "Glob", "Grep", "List", "Monitor", "PowerShell",
+                        "Read", "Search", "Skill", "Task", "Update", "Web Fetch", "Web Search", "Workflow", "Write"))
+TOOL_NAME_RE = re.compile(r"^(?:[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+)+|\S.* \(MCP\)|mcp__\w+)$")
+
+
+def is_tool_header(row):
+    """The first row of a block is a tool call's header (bare name, or name followed by "(")."""
+    t = row.strip()
+    mcp = t.find(" (MCP)")
+    end = mcp + 6 if mcp > 0 else (t.find("(") if "(" in t else len(t))
+    name = t[:end]
+    return name in TOOL_NAMES or bool(TOOL_NAME_RE.match(name))
 
 
 def parse_spinner(paren):
@@ -3347,6 +3362,8 @@ def screen_draft(lines, working=False):
         rows.append(l[min(lead, indent):])
     if TOOL_LINE_RE.match(rows[0].strip()) and (len(rows) == 1 or any(r.lstrip().startswith(u"⎿") for r in rows)):
         return None, status  # a tool call (● Bash(ls) / ⎿ output), not a reply
+    if is_tool_header(rows[0]):
+        return None, status  # a tool call still drawing (● Bash / a wrapped ● Bash(long cmd), no ⎿ yet)
     if any(r.lstrip().startswith(u"⎿") for r in rows[:2]):
         return None, status
     width = max(len(l.rstrip()) for l in lines) if lines else 0

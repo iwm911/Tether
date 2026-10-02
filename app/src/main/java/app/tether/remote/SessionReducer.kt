@@ -217,6 +217,8 @@ class SessionReducer(
             if (text != null) {
                 lastFinalNorm = normalize(text)
                 clearDraft()
+            } else if (hasToolBlock(o)) {
+                clearDraft() // a tool call landed: whatever the screen showed before it is not a reply
             }
         }
     }
