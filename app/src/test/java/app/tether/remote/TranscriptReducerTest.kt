@@ -206,6 +206,40 @@ class TranscriptReducerTest {
     }
 
     @Test
+    fun queuedMessageStaysBelowTheRunningTurnUntilClaudeTakesItMidTurn() {
+        val r = TranscriptReducer()
+        r.acceptTranscript("""{"type":"user","message":{"role":"user","content":"first"},"uuid":"u1"}""")
+        val key = r.addOptimisticUser("second", 0, queued = true)
+        r.acceptTranscript("""{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"working on first"}]},"uuid":"a1"}""")
+        var s = r.snapshot()
+        assertEquals(listOf("u:u1", "m1#0", key), s.items.map { it.key })
+        assertTrue((s.items.last() as ChatItem.User).queued)
+        // Claude Code hands it over between tool calls as an attachment, not a user line.
+        r.acceptTranscript("""{"type":"attachment","uuid":"q1","isSidechain":false,"timestamp":"2026-10-01T16:33:25.717Z","attachment":{"type":"queued_command","prompt":"second","commandMode":"prompt","origin":{"kind":"human"}}}""")
+        r.acceptTranscript("""{"type":"assistant","message":{"id":"m2","role":"assistant","content":[{"type":"text","text":"got second"}]},"uuid":"a2"}""")
+        s = r.snapshot()
+        assertEquals(listOf("u:u1", "m1#0", key, "m2#0"), s.items.map { it.key })
+        val u = s.items[2] as ChatItem.User
+        assertEquals("second", u.text)
+        assertFalse(u.queued)
+        assertEquals(0, s.queuedCount)
+        // A replay of the same line, task notifications and other sessions' messages add nothing.
+        r.acceptTranscript("""{"type":"attachment","uuid":"q1","attachment":{"type":"queued_command","prompt":"second","commandMode":"prompt"}}""")
+        r.acceptTranscript("""{"type":"attachment","uuid":"q2","attachment":{"type":"queued_command","prompt":"<task-notification>x</task-notification>","commandMode":"task-notification"}}""")
+        r.acceptTranscript("""{"type":"attachment","uuid":"q3","attachment":{"type":"queued_command","prompt":"hi","commandMode":"prompt","origin":{"kind":"peer"}}}""")
+        assertEquals(4, r.snapshot().items.size)
+    }
+
+    @Test
+    fun queuedMessageTypedAtTheTerminalShowsWithItsImages() {
+        val r = TranscriptReducer()
+        r.acceptTranscript("""{"type":"attachment","uuid":"q1","attachment":{"type":"queued_command","prompt":[{"type":"text","text":"look"},{"type":"image","source":{}}],"commandMode":"prompt"}}""")
+        val u = r.snapshot().items.ofType<ChatItem.User>().single()
+        assertEquals("look", u.text)
+        assertEquals(1, u.imageCount)
+    }
+
+    @Test
     fun removedOptimisticMessageDisappears() {
         val r = TranscriptReducer()
         val key = r.addOptimisticUser("hello", 0, queued = false)

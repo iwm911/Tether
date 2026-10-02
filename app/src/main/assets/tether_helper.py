@@ -703,6 +703,16 @@ def find_transcript(session_id):
 KEEP_TYPES = ("user", "assistant", "system", "custom-title", "ai-title", "summary", "last-prompt")
 
 
+def queued_prompt_line(o):
+    """A message the user typed while Claude was working reaches it mid-turn as a queued_command attachment, not
+    a user line. Other attachments (hook context, task notifications, other sessions' messages) stay hidden."""
+    a = o.get("attachment") if o.get("type") == "attachment" else None
+    if not isinstance(a, dict) or a.get("type") != "queued_command" or a.get("commandMode") != "prompt" or a.get("isMeta"):
+        return False
+    origin = a.get("origin")
+    return not isinstance(origin, dict) or origin.get("kind") in (None, "human")
+
+
 def cap_strings(v, cap=TRANSCRIPT_STRING_CAP):
     if isinstance(v, str):
         if len(v) > cap:
@@ -747,9 +757,9 @@ def transcript_line_out(raw, before_ms=None, sidechain_ok=False):
     if not o:
         return None
     t = o.get("type")
-    if t not in KEEP_TYPES or (o.get("isSidechain") and not sidechain_ok):
+    if (t not in KEEP_TYPES and not queued_prompt_line(o)) or (o.get("isSidechain") and not sidechain_ok):
         return None
-    if before_ms is not None and t in ("user", "assistant", "system"):
+    if before_ms is not None and t in ("user", "assistant", "system", "attachment"):
         ts = iso_to_ms(o.get("timestamp"))
         if ts is not None and ts >= before_ms:
             return None

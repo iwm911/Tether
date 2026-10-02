@@ -107,7 +107,7 @@ class TranscriptReducer(private val clock: () -> Long = { System.currentTimeMill
         val before = version
         val uuid = o.str("uuid")
         val type = o.str("type") ?: return false
-        if (uuid != null && (type == "user" || type == "assistant")) {
+        if (uuid != null && (type == "user" || type == "assistant" || type == "attachment")) {
             if (!seenUuids.add(uuid)) return false
         }
         if (o.bool("isSidechain") == true) return false
@@ -128,7 +128,8 @@ class TranscriptReducer(private val clock: () -> Long = { System.currentTimeMill
                 addNotice("Earlier history not shown ($n lines)", NoticeKind.INFO)
                 version++
             }
-            else -> Unit // attachment, queue-operation, atis-latch, last-prompt, file-history-snapshot…
+            "attachment" -> onAttachment(o)
+            else -> Unit // queue-operation, atis-latch, last-prompt, file-history-snapshot…
         }
         return version != before
     }
@@ -152,10 +153,11 @@ class TranscriptReducer(private val clock: () -> Long = { System.currentTimeMill
 
     fun snapshot(): ConversationState {
         val todos = if (todosFromTasks) tasks.values.toList() else todoWrite
-        var queued = 0
-        for (k in optimistic) if ((find(k)?.item as? ChatItem.User)?.queued == true) queued++
+        val waiting = optimistic.filterTo(HashSet()) { (find(it)?.item as? ChatItem.User)?.queued == true }
+        val items = materialize(root)
         return ConversationState(
-            items = materialize(root),
+            // Messages still waiting in the queue stay below the turn that is running, as in the terminal.
+            items = if (waiting.isEmpty()) items else items.filter { it.key !in waiting } + items.filter { it.key in waiting },
             title = customTitle ?: aiTitle ?: summaryTitle,
             cwd = cwd,
             sessionId = sessionId,
@@ -163,7 +165,7 @@ class TranscriptReducer(private val clock: () -> Long = { System.currentTimeMill
             permissionMode = permissionMode,
             todos = todos,
             contextTokens = contextTokens,
-            queuedCount = queued,
+            queuedCount = waiting.size,
             loadingHistory = false,
             backgroundTasks = bgTasks.values.toList(),
         )
@@ -279,6 +281,27 @@ class TranscriptReducer(private val clock: () -> Long = { System.currentTimeMill
             onUserText(text, images, o, parent, ts)
         } else if (content is JsonPrimitive && content.isString) {
             onUserText(content.content, 0, o, parent, ts)
+        }
+    }
+
+    /**
+     * A message typed while Claude was working is handed to it mid-turn as a `queued_command` attachment, not
+     * a user line: show it there. Task notifications and messages from other sessions ride the same queue.
+     */
+    private fun onAttachment(o: JsonObject) {
+        val a = o.obj("attachment") ?: return
+        if (a.str("type") != "queued_command" || a.str("commandMode") != "prompt" || a.bool("isMeta") == true) return
+        val origin = a.obj("origin")?.str("kind")
+        if (origin != null && origin != "human") return
+        val ts = isoToEpochMs(a.str("timestamp")) ?: isoToEpochMs(o.str("timestamp"))
+        when (val p = a["prompt"]) {
+            is JsonPrimitive -> if (p.isString) onUserText(p.content, 0, o, null, ts)
+            is JsonArray -> {
+                val blocks = p.mapNotNull { it as? JsonObject }
+                val text = blocks.filter { it.str("type") == "text" }.joinToString("\n") { it.str("text").orEmpty() }
+                onUserText(text, blocks.count { it.str("type") == "image" }, o, null, ts)
+            }
+            else -> Unit
         }
     }
 

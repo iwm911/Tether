@@ -480,6 +480,21 @@ class TranscriptEventsTest(unittest.TestCase):
         offs = [e[2] for e in lines]
         self.assertEqual(offs, sorted(offs))
 
+    def test_queued_prompt_attachment_is_kept(self):
+        # A message typed while Claude works reaches it mid-turn as a queued_command attachment, never a user line.
+        def att(**a):
+            return json.dumps({"type": "attachment", "uuid": "a1", "isSidechain": False,
+                               "timestamp": "2026-10-01T16:33:25.717Z", "attachment": a}).encode()
+        human = att(type="queued_command", prompt="work with daemon only", commandMode="prompt", origin={"kind": "human"})
+        self.assertEqual(json.loads(self.hh.transcript_line_out(human))["attachment"]["prompt"], "work with daemon only")
+        self.assertIsNotNone(self.hh.transcript_line_out(att(type="queued_command", prompt=[{"type": "text", "text": "x"}],
+                                                             commandMode="prompt")))
+        for hidden in (att(type="queued_command", prompt="<task-notification>...", commandMode="task-notification"),
+                       att(type="queued_command", prompt="<cross-session-message>...", commandMode="prompt",
+                           origin={"kind": "peer"}, isMeta=True),
+                       att(type="hook_additional_context", content=["CAVEMAN MODE"])):
+            self.assertIsNone(self.hh.transcript_line_out(hidden))
+
     def test_peer_once_with_sender_session(self):
         self.home.registry(os.getpid(), kind="interactive", sessionId=SID_A)
         _tev, evs = self.events(peer_pid=os.getpid())
