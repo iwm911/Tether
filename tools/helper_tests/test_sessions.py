@@ -1060,7 +1060,7 @@ class ModelGuardTest(unittest.TestCase):
     def test_restores_the_original_bytes(self):
         self.write(cli_settings(self.ORIGINAL))
         before = self.read()
-        token, _off = self.h.model_guard_begin(SID_A, None)
+        token, _off = self.h.model_guard_begin(SID_A, None, "haiku")
         self.cli_saves("haiku")
         self.assertTrue(self.h.model_guard_restore())
         self.assertEqual(self.read(), before)
@@ -1073,14 +1073,14 @@ class ModelGuardTest(unittest.TestCase):
         del orig["model"]
         self.write(cli_settings(orig))
         before = self.read()
-        token, _off = self.h.model_guard_begin(SID_A, None)
+        token, _off = self.h.model_guard_begin(SID_A, None, "haiku")
         self.cli_saves("haiku")
         self.h.model_guard_restore()
         self.assertEqual(self.read(), before)
         self.h.model_guard_release(token)
 
     def test_a_settings_file_created_for_the_model_is_removed(self):
-        token, _off = self.h.model_guard_begin(SID_A, None)
+        token, _off = self.h.model_guard_begin(SID_A, None, "haiku")
         self.cli_saves("haiku")
         self.h.model_guard_restore()
         self.assertFalse(os.path.exists(self.path))
@@ -1089,9 +1089,9 @@ class ModelGuardTest(unittest.TestCase):
     def test_back_to_back_switches_restore_the_value_from_before_the_first(self):
         self.write(cli_settings(self.ORIGINAL))
         before = self.read()
-        t1, _ = self.h.model_guard_begin(SID_A, None)
+        t1, _ = self.h.model_guard_begin(SID_A, None, "haiku")
         self.cli_saves("haiku")
-        t2, _ = self.h.model_guard_begin(SID_B, None)
+        t2, _ = self.h.model_guard_begin(SID_B, None, "sonnet")
         self.cli_saves("sonnet")
         self.h.model_guard_release(t1)
         self.h.model_guard_restore()
@@ -1100,7 +1100,7 @@ class ModelGuardTest(unittest.TestCase):
 
     def test_only_the_model_key_is_touched(self):
         self.write(cli_settings(self.ORIGINAL))
-        token, _ = self.h.model_guard_begin(SID_A, None)
+        token, _ = self.h.model_guard_begin(SID_A, None, "haiku")
         self.cli_saves("haiku", effortLevel="high")  # someone else changed another key meanwhile
         self.h.model_guard_restore()
         obj = json.loads(self.read())
@@ -1129,6 +1129,24 @@ class ModelGuardTest(unittest.TestCase):
         self.assertLess(time.time() - t0, 7, "the guard stops once the transcript shows the switch")
         self.assertEqual(self.read(), before)
         self.assertFalse(os.path.exists(self.h.MODEL_GUARD_PATH))
+
+    def test_a_default_the_user_changed_meanwhile_is_kept(self):
+        # Regression: a guard whose switch never landed ("Switch model?" answered "No") kept writing the old value
+        # back for 10 minutes and undid the user's own change of the default.
+        self.write(cli_settings(self.ORIGINAL))
+        token, _ = self.h.model_guard_begin(SID_A, None, "haiku")
+        self.cli_saves("sonnet")  # the user, not the guarded switch
+        self.assertFalse(self.h.model_guard_restore())
+        self.assertEqual(json.loads(self.read())["model"], "sonnet")
+        self.h.model_guard_release(token)
+
+    def test_a_refused_switch_leaves_the_file_alone(self):
+        self.write(cli_settings(self.ORIGINAL))
+        before = self.read()
+        token, _ = self.h.model_guard_begin(SID_A, None, "haiku")
+        self.assertFalse(self.h.model_guard_restore())
+        self.assertEqual(self.read(), before)
+        self.h.model_guard_release(token)
 
     def test_plain_messages_are_not_guarded(self):
         self.write(cli_settings(self.ORIGINAL))

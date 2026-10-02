@@ -4280,7 +4280,8 @@ def cmd_send_v2(opts, arg):
         raise HelperError("Nothing to send.")
     ref = SessionRef(arg)
     require_not_held(ref)
-    guard = model_guard_begin(ref.sid, ref.tpath) if MODEL_CMD_RE.match(text) else None
+    m = MODEL_CMD_RE.match(text)
+    guard = model_guard_begin(ref.sid, ref.tpath, m.group(1)) if m else None
     try:
         woke = send_text(opts, ref, text, bool(req.get("images")))
     except BaseException:
@@ -4316,7 +4317,7 @@ def send_text(opts, ref, text, paste):
 # the switch may wait on a "Switch model?" dialog the phone answers later. Guards share one record of the
 # original value, so back-to-back switches restore the value from before the first.
 
-MODEL_CMD_RE = re.compile(r"^\s*/model\s+\S+\s*$")
+MODEL_CMD_RE = re.compile(r"^\s*/model\s+(\S+)\s*$")
 MODEL_GUARD_PATH = os.path.join(TETHER_DIR, "model_guard.json")
 MODEL_GUARD_SECONDS = 600
 MODEL_GUARD_SETTLE = 1.5
@@ -4360,9 +4361,9 @@ def read_guard():
     return g if g["tokens"] else None
 
 
-def model_guard_begin(sid, tpath):
-    """Records settings.json's model key (unless a guard already holds the value from before an earlier switch).
-    Returns (token, transcript offset to watch from)."""
+def model_guard_begin(sid, tpath, target):
+    """Records settings.json's model key (unless a guard already holds the value from before an earlier switch)
+    and the model `/model` will save (target). Returns (token, transcript offset to watch from)."""
     try:
         offset = os.path.getsize(tpath) if tpath else 0
     except OSError:
@@ -4372,7 +4373,7 @@ def model_guard_begin(sid, tpath):
         g = read_guard()
         if g is None:
             g = {"original": {"raw": read_text(claude_settings_path())}, "tokens": {}}
-        g["tokens"][token] = {"sid": sid, "until": time.time() + MODEL_GUARD_SECONDS}
+        g["tokens"][token] = {"sid": sid, "target": target, "until": time.time() + MODEL_GUARD_SECONDS}
         write_json_atomic(MODEL_GUARD_PATH, g)
     return token, offset
 
@@ -4411,7 +4412,9 @@ def write_text_like(path, text, like_path):
 
 def model_guard_restore():
     """Puts settings.json's "model" key back to the guarded value, touching nothing else. Byte-identical to the
-    original when nothing else changed meanwhile. Returns True when it wrote."""
+    original when nothing else changed meanwhile. Only undoes what a guarded `/model X` wrote: when the key holds
+    anything but one of the guarded targets (the user changed the default meanwhile, or the switch was refused),
+    the file is left alone. Returns True when it wrote."""
     with model_guard_lock():
         g = read_guard()
         if g is None:
@@ -4422,6 +4425,9 @@ def model_guard_restore():
         orig, cur = settings_model_key(orig_raw), settings_model_key(cur_raw)
         if orig is None or cur is None or orig == cur:
             return False
+        targets = set(str(t.get("target")).lower() for t in g["tokens"].values() if t.get("target"))
+        if not cur[0] or str(cur[1]).lower() not in targets:
+            return False  # not the value a guarded switch saved: someone else's change, keep it
         cur_obj = json.loads(cur_raw)
         fixed = dict(cur_obj)
         if orig[0]:
