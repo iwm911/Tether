@@ -13,9 +13,12 @@ import app.tether.core.identity
  */
 object SessionAlerts {
 
-    /** Sessions that keep the background watch alive: working or waiting for the user, not held by a terminal. */
+    /**
+     * Sessions that keep the background watch alive: working or waiting for the user, not held by a terminal,
+     * on a machine that answers (an offline machine's last state is not news).
+     */
     fun live(sessions: List<Session>): List<Session> =
-        sessions.filter { (it.state == SessionState.WORKING || it.state == SessionState.NEEDS_YOU) && !it.heldByTerminal }
+        sessions.filter { (it.state == SessionState.WORKING || it.state == SessionState.NEEDS_YOU) && !it.heldByTerminal && !it.offline }
 
     fun needsYouCount(sessions: List<Session>): Int = live(sessions).count { it.state == SessionState.NEEDS_YOU }
 

@@ -60,6 +60,20 @@ class SessionListTest {
     }
 
     @Test
+    fun anOfflineMachinesLiveSessionsShowOfflineWithoutInlineAnswers() {
+        val perm = app.tether.core.SessionPending.Permission("toolu_1", "Bash", "ls")
+        for (st in listOf(SessionState.WORKING, SessionState.NEEDS_YOU, SessionState.IDLE)) {
+            assertEquals(SessionBadge.OFFLINE, s("x", state = st).copy(offline = true).badge())
+        }
+        assertEquals(SessionBadge.DONE, s("x", state = SessionState.DONE).copy(offline = true).badge())
+        val waiting = s("x", state = SessionState.NEEDS_YOU).copy(pending = perm)
+        assertEquals(perm, waiting.inlinePermission())
+        assertNull(waiting.copy(offline = true).inlinePermission())
+        assertEquals(mapOf("c" to 1), listOf(s("w", state = SessionState.WORKING), s("o", state = SessionState.WORKING).copy(offline = true))
+            .map { it.copy(connectionId = "c") }.liveCountByMachine())
+    }
+
+    @Test
     fun filterByMachineAndProject() {
         val all = listOf(
             s("a1", conn = "a", cwd = "/p/one"),

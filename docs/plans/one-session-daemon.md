@@ -74,7 +74,9 @@ one that is running now: same id, same history, reply box always live, word-by-w
 ## Helper ↔ app protocol (HELPER_VERSION 2.0.0) — the contract both tracks build against
 
 All commands print JSON. Errors: `{"error": "<human sentence>", "code": "<CODE>"}` with codes
-`ENODAEMON`, `EAUTH`, `EPROTO`, `EHELD`, `ENOSESSION`, `EUNTRUSTED`, `ETIMEOUT`, `EDAEMON`.
+`ENODAEMON`, `EAUTH`, `EPROTO`, `EHELD`, `ENOSESSION`, `EUNTRUSTED`, `ETIMEOUT`, `EDAEMON`,
+`EINVAL` (bad input, or an action that doesn't fit the session's state), `ESTALE` (the prompt on
+screen is not the one the app answered). Errors may also carry `daemonCode`.
 
 **Session object**
 ```json
@@ -90,15 +92,16 @@ All commands print JSON. Errors: `{"error": "<human sentence>", "code": "<CODE>"
 **Commands**
 | Command | In | Out |
 |---|---|---|
-| `version` / `probe` / `projects` / `ls` / `commands` / `transcript` | unchanged | unchanged (`probe` adds `daemon:{running,proto,version,auth}`) |
+| `version` / `probe` / `projects` / `ls` / `transcript` | unchanged | unchanged (`probe` adds `daemon:{running,proto,version,auth}`) |
+| `commands [--cwd P]` | — | unchanged format; now read from command/skill/plugin files plus a fixed built-in list (no `claude -p`) |
 | `daemon-status` | — | `{running,proto,version,auth:"ok|needs_login|unknown"}` |
 | `sessions [--cwd P] [--limit N] [--before MS]` | — | `{"sessions":[Session…]}` newest first; jobs + registry + transcripts with no job |
 | `watch` | — | first `{"snapshot":[Session…]}`, then `{"changed":[Session…],"removed":[sid…]}` per change, `{"hb":ms}` every 15 s |
 | `follow <sid> [--agent ID] [--from OFFSET]` | — | event lines (below), `{"e":"caughtUp","offset":N}` after history, runs until the reader goes |
 | `new` | `{cwd,prompt,model?,permissionMode?,images?:[remotePath]}` | Session, or error `EUNTRUSTED` |
-| `send <sid>` | `{text,images?:[remotePath]}` | `{"ok":true,"woke":bool}`; `EHELD` when a terminal holds it |
-| `key <sid>` | `{keys:["shift-tab"|"esc"|"enter"|"up"|"down"|"left"|"right"|"tab"|"space"|"1".."9"|{"text":"…"}]}` | `{"ok":true}` |
-| `answer <sid>` | `{decision:"allow|allow_always|deny", message?}` | Session |
+| `send <sid>` | `{text,images?:[remotePath]}` | `{"ok":true,"woke":bool}`; `EHELD` when a terminal holds it; `EINVAL` while a new session still waits on its startup dialog; a session stopped before its first turn is relaunched under the same id with the text as its first prompt |
+| `key <sid>` | `{keys:["shift-tab"|"esc"|"enter"|"up"|"down"|"left"|"right"|"tab"|"space"|"1".."9"|{"text":"…"}]}` or `{mode:"default|acceptEdits|plan|auto|…"}` (Shift+Tabs until the footer shows it) | `{"ok":true}` (+ `permissionMode` for `mode`) |
+| `answer <sid>` | `{decision:"allow|allow_always|deny", message?, toolUseId?}` — `ESTALE` if the open prompt isn't `toolUseId`; `allow_always` picks the matching "Yes, …" row from the screen | Session |
 | `ask <sid>` | `{answers:[{choices:[i…],other:str|null}]}` (current format) | Session |
 | `interrupt <sid>` | — | Session (Esc) |
 | `stop <sid>` / `rm <sid>` | — | `{"ok":true}` (`rm` = kill evict + delete job dir) |

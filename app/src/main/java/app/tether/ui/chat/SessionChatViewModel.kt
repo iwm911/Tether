@@ -75,7 +75,17 @@ data class SessionChatUiState(
     /** No worker runs: the next message wakes it (same id). Unknown sessions count as retired. */
     val retired: Boolean get() = session?.process != SessionProcess.LIVE
     val working: Boolean get() = conversation.status == RunStatus.WORKING
-    val dialog: SessionPending.Dialog? get() = live?.pending as? SessionPending.Dialog
+    /**
+     * The dialog panel: the one the helper cut from the screen, or — when the session needs you and nothing
+     * could be read (screen fetch failed, not registered yet, an unknown wait) — an empty one, so the key pad
+     * is always there to answer it (decision 5).
+     */
+    val dialog: SessionPending.Dialog?
+        get() {
+            (live?.pending as? SessionPending.Dialog)?.let { return it }
+            val s = session ?: return null
+            return if (!readOnly && s.needsYou && !s.heldByTerminal && live?.pending == null) SessionPending.Dialog() else null
+        }
     val title: String
         get() = session?.title?.takeIf { it.isNotBlank() }
             ?: conversation.title?.takeIf { it.isNotBlank() }

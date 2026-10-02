@@ -106,6 +106,10 @@ class DialogsLiveTest(unittest.TestCase):
             self.assertIn(n, labels)
         time.sleep(3)
         self.assertIsNone(self.session()["lastText"], "the first turn must wait for the dialog")
+        # A message now would reach Claude before the session's own first prompt (review round 2): refused.
+        rc, out, err = helper("send", self.sid, stdin=json.dumps({"text": "Reply with exactly: TOO-EARLY"}))
+        print("send during the startup dialog ->", out)
+        self.assertEqual((rc, out.get("code")), (1, "EINVAL"), (out, err))
 
         # Uncheck every server from the phone, checking the screen after each toggle.
         n = len(p["options"])
@@ -149,6 +153,37 @@ class DialogsLiveTest(unittest.TestCase):
         rc, out, err = helper("rm", self.sid)
         self.assertEqual((rc, out), (0, {"ok": True}), err)
         self.assertEqual([a for a in claude_agents() if a.get("id") == self.short], [])
+
+    def test_a_session_stopped_on_its_startup_dialog_continues_under_its_id(self):
+        # Review round 2: stopped before its first turn (no transcript), it was listed done but `send` failed.
+        rc, s, err = helper("new", stdin=json.dumps({"cwd": self.dir, "prompt": "Reply with exactly: FIRST-PONG. No tools.",
+                                                     "model": "haiku", "trust": True, "name": "tether live relaunch"}))
+        self.assertEqual(rc, 0, (s, err))
+        self.sid, self.short = s["sessionId"], s["short"]
+        s = self.wait_session(lambda x: (x.get("pending") or {}).get("dialog") == "mcp_servers", 60)
+        self.assertEqual(s["state"], "needs_you")
+        rc, out, err = helper("stop", self.sid)
+        self.assertEqual((rc, out), (0, {"ok": True}), err)
+        s = self.wait_session(lambda x: x["process"] == "retired", 30)
+        print("\nstopped on the dialog ->", {k: s[k] for k in ("state", "process", "heldBy")})
+        self.assertEqual((s["state"], s["process"]), ("done", "retired"))
+
+        rc, out, err = helper("send", self.sid, stdin=json.dumps({"text": "Reply with exactly: RELAUNCH-PONG. No tools."}))
+        print("send ->", out, err.strip()[-300:])
+        self.assertEqual((rc, out), (0, {"ok": True, "woke": True}), err)
+        # The servers are still new: the dialog comes back, answered as before; then the message runs, same id.
+        s = self.wait_session(lambda x: (x.get("pending") or {}).get("dialog") == "mcp_servers" or x["lastText"], 60)
+        print("after the wake ->", {k: s[k] for k in ("state", "process", "lastText", "waitingFor")})
+        if (s.get("pending") or {}).get("dialog") == "mcp_servers":
+            self.key(continue_keys(len(s["pending"]["options"])))
+        s = self.wait_session(lambda x: x["state"] == "idle" and x["lastText"], 120)
+        print("then ->", {k: s[k] for k in ("state", "process", "lastText", "waitingFor", "pending")})
+        self.assertEqual((s["sessionId"], s["lastText"]), (self.sid, "RELAUNCH-PONG"))
+        print("relaunched ->", {k: s[k] for k in ("sessionId", "state", "process", "lastText", "model")})
+        self.assertIn("haiku", s["model"] or "")  # launched again with its own flags, not the settings default
+
+        rc, out, err = helper("rm", self.sid)
+        self.assertEqual((rc, out), (0, {"ok": True}), err)
 
 
 if __name__ == "__main__":

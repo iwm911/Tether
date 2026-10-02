@@ -86,7 +86,7 @@ internal fun sessionStatusLabel(s: SessionChatUiState): String {
         link is LinkState.Failed -> "Offline"
         s.readOnly -> if (s.conversation.status == RunStatus.WORKING) "Subagent working" else "Subagent"
         s.waking -> "Waking…"
-        s.heldByTerminal -> "In a terminal"
+        s.heldByTerminal -> if (session?.needsYou == true) "Waiting in the terminal" else "In a terminal"
         session == null -> if (s.conversation.loadingHistory) "Loading…" else s.conversation.status.label
         session.state == SessionState.NEEDS_YOU -> "Needs you"
         session.state == SessionState.WORKING -> "Working"
@@ -198,7 +198,7 @@ fun SessionChatScreen(
                         Text(
                             sessionStatusLabel(state),
                             style = MaterialTheme.typography.bodySmall,
-                            color = if (state.session?.needsYou == true) TetherTheme.colors.warning else MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = if (state.session?.needsYou == true && !state.heldByTerminal) TetherTheme.colors.warning else MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f, fill = false),
@@ -246,7 +246,8 @@ fun SessionChatScreen(
             }
 
             // ── Conversation ──
-            val waiting = state.session?.needsYou == true
+            // Held by a terminal, the prompt is answered at that keyboard: nothing here asks for the user.
+            val waiting = state.session?.needsYou == true && !state.heldByTerminal
             val showFooter = live?.status != null || conv.status == RunStatus.WORKING || waiting
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 val listPadding = PaddingValues(top = Space.sm, bottom = bottomDp + Space.sm)

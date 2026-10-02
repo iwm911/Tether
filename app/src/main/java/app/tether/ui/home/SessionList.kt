@@ -18,9 +18,11 @@ enum class SessionBadge(val label: String) {
     IDLE("Idle"),
     DONE("Done"),
     FAILED("Failed"),
+    /** The machine stopped answering: the session's last known state was working / needs you / idle. */
+    OFFLINE("Offline"),
 }
 
-fun Session.badge(): SessionBadge = when (state) {
+fun Session.badge(): SessionBadge = if (offline && state != SessionState.DONE && state != SessionState.FAILED) SessionBadge.OFFLINE else when (state) {
     SessionState.WORKING -> SessionBadge.WORKING
     SessionState.NEEDS_YOU -> SessionBadge.NEEDS_YOU
     SessionState.IDLE -> SessionBadge.IDLE
@@ -92,14 +94,14 @@ fun machinesWithSessions(sessions: List<Session>, order: List<String>): List<Str
 
 /** Sessions that count as running on a machine (working or waiting for the user). */
 fun List<Session>.liveCountByMachine(): Map<String, Int> =
-    filter { it.state == SessionState.WORKING || it.state == SessionState.NEEDS_YOU }
+    filter { (it.state == SessionState.WORKING || it.state == SessionState.NEEDS_YOU) && !it.offline }
         .groupingBy { it.connectionId }.eachCount()
 
 // ───────────────────────────── Inline Allow / Deny ─────────────────────────────
 
 /** Rows offer inline Allow / Deny only for a tool permission; questions and dialogs open the session. */
 fun Session.inlinePermission(): SessionPending.Permission? =
-    (pending as? SessionPending.Permission)?.takeIf { needsYou && !heldByTerminal }
+    (pending as? SessionPending.Permission)?.takeIf { needsYou && !heldByTerminal && !offline }
 
 /** Identifies one answer to one prompt (a later prompt on the same session is a new key). */
 fun decisionKey(ref: SessionRef, pending: SessionPending): String = "${ref.listKey()}#${pending.identity}"

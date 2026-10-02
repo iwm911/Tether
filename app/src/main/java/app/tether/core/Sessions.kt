@@ -3,6 +3,7 @@ package app.tether.core
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.Transient
 import kotlinx.serialization.json.JsonContentPolymorphicSerializer
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -164,6 +165,11 @@ data class Session(
     val gitBranch: String? = null,
     /** App-side only: the machine this came from (filled in by the hub; the helper never sends it). */
     val connectionId: String = "",
+    /**
+     * App-side only: the machine stopped answering, so this is its last known state, not a live one (set by
+     * the hub while the machine's watch fails; never on the wire).
+     */
+    @Transient val offline: Boolean = false,
 ) {
     val ref: SessionRef get() = SessionRef(connectionId, sessionId)
     val needsYou: Boolean get() = state == SessionState.NEEDS_YOU

@@ -138,6 +138,47 @@ class SessionReducerTest {
     }
 
     @Test
+    fun aNewReplyOpeningLikeTheLastOneStillStreams() {
+        // Review round 2: the guard took any substring of the landed text as stale, so "Let me…" never streamed.
+        val r = reducer()
+        r.accept(assistant("a1", "Done with the build. Let me check the tests."))
+        r.accept(FollowEvent.Draft("Let me check the tests.")) // the landed message's end, its top scrolled off: stale
+        assertNull(r.snapshot().live!!.draft)
+        r.accept(FollowEvent.Draft("Let me"))
+        assertEquals("Let me", r.snapshot().live!!.draft)
+        r.accept(FollowEvent.Draft("Done"))
+        assertEquals("Done", r.snapshot().live!!.draft)
+    }
+
+    @Test
+    fun aToolCallSinceTheTextLandedEndsTheGuard() {
+        val r = reducer()
+        r.accept(assistant("a1", "Done."))
+        r.accept(FollowEvent.Draft("Done."))
+        assertNull(r.snapshot().live!!.draft)
+        r.accept(line("""{"type":"assistant","isSidechain":false,"message":{"id":"m-t","role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"ls"}}]},"uuid":"t1","timestamp":"2026-10-01T17:16:07.000Z"}"""))
+        r.accept(line("""{"type":"user","isSidechain":false,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"x"}]},"uuid":"r1","timestamp":"2026-10-01T17:16:08.000Z"}"""))
+        r.accept(FollowEvent.Draft("Done."))
+        assertEquals("Done.", r.snapshot().live!!.draft)
+    }
+
+    @Test
+    fun theFollowStateWinsOverAWatchCopyOfTheSameMoment() {
+        // Review round 2: a dialog's checkbox (screen-only, no mtime change) jumped back to the watch's copy.
+        val r = reducer()
+        val checked = SessionPending.Dialog(DialogKind.MCP_SERVERS, "2 new MCP servers found", options = listOf(app.tether.core.DialogOption("a", checked = true)))
+        val unchecked = checked.copy(options = listOf(app.tether.core.DialogOption("a", checked = false)))
+        assertTrue(r.applySession(session(SessionState.NEEDS_YOU, 10, checked), fromWatch = true))
+        r.accept(FollowEvent.State(session(SessionState.NEEDS_YOU, 10, unchecked)))
+        assertEquals(unchecked, r.snapshot().live!!.pending)
+        assertFalse(r.applySession(session(SessionState.NEEDS_YOU, 10, checked), fromWatch = true))
+        assertEquals(unchecked, r.snapshot().live!!.pending)
+        // a strictly newer watch copy still wins (the follow may have dropped)
+        assertTrue(r.applySession(session(SessionState.WORKING, 11), fromWatch = true))
+        assertEquals(RunStatus.WORKING, r.snapshot().status)
+    }
+
+    @Test
     fun subagentAssistantLineDoesNotClearTheMainDraft() {
         val r = reducer()
         r.accept(FollowEvent.Draft("Working on it"))

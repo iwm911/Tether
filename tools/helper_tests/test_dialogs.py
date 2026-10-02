@@ -120,6 +120,16 @@ class DialogSessionTest(unittest.TestCase):
         self.assertEqual((s["pending"]["kind"], s["pending"]["dialog"]), ("dialog", "mcp_servers"))
         self.assertEqual(len(s["pending"]["options"]), 4)
 
+    def test_a_relaunch_on_its_startup_dialog_with_last_runs_state_json(self):
+        # Live: relaunched into the same job dir, state.json still said "stopped" / idle and the daemon's record
+        # active, no registry entry: only the screen shows the MCP-servers dialog.
+        self.home.job(SHORT, sessionId=SID, cwd=self.proj, state="stopped", detail="stopped", tempo="idle")
+        self.model.add(SHORT, SID, cwd=self.proj, tempo="active", state="running")
+        self.model.subscribe_events = fixture_jsonl("subscribe_dialog_mcp_dialog.jsonl")
+        s = self.session()
+        self.assertEqual((s["state"], s["process"]), ("needs_you", "live"))
+        self.assertEqual((s["pending"]["kind"], s["pending"]["dialog"]), ("dialog", "mcp_servers"))
+
     def test_a_new_session_before_its_first_prompt_is_working_not_needs_you(self):
         # Seen on every new session (E2E): state.json says blocked for a moment after dispatch, no dialog on screen.
         self.home.job(SHORT, sessionId=SID, cwd=self.proj, state="running", tempo="blocked", needs="send a prompt to start")
@@ -166,6 +176,63 @@ class DialogSessionTest(unittest.TestCase):
         self.assertEqual(s["state"], "needs_you")
         self.assertIsNone(s["pending"])
 
+    def blocked_new_session(self):
+        # A new session blocked on the project MCP-servers dialog: its first prompt is still in the launch args.
+        self.home.job(SHORT, sessionId=SID, cwd=self.proj, state="running", tempo="blocked", needs="send a prompt to start",
+                      respawnFlags=["--model", "haiku", "--permission-mode", "default"], intent="Reply with exactly: alpha")
+        self.model.add(SHORT, SID, cwd=self.proj, tempo="active", state="running")
+        self.model.subscribe_events = fixture_jsonl("subscribe_dialog_mcp_dialog.jsonl")
+
+    def test_send_waits_for_the_startup_dialog(self):
+        # Live (review round 2): a message sent now was answered before the session's own first prompt.
+        self.blocked_new_session()
+        rc, out, err = self.home.run("send", SID, stdin=json.dumps({"text": "Reply with exactly: bravo"}))
+        self.assertEqual((rc, out.get("code")), (1, "EINVAL"), (out, err))
+        self.assertEqual(self.model.replies, [])
+
+    def test_send_goes_through_once_the_first_prompt_landed(self):
+        self.blocked_new_session()
+        self.home.transcript(self.proj, SID, [user_line("Reply with exactly: alpha", cwd=self.proj)])
+        rc, out, err = self.home.run("send", SID, stdin=json.dumps({"text": "bravo"}))
+        self.assertEqual(rc, 0, (out, err))
+        self.assertEqual(self.model.replies, [(SHORT, "bravo")])
+
+    def test_a_session_stopped_on_its_startup_dialog_starts_again_with_the_message(self):
+        # Stopped before any turn ran: no transcript. Sending starts it again under its own id, the message as the
+        # first prompt, with its replayable flags.
+        self.blocked_new_session()
+        self.model.records[SHORT].update(dying=True, outcome="killed", tempo="idle")
+        self.home.job(SHORT, sessionId=SID, cwd=self.proj, state="done", tempo="idle", needs=None,
+                      respawnFlags=["--model", "haiku", "--permission-mode", "default"], intent="Reply with exactly: alpha")
+        s = self.session()
+        self.assertEqual((s["state"], s["process"]), ("done", "retired"))
+        rc, out, err = self.home.run("send", SID, stdin=json.dumps({"text": "Reply with exactly: bravo"}))
+        self.assertEqual((rc, out), (0, {"ok": True, "woke": True}), err)
+        d = self.model.dispatched[-1]
+        self.assertEqual((d["short"], d["sessionId"], d["cwd"], d["launch"]["mode"]), (SHORT, SID, self.proj, "prompt"))
+        self.assertEqual(d["launch"]["args"], ["--session-id", SID, "--model", "haiku", "--permission-mode", "default",
+                                               "--", "Reply with exactly: bravo"])
+        self.assertEqual(self.model.replies, [])  # the text went in at launch, not twice
+
+    def test_the_relaunch_keeps_the_flags_new_started_it_with(self):
+        # Live: the CLI rewrote respawnFlags to [] while it sat on the dialog and the roster forgot the stopped
+        # worker, so the relaunch came up on the settings default model and mode.
+        rc, s, err = self.home.run("new", stdin=json.dumps({"cwd": self.proj, "prompt": "Reply with exactly: alpha",
+                                                             "model": "haiku", "permissionMode": "default"}))
+        self.assertEqual(rc, 0, (s, err))
+        sid, short = s["sessionId"], s["short"]
+        self.model.records[short].update(dying=True, outcome="killed", tempo="idle")
+        self.home.job(short, sessionId=sid, cwd=self.proj, state="stopped", tempo="idle", respawnFlags=[],
+                      intent="Reply with exactly: alpha")
+        rc, out, err = self.home.run("send", sid, stdin=json.dumps({"text": "bravo"}))
+        self.assertEqual((rc, out), (0, {"ok": True, "woke": True}), err)
+        d = self.model.dispatched[-1]
+        self.assertEqual((d["sessionId"], d["launch"]["args"]),
+                         (sid, ["--session-id", sid, "--model", "haiku", "--permission-mode", "default", "--", "bravo"]))
+        rc, out, err = self.home.run("rm", sid)
+        self.assertEqual(rc, 0, err)
+        self.assertNotIn(sid, self.hh.read_launch_flags())
+
     def test_follow_cuts_the_dialog_from_its_own_screen(self):
         self.home.job(SHORT, sessionId=SID, cwd=self.proj, state="done", tempo="idle")
         self.home.registry(os.getpid(), kind="bg", status="waiting", waitingFor="dialog open", sessionId=SID, jobId=SHORT)
@@ -208,6 +275,8 @@ class DaemonBlipTest(unittest.TestCase):
         import threading
         sock_dir = os.path.join(self.home.run_root, self.hh.daemon_socket_hash(self.home.claude))
         os.makedirs(sock_dir)
+        os.chmod(self.home.run_root, 0o700)
+        os.chmod(sock_dir, 0o700)
         path = os.path.join(sock_dir, "control.sock")
         dead = socket.socket(socket.AF_UNIX)
         dead.bind(path)  # the old daemon's socket file, nobody listening: connection refused
@@ -231,6 +300,8 @@ class DaemonBlipTest(unittest.TestCase):
         import socket
         sock_dir = os.path.join(self.home.run_root, self.hh.daemon_socket_hash(self.home.claude))
         os.makedirs(sock_dir)
+        os.chmod(self.home.run_root, 0o700)
+        os.chmod(sock_dir, 0o700)
         dead = socket.socket(socket.AF_UNIX)
         dead.bind(os.path.join(sock_dir, "control.sock"))
         dead.close()
@@ -297,6 +368,58 @@ class AnswerAndCodesTest(unittest.TestCase):
 
         self.model.on_keys = unblock
         rc, out, err = self.home.run("answer", SID, stdin=json.dumps({"decision": "allow", "toolUseId": "toolu_new"}))
+        self.assertEqual(rc, 0, (out, err))
+        self.assertEqual(bytes(self.model.keys), b"1")
+
+    def screen(self, text):
+        rule = u"─" * 60
+        self.model.subscribe_events = [
+            {"type": "snapshot", "record": {}, "streamTail": []},
+            {"type": "stream", "line": u"\x1b[2J\x1b[H" + rule + u"\r\n" + text.replace(u"\n", u"\r\n")}]
+
+    def unblock_on_keys(self):
+        def unblock(keys):
+            self.model.records[SHORT]["tempo"] = "active"
+            self.home.job(SHORT, sessionId=SID, cwd=self.proj, state="running", tempo="active")
+            p = os.path.join(self.home.claude, "sessions", "%d.json" % os.getpid())
+            if os.path.exists(p):
+                os.remove(p)
+        self.model.on_keys = unblock
+
+    def test_allow_always_presses_the_prompts_own_always_row(self):
+        # Live 2.1.287 Write prompt: option 2 is "Yes, and switch to accept edits ... for this session".
+        self.model.subscribe_events = fixture_jsonl("subscribe_perm_write.jsonl")
+        self.unblock_on_keys()
+        rc, out, err = self.home.run("answer", SID, stdin=json.dumps({"decision": "allow_always"}))
+        self.assertEqual(rc, 0, (out, err))
+        self.assertEqual(bytes(self.model.keys), b"2")
+
+    def test_allow_always_finds_the_row_wherever_it_is(self):
+        self.screen(u" Do you want to proceed?\n ❯ 1. Yes\n   2. No, and tell Claude what to do\n"
+                    u"   3. Yes, and don't ask again for make commands\n Esc to cancel\n")
+        self.unblock_on_keys()
+        rc, out, err = self.home.run("answer", SID, stdin=json.dumps({"decision": "allow_always"}))
+        self.assertEqual(rc, 0, (out, err))
+        self.assertEqual(bytes(self.model.keys), b"3")
+
+    def test_allow_always_never_presses_no_or_another_action(self):
+        for text in (u" Do you want to proceed?\n ❯ 1. Yes\n   2. No\n Esc to cancel\n",
+                     u" Would you like to proceed?\n ❯ 1. Yes, and use auto mode\n   2. Yes, manually approve edits\n"
+                     u"   3. No, keep planning\n Esc to cancel\n"):
+            self.screen(text)
+            rc, out, err = self.home.run("answer", SID, stdin=json.dumps({"decision": "allow_always"}))
+            self.assertEqual((rc, out.get("code")), (1, "EINVAL"), (text, out, err))
+            self.assertEqual(bytes(self.model.keys), b"")
+
+    def test_allow_always_without_a_readable_screen_presses_nothing(self):
+        rc, out, err = self.home.run("answer", SID, stdin=json.dumps({"decision": "allow_always"}))
+        self.assertEqual((rc, out.get("code")), (1, "ESTALE"), (out, err))
+        self.assertEqual(bytes(self.model.keys), b"")
+
+    def test_allow_presses_1_on_a_yes_no_prompt(self):
+        self.screen(u" Do you want to proceed?\n ❯ 1. Yes\n   2. No\n Esc to cancel\n")
+        self.unblock_on_keys()
+        rc, out, err = self.home.run("answer", SID, stdin=json.dumps({"decision": "allow"}))
         self.assertEqual(rc, 0, (out, err))
         self.assertEqual(bytes(self.model.keys), b"1")
 

@@ -72,6 +72,7 @@ fun SessionBadge.color(): Color = when (this) {
     SessionBadge.IDLE -> TetherTheme.colors.success
     SessionBadge.DONE -> TetherTheme.colors.faint
     SessionBadge.FAILED -> TetherTheme.colors.danger
+    SessionBadge.OFFLINE -> TetherTheme.colors.faint
 }
 
 /** Dot + label: working / needs you / idle / done / failed. */
@@ -108,7 +109,7 @@ fun SessionCard(
 ) {
     val badge = session.badge()
     val needsYou = badge == SessionBadge.NEEDS_YOU
-    val faded = badge == SessionBadge.DONE
+    val faded = badge == SessionBadge.DONE || badge == SessionBadge.OFFLINE
     val warning = TetherTheme.colors.warning
     TetherCard(
         modifier = modifier.fillMaxWidth(),
@@ -145,7 +146,9 @@ fun SessionCard(
                     modifier = Modifier.weight(1f, fill = false),
                 )
                 if (session.updatedAt > 0) {
-                    Text("  ·  ${relativeTime(session.updatedAt)}", style = metaStyle, color = TetherTheme.colors.faint, maxLines = 1, softWrap = false)
+                    // Offline: the time is when the machine last told us anything about it.
+                    val time = relativeTime(session.updatedAt)
+                    Text(if (session.offline) "  ·  last seen $time" else "  ·  $time", style = metaStyle, color = TetherTheme.colors.faint, maxLines = 1, softWrap = false)
                 }
                 if (showMachine && machine != null) {
                     Spacer(Modifier.width(8.dp))

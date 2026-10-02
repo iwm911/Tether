@@ -48,6 +48,7 @@ conversations are ordinary Claude Code sessions and show up through their transc
 
 import errno
 import glob
+import io
 import json
 import os
 import platform
@@ -57,6 +58,8 @@ import re
 import signal
 import socket
 import subprocess
+import stat
+import struct
 import sys
 import time
 
@@ -1382,64 +1385,209 @@ VISIBLE_DOTS = (".github", ".config", ".claude", ".vscode", ".devcontainer")
 
 COMMANDS_TTL = 10 * 60 * 1000
 
+# Claude Code's own slash commands and bundled skills (2.1.287, as its initialize reply lists them). Tether never
+# runs `claude` to ask (decision 1: the daemon is the only way in), so these are listed here and the rest is read
+# from disk the way the CLI finds it: user / project commands and skills, enabled plugins.
+BUILTIN_COMMANDS = (
+    ("clear", "Start a new session with empty context; previous session stays on disk", "[name]"),
+    ("compact", "Free up context by summarizing the conversation so far", "<optional custom summarization instructions>"),
+    ("context", "Show current context usage", ""),
+    ("model", "Set the AI model for Claude Code", "<model>"),
+    ("effort", "Set effort level for model usage", "<low|medium|high|xhigh|max|auto>"),
+    ("fast", "Toggle fast mode", "[on|off]"),
+    ("focus", "Toggle focus view: just your prompt, summary, and response", "[on|off]"),
+    ("config", "Set a setting by key", "key=value"),
+    ("output-style", "List output styles or switch to one", "[style]"),
+    ("color", "Set the prompt bar color for this session", "[red|blue|green|yellow|purple|orange|pink|cyan|default]"),
+    ("autocompact", "Configure the auto-compact window size", "[auto|<tokens>]"),
+    ("rename", "Rename the current conversation", "[name]"),
+    ("recap", "Generate a one-line session recap now", ""),
+    ("goal", "Set a goal — keep working until the condition is met", ""),
+    ("init", "Initialize a new CLAUDE.md file with codebase documentation", ""),
+    ("mcp", "Manage MCP servers", "[reconnect|enable|disable [<server>|all]]"),
+    ("usage", "Show session cost, plan usage, and what's contributing to your limits", ""),
+    ("insights", "Generate a report analyzing your Claude Code sessions", ""),
+    ("debug", "Enable debug logging for this session and help diagnose issues", "[issue description]"),
+    ("doctor", "Health-check the Claude Code setup and fix issues", "[prompt-audit [<path>]]"),
+    ("code-review", "Review the current diff, or a PR number/branch/path target, for correctness bugs",
+     "[low|medium|high|xhigh|max|ultra] [--fix] [--comment] [<pr#>|<branch>|<path>]"),
+    ("security-review", "Complete a security review of the pending changes on the current branch", ""),
+    ("simplify", "Review the changed code for reuse, simplification and efficiency, then apply the fixes", "[<target>]"),
+    ("verify", "Verify that a code change actually does what it's supposed to by exercising it end-to-end", ""),
+    ("batch", "Research and plan a large-scale change, then execute it in parallel across worktree agents", "<instruction>"),
+    ("loop", "Run a prompt or slash command on a recurring interval (e.g. /loop 5m /foo)", "[interval] [prompt]"),
+    ("schedule", "Create, update, list, or run scheduled cloud agents (routines)", ""),
+    ("ultrareview", "Start a cloud agent that finds and verifies bugs in your branch", ""),
+    ("fewer-permission-prompts", "Add an allowlist of common read-only commands to reduce permission prompts", ""),
+    ("auto-mode-setup", "Teach auto mode about your environment, plus optional rule tweaks", ""),
+    ("update-config", "Configure the Claude Code harness via settings.json", ""),
+    ("run", "Launch and drive this project's app to see a change working", ""),
+    ("claude-api", "Reference for the Claude API / Anthropic SDK", ""),
+    ("list-agents", "List subagents, teammates, and other Claude sessions you can message", ""),
+    ("reload-plugins", "Activate pending plugin changes in the current session", "[--force]"),
+    ("reload-skills", "Pick up skills added or changed on disk during this session", ""),
+    ("skill-doctor", "Show which loaded skills are unused and costing context", ""),
+    ("import", "Import config from another AI coding agent", ""),
+)
+
+
+def front_matter(path, limit=16384):
+    """{key: value} of a markdown file's leading `---` block (flat `key: value` lines), plus "_body": the first
+    non-empty line after it."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            text = f.read(limit)
+    except (OSError, IOError, TypeError):
+        text = None
+    out = {}
+    if not text:
+        return out
+    lines = text.splitlines()
+    i = 0
+    if lines and lines[0].strip() == "---":
+        i = 1
+        while i < len(lines) and lines[i].strip() != "---":
+            m = re.match(r"^([A-Za-z][\w-]*)\s*:\s*(.*)$", lines[i])
+            i += 1
+            if not m:
+                continue
+            v = m.group(2).strip()
+            if v in (">", "|", ">-", "|-", ">+", "|+"):  # a block scalar: the indented lines under it
+                block = []
+                while i < len(lines) and lines[i].strip() != "---" and (not lines[i].strip() or lines[i][:1] in " \t"):
+                    block.append(lines[i].strip())
+                    i += 1
+                v = " ".join(b for b in block if b)
+            elif len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+                v = v[1:-1]
+            out[m.group(1).lower()] = v
+        i += 1
+    for l in lines[i:]:
+        if l.strip():
+            out["_body"] = l.strip().lstrip("#").strip()
+            break
+    return out
+
+
+def command_entry(name, fm, prefix=""):
+    desc = one_line(fm.get("description") or fm.get("_body") or "", 300) or ""
+    if prefix:
+        desc = "(%s) %s" % (prefix, desc) if desc else "(%s)" % prefix
+    return {"name": name, "description": desc, "argumentHint": one_line(fm.get("argument-hint") or "", 200) or ""}
+
+
+def scan_command_dir(d, prefix=""):
+    """`<d>/**/<name>.md` commands: sub/name.md is "sub:name"."""
+    out = []
+    if not d or not os.path.isdir(d):
+        return out
+    for root, dirs, files in os.walk(d, followlinks=True):
+        dirs[:] = sorted(x for x in dirs if not x.startswith("."))[:50]
+        rel = os.path.relpath(root, d)
+        ns = [] if rel == "." else rel.split(os.sep)
+        for f in sorted(files):
+            if not f.endswith(".md") or f.startswith("."):
+                continue
+            p = os.path.join(root, f)
+            if not os.path.isfile(p):
+                continue  # a dangling link
+            name = ":".join(ns + [f[:-3]])
+            out.append(command_entry((prefix + ":" + name) if prefix else name, front_matter(p), prefix))
+        if len(out) > 300:
+            break
+    return out
+
+
+def scan_skill_dir(d, prefix="", depth=1):
+    """`<d>/<skill>/SKILL.md` skills (depth 2: one more folder level, as synced skills are laid out)."""
+    out = []
+    if not d or not os.path.isdir(d):
+        return out
+    try:
+        names = sorted(os.listdir(d))
+    except OSError:
+        return out
+    for n in names[:300]:
+        sub = os.path.join(d, n)
+        if n.startswith(".") or not os.path.isdir(sub):
+            continue
+        p = os.path.join(sub, "SKILL.md")
+        if os.path.isfile(p):
+            fm = front_matter(p)
+            name = fm.get("name") or n
+            out.append(command_entry((prefix + ":" + name) if prefix else name, fm, prefix))
+        elif depth > 1:
+            out += scan_skill_dir(sub, prefix, depth - 1)
+    return out
+
+
+def enabled_plugins(cwd):
+    """[(plugin name, install path)] of the plugins enabled for cwd (user + project settings)."""
+    enabled = {}
+    for p in (os.path.join(claude_config_dir(), "settings.json"), os.path.join(cwd, ".claude", "settings.json"),
+              os.path.join(cwd, ".claude", "settings.local.json")):
+        s = read_json(p, None)
+        ep = s.get("enabledPlugins") if isinstance(s, dict) else None
+        if isinstance(ep, dict):
+            for k, v in ep.items():
+                if isinstance(k, str):
+                    enabled[k] = v is True
+    installed = read_json(os.path.join(claude_config_dir(), "plugins", "installed_plugins.json"), None)
+    plugins = installed.get("plugins") if isinstance(installed, dict) else None
+    out = []
+    for key, on in sorted(enabled.items()):
+        if not on or not isinstance(plugins, dict):
+            continue
+        entries = [e for e in plugins.get(key) or [] if isinstance(e, dict) and isinstance(e.get("installPath"), str)]
+        mine = [e for e in entries if e.get("scope") != "project" or e.get("projectPath") == cwd]
+        if mine:
+            out.append((key.split("@", 1)[0], mine[-1]["installPath"]))
+    return out
+
+
+def list_commands(cwd):
+    """Slash commands for a session in cwd: built-ins, then project and user commands / skills, then plugins."""
+    seen = set()
+    out = []
+
+    def add(items):
+        for c in items:
+            if c["name"] and c["name"] not in seen:
+                seen.add(c["name"])
+                out.append(c)
+
+    home_claude = claude_config_dir()
+    add(scan_command_dir(os.path.join(cwd, ".claude", "commands")))
+    add(scan_skill_dir(os.path.join(cwd, ".claude", "skills")))
+    add(scan_command_dir(os.path.join(home_claude, "commands")))
+    add(scan_skill_dir(os.path.join(home_claude, "skills")))
+    add(scan_skill_dir(os.path.join(home_claude, "skills", "synced"), depth=2))
+    for name, path in enabled_plugins(cwd):
+        add(scan_command_dir(os.path.join(path, "commands"), name))
+        add(scan_skill_dir(os.path.join(path, "skills"), name))
+    add({"name": n, "description": d, "argumentHint": a} for n, d, a in BUILTIN_COMMANDS)
+    return out
+
 
 def cmd_commands(opts):
-    """Slash commands Claude Code offers in a folder, from its own initialize reply (built-ins, user and
-    project commands, skills, plugins, MCP prompts). Cached per folder for a few minutes."""
+    """Slash commands Claude Code offers in a folder: its built-ins plus what it would load from disk (user and
+    project commands and skills, enabled plugins). Read from files, never by running `claude` (decision 1).
+    Cached per folder for a few minutes."""
     cwd = os.path.abspath(os.path.expanduser(opts.get("cwd") or HOME))
     if not os.path.isdir(cwd):
         cwd = HOME
     key = re.sub(r"[^A-Za-z0-9]", "-", cwd)[-120:]
-    cache_path = os.path.join(CACHE_DIR, "commands-%s.json" % key)
+    cache_path = os.path.join(CACHE_DIR, "commands2-%s.json" % key)
     cached = read_json(cache_path)
     if isinstance(cached, dict) and cached.get("cwd") == cwd and now_ms() - (cached.get("at") or 0) < COMMANDS_TTL:
         return emit({"commands": cached.get("commands") or []})
-    claude, login_path = resolve_claude(opts.get("claude"))
-    if not claude:
-        raise HelperError("Claude Code was not found on this machine.")
-    p = subprocess.Popen([claude, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"],
-                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                         cwd=cwd, env=claude_env(claude, login_path), start_new_session=True)
+    cmds = list_commands(cwd)
     try:
-        init = {"type": "control_request", "request_id": "init_cmds", "request": {"subtype": "initialize"}}
-        p.stdin.write((json.dumps(init) + "\n").encode())
-        p.stdin.flush()
-        deadline = time.time() + 30
-        while time.time() < deadline:
-            r, _w, _x = select.select([p.stdout], [], [], 0.5)
-            if not r:
-                if p.poll() is not None:
-                    break
-                continue
-            raw = p.stdout.readline()
-            if not raw:
-                break
-            o = parse_line(raw)
-            resp = (o or {}).get("response") or {}
-            if (o or {}).get("type") != "control_response" or resp.get("request_id") != "init_cmds":
-                continue
-            body = resp.get("response") or {}
-            cmds = []
-            for c in body.get("commands") or []:
-                if isinstance(c, dict) and isinstance(c.get("name"), str):
-                    cmds.append({"name": c["name"], "description": c.get("description") or "",
-                                 "argumentHint": c.get("argumentHint") or ""})
-            try:
-                ensure_dir(CACHE_DIR)
-                write_json_atomic(cache_path, {"cwd": cwd, "at": now_ms(), "commands": cmds})
-            except OSError:
-                pass
-            return emit({"commands": cmds})
-        raise HelperError("Claude Code didn't list its commands.")
-    finally:
-        try:
-            p.stdin.close()
-        except (OSError, IOError):
-            pass
-        try:
-            os.killpg(p.pid, signal.SIGTERM)
-        except OSError:
-            pass
+        ensure_dir(CACHE_DIR)
+        write_json_atomic(cache_path, {"cwd": cwd, "at": now_ms(), "commands": cmds})
+    except OSError:
+        pass
+    emit({"commands": cmds})
 
 
 def cmd_ls(opts, path=None):
@@ -1588,15 +1736,40 @@ def pid_holds_socket(pid, path):
     return False
 
 
+def owned_private_dir(path):
+    """path is a real directory (not a symlink) owned by this user that nobody else can write to."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    return stat.S_ISDIR(st.st_mode) and st.st_uid == os.getuid() and not (st.st_mode & 0o022)
+
+
+def owned_socket(path):
+    """path is a unix socket (not a symlink) owned by this user, in a private directory of ours."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    return stat.S_ISSOCK(st.st_mode) and st.st_uid == os.getuid() and owned_private_dir(os.path.dirname(path))
+
+
 def find_daemon_socket():
     """Path of this user's daemon control socket, or None. The daemon puts it at
     /tmp/cc-daemon-<uid>/<sha256(config dir)[:8]>/control.sock; when that is missing (another config dir
-    resolution), glob, preferring the socket held by the daemon.lock pid, then the newest."""
+    resolution), glob, preferring the socket held by the daemon.lock pid, then the newest.
+    /tmp is world-writable: the runtime dir, the hash dir and the socket must all be ours and private (anyone
+    could pre-create /tmp/cc-daemon-<uid> and get the control key sent to their socket)."""
     root = daemon_runtime_root()
+    if not os.path.lexists(root):
+        return None
+    if not owned_private_dir(root):
+        raise DaemonError("%s is not a private directory owned by you; refusing to talk to a daemon there." % root,
+                          "ENODAEMON")
     expected = os.path.join(root, daemon_socket_hash(), "control.sock")
-    if os.path.exists(expected):
+    if owned_socket(expected):
         return expected
-    found = [p for p in glob.glob(os.path.join(root, "*", "control.sock")) if os.path.exists(p)]
+    found = [p for p in glob.glob(os.path.join(root, "*", "control.sock")) if owned_socket(p)]
     if not found:
         return None
     if len(found) > 1:
@@ -1691,6 +1864,20 @@ class FrameDecoder(object):
         return out
 
 
+def peer_uid(sock):
+    """The uid of the process at the other end of a connected unix socket (Linux SO_PEERCRED), or None where
+    the platform can't tell."""
+    opt = getattr(socket, "SO_PEERCRED", None)
+    if opt is None:
+        return None
+    try:
+        raw = sock.getsockopt(socket.SOL_SOCKET, opt, struct.calcsize("3i"))
+        _pid, uid, _gid = struct.unpack("3i", raw)
+        return uid
+    except (OSError, struct.error):
+        return None
+
+
 class DaemonConn(object):
     """One connection to the control socket (each request opens its own: the daemon ends the stream after
     a one-shot reply)."""
@@ -1711,6 +1898,11 @@ class DaemonConn(object):
             if getattr(e, "errno", None) in (errno.ENOENT, errno.ECONNREFUSED, errno.ENOTSOCK):
                 raise DaemonError("The Claude Code daemon is not running on this machine.", "ENODAEMON")
             raise DaemonError("Couldn't reach the Claude Code daemon: %s" % e, "ENODAEMON")
+        uid = peer_uid(self.sock)
+        if uid is not None and uid != os.getuid():
+            self.close()
+            raise DaemonError("The process at %s belongs to another user; refusing to talk to it." % self.path,
+                              "ENODAEMON")
         self.lines = LineBuffer()
         self.pending = []
 
@@ -1815,7 +2007,11 @@ def daemon_may_be_restarting(path=None):
     if pid and pid_alive(pid):
         return True
     recent = now_ms() - 60000
-    for p in (path or find_daemon_socket(), os.path.join(claude_config_dir(), "daemon.lock")):
+    try:
+        sock = path or find_daemon_socket()
+    except DaemonError:
+        return False  # not ours: nothing to wait for
+    for p in (sock, os.path.join(claude_config_dir(), "daemon.lock")):
         if p and os.path.exists(p) and mtime_ms(p) > recent:
             return True
     return False
@@ -2195,6 +2391,40 @@ def record_live(rec):
 def read_removed():
     v = read_json(REMOVED_PATH, {}) or {}
     return v if isinstance(v, dict) else {}
+
+
+LAUNCH_FLAGS_PATH = os.path.join(TETHER_DIR, "launch_flags.json")
+LAUNCH_FLAGS_KEEP = 200
+
+
+def read_launch_flags():
+    v = read_json(LAUNCH_FLAGS_PATH, {}) or {}
+    return v if isinstance(v, dict) else {}
+
+
+def remember_launch_flags(sid, flags):
+    """The flags a session was started with here. The CLI rewrites the job's respawnFlags once it starts (to []
+    while it sits on a startup dialog) and the roster forgets a worker when it stops, so a session stopped before
+    its first turn would otherwise come back without its --model / --permission-mode."""
+    d = read_launch_flags()
+    if flags:
+        d[sid] = {"flags": list(flags), "at": now_ms()}
+    else:
+        d.pop(sid, None)
+    if len(d) > LAUNCH_FLAGS_KEEP:
+        keep = sorted(d.items(), key=lambda kv: (kv[1].get("at") or 0) if isinstance(kv[1], dict) else 0, reverse=True)
+        d = dict(keep[:LAUNCH_FLAGS_KEEP])
+    try:
+        ensure_dir(TETHER_DIR)
+        write_json_atomic(LAUNCH_FLAGS_PATH, d)
+    except (OSError, IOError):
+        pass
+
+
+def launch_flags_of(sid):
+    e = read_launch_flags().get(sid)
+    f = e.get("flags") if isinstance(e, dict) else None
+    return [x for x in f if isinstance(x, str)] if isinstance(f, list) else []
 
 
 def registry_records(registry):
@@ -2641,6 +2871,13 @@ def make_session(slot, facts=None, tfile=None, screen=None):
             # its screen, else the moment between dispatch and the first prompt landing (seen on every new
             # session): still starting.
             state = "working"
+    elif state == "working" and live and not term and bg is None:
+        # A worker that has not registered yet is still starting: it may sit on a startup dialog while its
+        # state.json is a previous run's (a relaunch into the same job dir says "stopped" / idle) and the daemon's
+        # record says active. Only its screen tells.
+        d = session_dialog(rec["short"], st, None, screen)
+        if d:
+            state, pending = "needs_you", d
     cwd = cwd_hint(info, st, rec, reg, path)
     waiting = reg.get("waitingFor") if isinstance(reg.get("waitingFor"), str) else None
     if state == "needs_you" and not waiting:
@@ -3582,7 +3819,9 @@ class Follower(object):
 
     def landed_draft(self, text):
         k = text_key(text)
-        return bool(k) and any(k in l for l in self.tev.landed)
+        # The screen still shows a landed message whole, or its end when its top scrolled away: equal or a
+        # suffix. Not any substring: a new reply that opens like an earlier one ("Let me…") must still stream.
+        return bool(k) and any(l.endswith(k) for l in self.tev.landed)
 
     def on_landed(self):
         if self.draft is not None:
@@ -3676,15 +3915,34 @@ def follow_agent(ref, agent_id, from_offset, out=None, gone=None):
     f = Follower(ref, from_offset, out, gone)
     f.tpath = path
     f.tev = TranscriptEvents(ref.sid, path, sidechain_ok=True)
+    # The subagent's own `subagent` event (type, description, running / done) comes from the parent session: its
+    # meta file and the parent transcript's tool result / task notification, read here and nothing emitted.
+    parent = Follower(ref, 0, out=io.StringIO(), gone=f.gone)
+
+    def own_event():
+        parent.read_transcript()
+        meta = read_subagents(ref.tpath, ref.sid).get(agent_id)
+        return parent.subagent_event(agent_id, meta) if isinstance(meta, dict) else None
+
     f.history()
+    last = own_event()
+    if last:
+        f.emit(last)
     f.write('{"e":"caughtUp","offset":%d}' % f.pos)
     f.flush()
+    next_poll = time.time() + 1.5
     while True:
         if file_size(path) < f.pos:
             return
         for ev in f.read_transcript():
             if isinstance(ev, tuple) and ev[0] == "line":
                 f.emit_line(ev[1], ev[2])
+        if time.time() >= next_poll:
+            next_poll = time.time() + 1.5
+            ev = own_event()
+            if ev and ev != last:
+                last = ev
+                f.emit(ev)
         f.flush()
         if f.gone.wait(0.3):
             return
@@ -3903,6 +4161,7 @@ def cmd_new(opts):
     d["seed"]["intent"] = text
     r = daemon_dispatch(d, timeout_ms=20000)
     short, sid = r.get("short") or d["short"], d["sessionId"]
+    remember_launch_flags(sid, flags)
     if images:
         wait_ready(short)
         reply_retrying(short, text)
@@ -3920,10 +4179,12 @@ def cmd_new(opts):
     emit(s)
 
 
-def wake(opts, ref):
-    """Brings a retired session back under its own id: dispatch resume with the same short, no fork."""
+def wake(opts, ref, text=None, paste=False):
+    """Brings a retired session back under its own id: dispatch resume with the same short, no fork. A session
+    stopped before its first turn ran (blocked on a startup dialog) has no transcript to resume: it starts again
+    under the same id with text as its first prompt. Returns (short, sent): sent when text went in at launch."""
     if not ref.tpath:
-        raise coded_error("This session has no transcript to continue.", "ENOSESSION")
+        return relaunch(opts, ref, text, paste), text is not None and not paste
     st = ref.st or {}
     info = scan_head(ref.tpath)
     cwd = info.get("cwd") if info.get("cwd") and os.path.isdir(info["cwd"]) else None
@@ -3944,7 +4205,41 @@ def wake(opts, ref):
         if e.code != "ETIMEOUT":
             raise
     wait_ready(short)
+    return short, False
+
+
+def relaunch(opts, ref, text, paste=False):
+    """A job that never ran a turn (no transcript): launch it again under its own session id, in its own
+    folder, with its replayable flags; text is the first prompt (pasted after start when paste)."""
+    st = ref.st or {}
+    cwd = st.get("cwd") if isinstance(st.get("cwd"), str) else None
+    if text is None or not ref.slot.get("jobs") or st.get("sessionId") not in (None, ref.sid):
+        raise coded_error("This session has no transcript to continue.", "ENOSESSION")
+    if not cwd or not os.path.isdir(cwd):
+        raise coded_error("The session's folder no longer exists on this machine.", "ENOSESSION")
+    ensure_daemon(opts)
+    flags = resume_flags(st.get("respawnFlags")) or resume_flags(roster_launch_flags().get(ref.sid)) or \
+        resume_flags(launch_flags_of(ref.sid))
+    d = daemon_prompt_spec(cwd, None if paste else text, flags=flags, session_id=ref.sid,
+                           name=st.get("name") if isinstance(st.get("name"), str) else None)
+    d["seed"]["intent"] = st.get("intent") if isinstance(st.get("intent"), str) and st.get("intent") else text
+    r = daemon_dispatch(d, timeout_ms=25000)
+    short = r.get("short") or d["short"]
+    if paste:
+        wait_ready(short)
     return short
+
+
+def require_no_startup_dialog(ref):
+    """A new session blocked on a startup dialog (project MCP servers, trust) still holds its first prompt in
+    its launch args: the CLI queues that only once the dialog closes, so a message sent now would reach Claude
+    before it. Refuse until the dialog is answered."""
+    if ref.tpath and scan_head(ref.tpath).get("firstPrompt"):
+        return
+    s = ref.session()
+    if s.get("state") == "needs_you" and (s.get("pending") or {}).get("kind") == "dialog":
+        raise coded_error("Claude Code is waiting on a startup prompt in this session. Answer it first; your "
+                          "first message is sent once it closes.", "EINVAL")
 
 
 def cmd_send_v2(opts, arg):
@@ -3955,6 +4250,7 @@ def cmd_send_v2(opts, arg):
     ref = SessionRef(arg)
     require_not_held(ref)
     if ref.live():
+        require_no_startup_dialog(ref)
         try:
             daemon_reply(ref.short, text)
             emit({"ok": True, "woke": False})
@@ -3962,8 +4258,9 @@ def cmd_send_v2(opts, arg):
         except DaemonError as e:
             if e.code != "ENOSESSION":
                 raise
-    short = wake(opts, ref)
-    reply_retrying(short, text)
+    short, sent = wake(opts, ref, text, paste=bool(req.get("images")))
+    if not sent:
+        reply_retrying(short, text)
     emit({"ok": True, "woke": True})
 
 
@@ -4046,12 +4343,44 @@ def cmd_answer(opts, arg):
         got = (s.get("pending") or {}).get("toolUseId")
         if got != want:
             raise coded_error("Claude is asking something else now. Open the session to see it.", "ESTALE")
-    # "1" is always Yes, "2" the "don't ask again" variant; Esc always cancels (numbering of "No" varies).
-    press_keys(ref.short, [{"allow": b"1", "allow_always": b"2", "deny": b"\x1b"}[decision]])
+    press_keys(ref.short, [answer_key(ref.short, decision)])
     msg = req.get("message")
     if decision == "deny" and isinstance(msg, str) and msg.strip():
         reply_retrying(ref.short, msg.strip())
     emit(wait_session(ref.sid, lambda x: x["state"] != "needs_you", 6.0) or s)
+
+
+ALWAYS_ALLOW_RE = re.compile(r"don.t ask again|always allow|allow all|accept edits|auto-approve|for this session", re.I)
+
+
+def permission_options(short):
+    """The numbered options of the prompt on the session's screen ([{label, key}]), or None when unreadable."""
+    lines = fetch_screen(short)
+    d = cut_dialog(lines) if lines else None
+    opts = [o for o in (d or {}).get("options") or [] if o.get("key")]
+    return opts or None
+
+
+def answer_key(short, decision):
+    """The key for a permission decision, read off the prompt itself: option 2 is not always "don't ask again"
+    (Bash: "always allow access to <dir>", Write: "switch to accept edits", ExitPlanMode: "manually approve
+    edits", a plain Yes / No prompt: No). Esc always cancels; "1" is Yes on every permission prompt."""
+    if decision == "deny":
+        return b"\x1b"
+    opts = permission_options(short)
+    yes = [o for o in opts or [] if re.match(r"(?i)yes\b", o.get("label") or "")]
+    if decision == "allow":
+        if opts is not None and not any(o["key"] == "1" for o in yes):
+            raise coded_error("The prompt on the machine's screen has no plain Yes. Open the session to answer it.",
+                              "ESTALE")
+        return b"1"
+    for o in yes:
+        if o["key"] != "1" and ALWAYS_ALLOW_RE.search(o.get("label") or ""):
+            return o["key"].encode()
+    if opts is None:
+        raise coded_error("Couldn't read the prompt on the machine's screen to find its \"always allow\" choice.",
+                          "ESTALE")
+    raise coded_error("This prompt has no \"always allow\" choice. Allow it once or open the session.", "EINVAL")
 
 
 def question_plan(questions, answers):
@@ -4178,6 +4507,8 @@ def cmd_rm_v2(opts, arg):
         jd = os.path.join(JOBS_DIR, short)
         if NATIVE_ID_RE.match(short) and os.path.isdir(jd) and os.path.dirname(os.path.abspath(jd)) == os.path.abspath(JOBS_DIR):
             shutil.rmtree(jd, ignore_errors=True)
+    if launch_flags_of(ref.sid):
+        remember_launch_flags(ref.sid, None)
     if ref.tpath:
         removed = read_removed()
         removed[ref.sid] = file_size(ref.tpath)

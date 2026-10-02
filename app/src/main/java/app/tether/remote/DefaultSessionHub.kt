@@ -174,35 +174,63 @@ class DefaultSessionHub(
                 kept
             }
         }
-        errorsState.update { m -> m.filterKeys { it in ids } }
-        if (changed) rebuild()
+        synchronized(machinesLock) {
+            val before = errorsState.value
+            errorsState.update { m -> m.filterKeys { it in ids } }
+            if (changed || errorsState.value != before) rebuild()
+        }
     }
 
-    private fun setError(id: String, message: String) = errorsState.update { it + (id to message) }
-    private fun clearError(id: String) = errorsState.update { if (id in it) it - id else it }
+    /**
+     * A machine whose watch keeps failing: its sessions stay listed with their last known state, marked
+     * [Session.offline] (not counted as working / needing you, no inline answers) until it answers again.
+     */
+    private fun setError(id: String, message: String) = synchronized(machinesLock) {
+        val was = errorsState.value[id]
+        errorsState.update { it + (id to message) }
+        if (was == null) rebuild()
+    }
+
+    private fun clearError(id: String) = synchronized(machinesLock) {
+        if (id in errorsState.value) {
+            errorsState.update { it - id }
+            rebuild()
+        }
+    }
 
     private fun withMachine(list: Collection<Session>, connectionId: String) =
         list.map { if (it.connectionId == connectionId) it else it.copy(connectionId = connectionId) }
 
-    /** Replaces a machine's list (watch snapshot / refresh), emitting events for transitions. */
-    private fun replaceMachine(connectionId: String, list: List<Session>) {
-        val out = ArrayList<SessionEvent>()
+    /**
+     * A machine's list. A watch snapshot replaces it ([merge] false: it is the whole list). A `sessions`
+     * refresh merges ([merge] true): its list is capped lower than the watch's and may be older than the
+     * watch's last change, so sessions it leaves out stay and, per session, the newer copy wins (a tie
+     * goes to the refresh, the later read). Emits events for transitions.
+     */
+    private fun replaceMachine(connectionId: String, list: List<Session>, merge: Boolean = false) {
         synchronized(machinesLock) {
+            val out = ArrayList<SessionEvent>()
             val prev = machines.value[connectionId]
             val next = LinkedHashMap<String, Session>()
+            if (merge && prev != null) next.putAll(prev)
             for (s in withMachine(list, connectionId)) {
+                val old = prev?.get(s.sessionId)
+                if (merge && old != null && old.updatedAt > s.updatedAt) continue
                 next[s.sessionId] = s
-                out += transitions.diff(prev?.get(s.sessionId), s, firstSight = prev == null)
+                out += transitions.diff(old, s, firstSight = prev == null)
+            }
+            if (!merge && prev != null) {
+                for (sid in prev.keys) if (sid !in next) transitions.forget(SessionRef(connectionId, sid))
             }
             machines.update { it + (connectionId to next) }
+            rebuild()
+            out.forEach { eventsFlow.tryEmit(it) }
         }
-        rebuild()
-        out.forEach { eventsFlow.tryEmit(it) }
     }
 
     private fun patchMachine(connectionId: String, changed: List<Session>, removed: List<String>) {
-        val out = ArrayList<SessionEvent>()
         synchronized(machinesLock) {
+            val out = ArrayList<SessionEvent>()
             val cur = machines.value[connectionId]
             val next = LinkedHashMap(cur.orEmpty())
             for (s in withMachine(changed, connectionId)) {
@@ -214,9 +242,9 @@ class DefaultSessionHub(
                 transitions.forget(SessionRef(connectionId, sid))
             }
             machines.update { it + (connectionId to next) }
+            rebuild()
+            out.forEach { eventsFlow.tryEmit(it) }
         }
-        rebuild()
-        out.forEach { eventsFlow.tryEmit(it) }
     }
 
     /** Inserts / replaces one session after our own write, without events (unless it is newer and transitions). */
@@ -230,8 +258,8 @@ class DefaultSessionHub(
                 if (old != null && old.updatedAt > s.updatedAt) return@update m
                 m + (cid to (LinkedHashMap(cur).apply { put(s.sessionId, s) }))
             }
+            rebuild()
         }
-        rebuild()
     }
 
     private fun dropSession(ref: SessionRef) {
@@ -241,13 +269,17 @@ class DefaultSessionHub(
                 if (ref.sessionId !in cur) m else m + (ref.connectionId to (cur - ref.sessionId))
             }
             transitions.forget(ref)
+            rebuild()
         }
-        rebuild()
     }
 
+    /** Publishes [sessions] from [machines]. Callers hold [machinesLock], so the newest state is written last. */
     private fun rebuild() {
+        val offline = errorsState.value.keys
         val all = ArrayList<Session>()
-        for ((_, byId) in machines.value) all.addAll(byId.values)
+        for ((cid, byId) in machines.value) {
+            if (cid in offline) byId.values.mapTo(all) { it.copy(offline = true) } else all.addAll(byId.values)
+        }
         all.sortByDescending { it.updatedAt }
         sessionsState.value = all
     }
@@ -261,7 +293,7 @@ class DefaultSessionHub(
             targets.map { id ->
                 async {
                     try {
-                        replaceMachine(id, remote.sessions(id))
+                        replaceMachine(id, remote.sessions(id), merge = true)
                         clearError(id)
                     } catch (e: CancellationException) {
                         throw e
@@ -310,16 +342,38 @@ class DefaultSessionHub(
         val lock = Any()
         val reducer = SessionReducer(key.ref, key.agentId, clock)
         @Volatile var error: String? = null
+        /** Open collectors of this conversation; the LRU only evicts idle ones. Guarded by convs. */
+        var subscribers = 0
+        /** The watch-list Session last applied (identity): a version bump does not re-apply it. */
+        var lastWatchSession: Session? = null
         val version = MutableStateFlow(0L)
         fun bump() = version.update { it + 1 }
     }
 
     private val convs = object : LinkedHashMap<ConvKey, Conv>(16, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<ConvKey, Conv>): Boolean = size > MAX_CACHED_CONVERSATIONS
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<ConvKey, Conv>): Boolean =
+            size > MAX_CACHED_CONVERSATIONS && eldest.value.subscribers == 0
     }
     private val flows = ConcurrentHashMap<ConvKey, StateFlow<ConversationState>>()
 
-    private fun convFor(key: ConvKey): Conv = synchronized(convs) { convs.getOrPut(key) { Conv(key) } }
+    /** The conversation for key, counted as in use until [releaseConv]. */
+    private fun acquireConv(key: ConvKey): Conv = synchronized(convs) {
+        val c = convs[key] ?: Conv(key).also { convs[key] = it }
+        c.subscribers++
+        c
+    }
+
+    private fun releaseConv(c: Conv) = synchronized(convs) {
+        c.subscribers--
+        // Over the cap while everything was in use: trim the idle ones now (oldest first).
+        if (convs.size > MAX_CACHED_CONVERSATIONS) {
+            val it = convs.entries.iterator()
+            while (convs.size > MAX_CACHED_CONVERSATIONS && it.hasNext()) {
+                val e = it.next()
+                if (e.value.subscribers == 0) it.remove()
+            }
+        }
+    }
 
     private fun initialState(ref: SessionRef, agentId: String?): ConversationState {
         val s = session(ref)
@@ -338,7 +392,7 @@ class DefaultSessionHub(
         val key = ConvKey(ref, agentId)
         return flows.getOrPut(key) {
             channelFlow {
-                val c = convFor(key)
+                val c = acquireConv(key)
                 openConversations.update { it + 1 }
                 try {
                     launch(Dispatchers.Default) { pump(c) }
@@ -348,7 +402,12 @@ class DefaultSessionHub(
                         .conflate()
                         .collect { (s, link) ->
                             val state = synchronized(c.lock) {
-                                if (s != null) c.reducer.applySession(s)
+                                // Only a new watch copy is applied (a version bump re-runs this with the old one),
+                                // and it never replaces the follow's own state unless strictly newer.
+                                if (s != null && s !== c.lastWatchSession) {
+                                    c.lastWatchSession = s
+                                    c.reducer.applySession(s, fromWatch = true)
+                                }
                                 c.reducer.snapshot(link, c.error)
                             }
                             send(state)
@@ -356,6 +415,7 @@ class DefaultSessionHub(
                         }
                 } finally {
                     openConversations.update { it - 1 }
+                    releaseConv(c)
                 }
             // replayExpirationMillis = 0: once nobody watches, the flow drops its last snapshot (every chat item)
             // and holds only the small initial state; the reducer itself is cached (LRU) in convs.

@@ -606,10 +606,41 @@ class FollowTest(unittest.TestCase):
         ref = self.hh.SessionRef(FOLLOW_SID)
         self.hh.follow_agent(ref, "a37c067ef6ed1aec1", 0, out, GoneAfter(lambda: "caughtUp" in out.getvalue(), 10))
         evs = parse(out)
-        self.assertEqual([e["e"] for e in evs], ["line", "line", "caughtUp"])
+        self.assertEqual([e["e"] for e in evs], ["line", "line", "subagent", "caughtUp"])
         self.assertTrue(all(e["line"]["isSidechain"] for e in evs[:2]))
+        # The view learns which subagent it shows (review round 2: it only ever said "Subagent").
+        self.assertEqual((evs[2]["agentId"], evs[2]["status"], evs[2]["background"]), ("a37c067ef6ed1aec1", "done", False))
+        self.assertTrue(evs[2]["agentType"])
         with self.assertRaises(self.hh.DaemonError):
             self.hh.follow_agent(ref, "nope", 0, out, GoneAfter(lambda: True, 1))
+
+    def test_agent_follow_reports_running_then_done(self):
+        tp = self.follow_fixture()
+        self.home.serve()
+        with open(tp, "a") as fh:
+            fh.write(json.dumps(assistant_line([{"type": "tool_use", "id": "toolu_live", "name": "Agent",
+                                                 "input": {"description": "Live probe", "subagent_type": "Explore",
+                                                           "prompt": "look"}}])) + "\n")
+        sd = os.path.join(os.path.dirname(tp), FOLLOW_SID, "subagents")
+        with open(os.path.join(sd, "agent-alive01.meta.json"), "w") as fh:
+            json.dump({"agentType": "Explore", "description": "Live probe", "toolUseId": "toolu_live"}, fh)
+        with open(os.path.join(sd, "agent-alive01.jsonl"), "w") as fh:
+            fh.write(json.dumps(dict(user_line("look"), isSidechain=True, agentId="alive01")) + "\n")
+        out = io.StringIO()
+        done = lambda: '"status":"done"' in out.getvalue()  # noqa: E731
+
+        def finish():
+            time.sleep(0.8)
+            with open(tp, "a") as fh:
+                fh.write(json.dumps({"type": "user", "isSidechain": False, "uuid": "u-res", "timestamp": "2026-10-01T10:00:09.000Z",
+                                     "message": {"role": "user", "content": [
+                                         {"type": "tool_result", "tool_use_id": "toolu_live", "content": "found it"}]}}) + "\n")
+
+        threading.Thread(target=finish).start()
+        self.hh.follow_agent(self.hh.SessionRef(FOLLOW_SID), "alive01", 0, out, GoneAfter(done, 10))
+        subs = [e for e in parse(out) if e["e"] == "subagent"]
+        self.assertEqual([(e["agentId"], e["status"]) for e in subs], [("alive01", "running"), ("alive01", "done")])
+        self.assertEqual((subs[0]["agentType"], subs[0]["description"]), ("Explore", "Live probe"))
 
     def test_live_stream_drafts_then_the_line_lands(self):
         """A live session: the recorded subscribe stream gives growing drafts and status; the transcript line
@@ -826,6 +857,8 @@ class WritesTest(unittest.TestCase):
         self.assertEqual((out["sessionId"], out["state"]), (SID_B, "working"))
 
     def test_answer_allow_always(self):
+        # The prompt's own "always" row (here option 2 of a live-recorded Bash prompt), read off the screen.
+        self.model.subscribe_events = fixture_jsonl("subscribe_perm_bash.jsonl")
         self.model.on_keys = lambda k: self.model.records["bbbb2222"].update(tempo="active")
         rc, out, err = self.hm.run("answer", SID_B, stdin=json.dumps({"decision": "allow_always"}))
         self.assertEqual(rc, 0, err)
@@ -938,7 +971,8 @@ import json, os, socket, sys, time
 with open(os.environ["TETHER_FAKE_ARGS"], "w") as f:
     json.dump(sys.argv[1:], f)
 path = os.environ["TETHER_FAKE_SOCK"]
-os.makedirs(os.path.dirname(path), exist_ok=True)
+os.makedirs(os.path.dirname(os.path.dirname(path)), mode=0o700, exist_ok=True)  # private, as the daemon makes them
+os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
 s = socket.socket(socket.AF_UNIX)
 s.bind(path)
 s.listen(4)
@@ -988,6 +1022,86 @@ class EnsureDaemonTest(unittest.TestCase):
         self.home.serve()
         self.assertEqual(self.hh.ensure_daemon({"claude": self.claude})["version"], "2.1.287")
         self.assertFalse(os.path.exists(self.args))
+
+
+class CommandsTest(unittest.TestCase):
+    """`commands` reads the slash commands from disk (decision 1: it never runs `claude -p`)."""
+
+    def setUp(self):
+        self.home = FakeHome()
+        self.hh = self.home.h
+        self.proj = self.home.folder("proj")
+
+    def tearDown(self):
+        self.home.close()
+
+    def write(self, path, text):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(text)
+
+    def test_lists_project_user_plugin_and_builtin_commands(self):
+        c = self.home.claude
+        self.write(os.path.join(self.proj, ".claude", "commands", "deploy.md"),
+                   "---\ndescription: Ship it\nargument-hint: <env>\n---\nDeploy $ARGUMENTS\n")
+        self.write(os.path.join(self.proj, ".claude", "commands", "db", "reset.md"), "Reset the database\n")
+        self.write(os.path.join(c, "skills", "triage", "SKILL.md"),
+                   "---\nname: triage\ndescription: >\n  Sort the bug\n  reports\n---\nbody\n")
+        self.write(os.path.join(c, "commands", "notes.md"), "---\ndescription: \"Take notes\"\n---\n")
+        os.symlink(os.path.join(c, "nowhere.md"), os.path.join(c, "commands", "dangling.md"))
+        plug = self.home.path("plugcache", "ralph", "1.0")
+        self.write(os.path.join(plug, "commands", "loop-it.md"), "---\ndescription: Start a loop\n---\n")
+        self.write(os.path.join(plug, "skills", "helper", "SKILL.md"), "---\nname: helper\ndescription: Helps\n---\n")
+        self.write(os.path.join(c, "plugins", "installed_plugins.json"), json.dumps({"version": 2, "plugins": {
+            "ralph@market": [{"scope": "user", "installPath": plug}],
+            "off@market": [{"scope": "user", "installPath": plug}]}}))
+        self.write(os.path.join(c, "settings.json"), json.dumps({"enabledPlugins": {"ralph@market": True, "off@market": False}}))
+        rc, out, err = self.home.run("commands", "--cwd", self.proj)
+        self.assertEqual(rc, 0, err)
+        by = dict((x["name"], x) for x in out["commands"])
+        self.assertEqual(by["deploy"], {"name": "deploy", "description": "Ship it", "argumentHint": "<env>"})
+        self.assertEqual(by["db:reset"]["description"], "Reset the database")
+        self.assertEqual(by["triage"]["description"], "Sort the bug reports")
+        self.assertEqual(by["notes"]["description"], "Take notes")
+        self.assertEqual(by["ralph:loop-it"]["description"], "(ralph) Start a loop")
+        self.assertIn("ralph:helper", by)
+        self.assertNotIn("off:loop-it", by)
+        self.assertNotIn("dangling", by)
+        for b in ("clear", "compact", "model", "context"):
+            self.assertIn(b, by)
+        self.assertEqual(len(by), len(out["commands"]))  # no duplicates
+
+    def test_never_runs_claude(self):
+        claude = self.home.path("bin", "claude")
+        marker = self.home.path("ran")
+        self.write(claude, "#!/bin/sh\ntouch %s\n" % marker)
+        os.chmod(claude, 0o755)
+        rc, out, err = self.home.run("--claude", claude, "commands", "--cwd", self.proj)
+        self.assertEqual(rc, 0, err)
+        self.assertTrue(out["commands"])
+        self.assertFalse(os.path.exists(marker))
+
+
+class StaleDraftTest(unittest.TestCase):
+    """The screen still showing a message that landed is not a draft; a new reply that opens the same way is."""
+
+    def follower(self, *landed):
+        f = h.Follower.__new__(h.Follower)
+        f.tev = h.TranscriptEvents("x")
+        for t in landed:
+            f.tev.landed.append(h.text_key(t))
+        return f
+
+    def test_whole_or_scrolled_message_is_stale(self):
+        f = self.follower("Let me check the tests.\n\nAll **done**.")
+        self.assertTrue(f.landed_draft("Let me check the tests. All done."))
+        self.assertTrue(f.landed_draft("All done."))  # its top scrolled off the screen
+
+    def test_a_new_reply_opening_like_an_earlier_one_streams(self):
+        f = self.follower("Let me check the tests.", "Everything is done and the build passed.")
+        self.assertFalse(f.landed_draft("Let me"))
+        self.assertFalse(f.landed_draft("Let me look at"))
+        self.assertFalse(f.landed_draft("Done"))
 
 
 class KeyMapTest(unittest.TestCase):

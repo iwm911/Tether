@@ -192,7 +192,7 @@ class SessionChatTest {
         SessionChatUiState(
             ref = ref,
             agentId = agentId,
-            conversation = ConversationState(status = status, link = link, loadingHistory = false, live = SessionLive(ref = ref, session = session, heldByTerminal = session?.heldByTerminal == true)),
+            conversation = ConversationState(status = status, link = link, loadingHistory = false, live = SessionLive(ref = ref, session = session, pending = session?.pending, heldByTerminal = session?.heldByTerminal == true)),
             items = emptyList(),
             machineName = "box",
             machineAccent = 0,
@@ -218,5 +218,23 @@ class SessionChatTest {
         assertEquals("Waking…", sessionStatusLabel(ui(s.copy(process = SessionProcess.RETIRED), waking = true)))
         assertEquals("Subagent", sessionStatusLabel(ui(s, agentId = "a1")))
         assertEquals("Offline", sessionStatusLabel(ui(s, link = LinkState.Failed("down", 0))))
+        // a prompt held by a terminal is answered there
+        assertEquals("Waiting in the terminal", sessionStatusLabel(ui(s.copy(state = SessionState.NEEDS_YOU, heldBy = app.tether.core.Holder.TERMINAL))))
+    }
+
+    @Test
+    fun aNeedsYouSessionWithNothingReadableStillGetsTheKeyPad() {
+        // Review round 2: pending null (screen fetch failed, unknown wait) left the user nothing to answer with.
+        val s = Session(sessionId = sid, state = SessionState.NEEDS_YOU, process = SessionProcess.LIVE)
+        val d = ui(s).dialog!!
+        assertEquals(app.tether.core.DialogKind.OTHER, d.dialog)
+        assertTrue(d.options.isEmpty())
+        // a cut dialog is used as-is; prompts / held / read-only / not waiting get none
+        val cut = app.tether.core.SessionPending.Dialog(app.tether.core.DialogKind.TRUST, "Trust?")
+        assertEquals(cut, ui(s.copy(pending = cut)).dialog)
+        assertNull(ui(s.copy(pending = app.tether.core.SessionPending.Permission("toolu_1", "Bash"))).dialog)
+        assertNull(ui(s.copy(heldBy = app.tether.core.Holder.TERMINAL)).dialog)
+        assertNull(ui(s, agentId = "a1").dialog)
+        assertNull(ui(s.copy(state = SessionState.WORKING)).dialog)
     }
 }

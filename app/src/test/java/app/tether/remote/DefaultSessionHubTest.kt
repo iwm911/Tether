@@ -220,6 +220,64 @@ class DefaultSessionHubTest {
         assertEquals(CONN, older.single().connectionId)
     }
 
+    @Test
+    fun refreshMergesIntoTheWatchListInsteadOfReplacingIt() = runBlocking {
+        // Review round 2: `sessions` (capped at 60) replaced the watch's list (up to 200) and put back stale state.
+        val listJob = launch(Dispatchers.Default) { hub.sessions.collect { } }
+        waitUntil { remote.watch.subscriptionCount.value > 0 }
+        val a = "aaaaaaaa-0000-0000-0000-000000000001"
+        val b = "bbbbbbbb-0000-0000-0000-000000000002"
+        val c = "cccccccc-0000-0000-0000-000000000003"
+        remote.watch.emit(WatchMessage.Snapshot(listOf(s(a, SessionState.WORKING, 10), s(b, SessionState.IDLE, 20), s(c, SessionState.IDLE, 30))))
+        hub.sessions.waitFor { it.size == 3 }
+        // the refresh read a's older state (a prompt the watch already saw answered) and does not cover c
+        remote.sessionList = listOf(s(a, SessionState.NEEDS_YOU, 5, SessionPending.Permission("toolu_old")), s(b, SessionState.WORKING, 25))
+        hub.refresh(CONN)
+        val list = hub.sessions.value.associateBy { it.sessionId }
+        assertEquals(setOf(a, b, c), list.keys)
+        assertEquals(SessionState.WORKING to 10L, list[a]!!.state to list[a]!!.updatedAt)
+        assertEquals(SessionState.WORKING to 25L, list[b]!!.state to list[b]!!.updatedAt)
+        // a watch snapshot is still the whole list
+        remote.watch.emit(WatchMessage.Snapshot(listOf(s(b, SessionState.IDLE, 40))))
+        hub.sessions.waitFor { it.map { s -> s.sessionId } == listOf(b) }
+        listJob.cancel()
+    }
+
+    @Test
+    fun anOfflineMachinesSessionsAreMarkedAndNotLive() = runBlocking {
+        val a = "aaaaaaaa-0000-0000-0000-000000000001"
+        remote.sessionList = listOf(s(a, SessionState.WORKING, 10))
+        hub.refresh(CONN)
+        assertFalse(hub.sessions.value.single().offline)
+        assertEquals(1, app.tether.service.SessionAlerts.live(hub.sessions.value).size)
+        // the machine stops answering: the watch fails (not a link blip)
+        remote.watchError = RemoteException("Connection refused", code = SessionErrorCodes.ENODAEMON)
+        val listJob = launch(Dispatchers.Default) { hub.sessions.collect { } }
+        val list = hub.sessions.waitFor { it.singleOrNull()?.offline == true }
+        assertEquals(SessionState.WORKING, list.single().state) // its last known state stays visible
+        assertTrue(app.tether.service.SessionAlerts.live(list).isEmpty())
+        // it answers again
+        remote.watchError = null
+        hub.refresh(CONN)
+        hub.sessions.waitFor { it.singleOrNull()?.offline == false }
+        listJob.cancel()
+    }
+
+    @Test
+    fun conversationsInUseAreNeverEvicted() = runBlocking {
+        // Review round 2: with more than 8 open the LRU dropped the one on screen; send() then found no conversation.
+        val refs = (0 until 11).map { SessionRef(CONN, "%08x-0000-0000-0000-000000000000".format(it + 1)) }
+        val jobs = refs.map { r ->
+            val f = hub.open(r)
+            launch(Dispatchers.Default) { f.collect { } }
+        }
+        delay(200)
+        remote.sendGate = null
+        hub.send(refs[0], "still here")
+        hub.open(refs[0]).waitFor { st -> st.items.any { it is ChatItem.User && it.text == "still here" } }
+        jobs.forEach { it.cancel() }
+    }
+
     // ───────────── open → follow reducer ─────────────
 
     @Test

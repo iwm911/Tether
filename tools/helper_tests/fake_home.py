@@ -90,6 +90,8 @@ class FakeHome(object):
         self.model = model or DaemonModel(self)
         sock_dir = os.path.join(self.run_root, self.h.daemon_socket_hash(self.claude))
         os.makedirs(sock_dir, exist_ok=True)
+        os.chmod(self.run_root, 0o700)  # private, as the daemon makes them (the helper checks)
+        os.chmod(sock_dir, 0o700)
         self.server = FakeDaemon(os.path.join(sock_dir, "control.sock"), self.model.handle)
         return self.model
 

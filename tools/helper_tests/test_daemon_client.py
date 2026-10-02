@@ -149,7 +149,8 @@ class DiscoveryTest(unittest.TestCase):
         self.cfg = os.path.join(self.tmp, "cfg")
         self.root = os.path.join(self.tmp, "run")
         os.makedirs(os.path.join(self.cfg, "daemon"))
-        os.makedirs(self.root)
+        os.makedirs(self.root, mode=0o700)
+        os.chmod(self.root, 0o700)  # as the daemon makes it (umask may add group write)
         self._saved = (h.claude_config_dir, h.daemon_runtime_root)
         h.claude_config_dir = lambda: self.cfg
         h.daemon_runtime_root = lambda: self.root
@@ -161,6 +162,7 @@ class DiscoveryTest(unittest.TestCase):
     def _sock(self, name):
         d = os.path.join(self.root, name)
         os.makedirs(d)
+        os.chmod(d, 0o700)
         p = os.path.join(d, "control.sock")
         s = socket.socket(socket.AF_UNIX)
         s.bind(p)
@@ -204,6 +206,49 @@ class DiscoveryTest(unittest.TestCase):
             self.assertTrue(h.pid_holds_socket(os.getpid(), b))
             self.assertFalse(h.pid_holds_socket(1, b) is True)
 
+    def test_a_group_or_world_writable_runtime_dir_is_refused(self):
+        expected = self._sock(h.daemon_socket_hash(self.cfg))
+        self.assertEqual(h.find_daemon_socket(), expected)
+        os.chmod(self.root, 0o777)
+        with self.assertRaises(h.DaemonError) as cm:
+            h.find_daemon_socket()
+        self.assertEqual(cm.exception.code, "ENODAEMON")
+        with self.assertRaises(h.DaemonError):
+            h.DaemonConn()  # never connects, so the key is never sent
+        os.chmod(self.root, 0o700)
+        os.chmod(os.path.dirname(expected), 0o777)
+        self.assertIsNone(h.find_daemon_socket())  # the hash dir is writable by others: not trusted either
+
+    def test_a_symlinked_socket_or_dir_is_not_followed(self):
+        real = self._sock("aaaaaaaa")
+        os.symlink(os.path.dirname(real), os.path.join(self.root, h.daemon_socket_hash(self.cfg)))
+        # The hash-named entry is a symlink: skipped; the real dir (ours, private) is still found by the glob.
+        self.assertEqual(h.find_daemon_socket(), real)
+        os.makedirs(os.path.join(self.root, "cccccccc"), mode=0o700)
+        os.symlink(real, os.path.join(self.root, "cccccccc", "control.sock"))
+        self.assertTrue(h.owned_socket(real))
+        self.assertFalse(h.owned_socket(os.path.join(self.root, "cccccccc", "control.sock")))
+
+    def test_a_socket_of_another_user_is_refused(self):
+        p = self._sock(h.daemon_socket_hash(self.cfg))
+        real_getuid = os.getuid
+        try:
+            h.os.getuid = lambda: real_getuid() + 1  # as if everything here belonged to someone else
+            with self.assertRaises(h.DaemonError):
+                h.find_daemon_socket()
+            self.assertFalse(h.owned_socket(p))
+        finally:
+            h.os.getuid = real_getuid
+
+    def test_the_peer_uid_is_checked(self):
+        a, b = socket.socketpair(socket.AF_UNIX)
+        self.addCleanup(a.close)
+        self.addCleanup(b.close)
+        if getattr(socket, "SO_PEERCRED", None) is not None:
+            self.assertEqual(h.peer_uid(a), os.getuid())
+        else:
+            self.assertIsNone(h.peer_uid(a))
+
     def test_control_key(self):
         self.assertIsNone(h.daemon_control_key())
         with open(os.path.join(self.cfg, "daemon", "control.key"), "w") as f:
@@ -223,6 +268,8 @@ class FakeDaemonTest(unittest.TestCase):
         self.root = os.path.join(self.tmp, "run")
         self.sock_dir = os.path.join(self.root, h.daemon_socket_hash(self.cfg))
         os.makedirs(self.sock_dir)
+        os.chmod(self.root, 0o700)
+        os.chmod(self.sock_dir, 0o700)
         self.path = os.path.join(self.sock_dir, "control.sock")
         self._saved = (h.claude_config_dir, h.daemon_runtime_root)
         h.claude_config_dir = lambda: self.cfg

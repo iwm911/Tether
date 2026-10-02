@@ -55,6 +55,8 @@ class SessionReducer(
     private val seenUuids = HashSet<String>()
 
     private var session: Session? = null
+    /** The session came from this conversation's own follow `state` (fresher than the watch list's copy). */
+    private var sessionFromFollow = false
     private var draft: String? = null
     private var draftSeq = 0
     /** Normalised text of the last top-level assistant text that landed (stale-draft guard). */
@@ -90,7 +92,7 @@ class SessionReducer(
             is FollowEvent.Draft -> onDraft(event.text)
             FollowEvent.DraftClear -> clearDraft()
             is FollowEvent.Status -> onStatus(event)
-            is FollowEvent.State -> applySession(event.session)
+            is FollowEvent.State -> applySession(event.session, fromWatch = false)
             is FollowEvent.Peer -> {
                 val m = event.message
                 val key = "${m.dir}|${m.peer}|${m.at}|${m.text.hashCode()}"
@@ -146,11 +148,18 @@ class SessionReducer(
         version++
     }
 
-    /** A newer description of the session (from `state` or the machine's watch list). */
-    fun applySession(s: Session): Boolean {
+    /**
+     * A newer description of the session: from this follow's `state` event, or ([fromWatch]) the machine's
+     * watch list. The follow cuts screen-derived fields (a dialog's checkboxes) from the live screen, and
+     * those change without any file mtime, so a watch copy with the same updatedAt is older: it replaces a
+     * follow state only when strictly newer.
+     */
+    fun applySession(s: Session, fromWatch: Boolean = false): Boolean {
         val cur = session
         val next = if (s.connectionId.isEmpty()) s.copy(connectionId = ref.connectionId) else s
         if (cur != null && next.updatedAt < cur.updatedAt) return false
+        if (fromWatch && sessionFromFollow && cur != null && next.updatedAt <= cur.updatedAt) return false
+        sessionFromFollow = !fromWatch
         if (cur == next) return false
         session = next
         version++
@@ -199,6 +208,8 @@ class SessionReducer(
         if (type == "user" && !sidechain && isIncomingPeerLine(o)) return
         if (type == "user" && !sidechain && o.str("parent_tool_use_id") == null && isPrompt(o)) {
             lastFinalNorm = null // a new turn: drafts are fresh again
+        } else if (!sidechain && (type == "user" || type == "assistant") && hasToolBlock(o)) {
+            lastFinalNorm = null // a tool call / result since the text landed: the next draft is a new message
         }
         if (transcript.acceptTranscript(line)) version++
         if (type == "assistant" && !sidechain && o.str("parent_tool_use_id") == null) {
@@ -221,7 +232,9 @@ class SessionReducer(
         if (text.isBlank()) { clearDraft(); return }
         val norm = normalize(text)
         val landed = lastFinalNorm
-        if (landed != null && norm.isNotEmpty() && landed.contains(norm)) return // the screen still shows what already landed
+        // The screen still shows what already landed: whole, or its end once its top scrolled away. Not any
+        // substring of it: a new reply opening like the last one ("Let me…", "Done.") must still stream.
+        if (landed != null && norm.isNotEmpty() && landed.endsWith(norm)) return
         if (draft == text) return
         draft = text
         version++
@@ -395,6 +408,11 @@ class SessionReducer(
         if (content is JsonArray && content.any { (it as? JsonObject)?.str("type") == "tool_result" }) return false
         val t = userText(o)?.trim() ?: return false
         return t.isNotEmpty() && !t.startsWith("<")
+    }
+
+    private fun hasToolBlock(o: JsonObject): Boolean {
+        val content = o.obj("message")?.get("content") as? JsonArray ?: return false
+        return content.any { (it as? JsonObject)?.str("type").let { t -> t == "tool_use" || t == "tool_result" } }
     }
 
     private fun assistantText(o: JsonObject): String? {
