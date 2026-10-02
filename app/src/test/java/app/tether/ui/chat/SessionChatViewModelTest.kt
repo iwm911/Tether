@@ -362,6 +362,20 @@ class SessionChatViewModelTest {
     }
 
     @Test
+    fun anUnreadWaitGetsTheKeyPadButAHandoffDoesNot() = runTest(dispatcher) {
+        // Needs-you with nothing read from the screen: an empty dialog so the key pad can still answer it.
+        val hub = FakeHub(stateWith(session(state = SessionState.NEEDS_YOU)))
+        val vm = vm(hub)
+        advanceUntilIdle()
+        assertTrue(vm.state.value.dialog != null)
+        // Claude ended its turn handing work back: answered with a normal message. Regression: the phone showed
+        // an empty "Claude is asking" key pad with no question in it.
+        hub.conv.value = stateWith(session(state = SessionState.NEEDS_YOU).copy(handoff = true, waitingFor = "rebuild and test", updatedAt = 2))
+        advanceUntilIdle()
+        assertEquals(null, vm.state.value.dialog)
+    }
+
+    @Test
     fun aSubagentViewIsReadOnly() = runTest(dispatcher) {
         val hub = FakeHub(stateWith(session()))
         val vm = vm(hub, agentId = "a1b2c3", commands = listOf(SlashCommand("compact", "")))

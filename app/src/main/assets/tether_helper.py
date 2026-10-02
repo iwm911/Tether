@@ -2921,6 +2921,11 @@ def make_session(slot, facts=None, tfile=None, screen=None):
         d = session_dialog(rec["short"], st, None, screen)
         if d:
             state, pending = "needs_you", d
+    # Claude ended its turn handing work back ("blocked" with a needs note, e.g. "rebuild and test on the phone"):
+    # the worker is idle at its prompt, nothing on screen waits for a key. Still the user's move (claude agents
+    # lists it as blocked), but answered by a normal message, not a key pad.
+    handoff = state == "needs_you" and pending is None and live and not term and \
+        (bg or {}).get("status") == "idle" and not st.get("block")
     cwd = cwd_hint(info, st, rec, reg, path)
     waiting = reg.get("waitingFor") if isinstance(reg.get("waitingFor"), str) else None
     if state == "needs_you" and not waiting:
@@ -2954,6 +2959,7 @@ def make_session(slot, facts=None, tfile=None, screen=None):
         "intent": one_line(st.get("intent") or (rec or {}).get("intent") or info.get("firstPrompt"), 240) or None,
         "state": state,
         "waitingFor": waiting,
+        "handoff": bool(handoff),
         "pending": pending,
         "process": "live" if (live or term) else "retired",
         "heldBy": held,

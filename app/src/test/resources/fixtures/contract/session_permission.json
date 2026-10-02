@@ -6,6 +6,7 @@
  "intent": "ask me",
  "state": "needs_you",
  "waitingFor": "permission prompt",
+ "handoff": false,
  "pending": {
   "toolUseId": "toolu_p1",
   "toolName": "Bash",
@@ -16,8 +17,8 @@
  "process": "live",
  "heldBy": "daemon",
  "terminalPid": null,
- "startedAt": 1790870000000,
- "updatedAt": 1790879362682,
+ "startedAt": 1790848800000,
+ "updatedAt": 1790953949847,
  "lastText": null,
  "tokens": null,
  "model": "claude-haiku-4-5-20251001",

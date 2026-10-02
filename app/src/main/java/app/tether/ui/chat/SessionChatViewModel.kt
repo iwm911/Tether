@@ -84,7 +84,8 @@ data class SessionChatUiState(
         get() {
             (live?.pending as? SessionPending.Dialog)?.let { return it }
             val s = session ?: return null
-            return if (!readOnly && s.needsYou && !s.heldByTerminal && live?.pending == null) SessionPending.Dialog() else null
+            // A hand-off has nothing on screen to answer: the composer is the answer, no empty key pad.
+            return if (!readOnly && s.needsYou && !s.handoff && !s.heldByTerminal && live?.pending == null) SessionPending.Dialog() else null
         }
     val title: String
         get() = session?.title?.takeIf { it.isNotBlank() }

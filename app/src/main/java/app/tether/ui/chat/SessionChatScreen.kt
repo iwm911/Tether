@@ -88,7 +88,7 @@ internal fun sessionStatusLabel(s: SessionChatUiState): String {
         s.waking -> "Waking…"
         s.heldByTerminal -> if (session?.needsYou == true) "Waiting in the terminal" else "In a terminal"
         session == null -> if (s.conversation.loadingHistory) "Loading…" else s.conversation.status.label
-        session.state == SessionState.NEEDS_YOU -> "Needs you"
+        session.state == SessionState.NEEDS_YOU -> if (session.handoff) "Your turn" else "Needs you"
         session.state == SessionState.WORKING -> "Working"
         session.state == SessionState.FAILED -> "Failed"
         s.retired -> "Stopped"
@@ -247,7 +247,8 @@ fun SessionChatScreen(
 
             // ── Conversation ──
             // Held by a terminal, the prompt is answered at that keyboard: nothing here asks for the user.
-            val waiting = state.session?.needsYou == true && !state.heldByTerminal
+            // A hand-off (Claude ended its turn with a note) is answered by a normal message: no "Waiting for you".
+            val waiting = state.session?.needsYou == true && state.session?.handoff != true && !state.heldByTerminal
             val showFooter = live?.status != null || conv.status == RunStatus.WORKING || waiting
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 val listPadding = PaddingValues(top = Space.sm, bottom = bottomDp + Space.sm)

@@ -185,6 +185,23 @@ class SessionsTest(unittest.TestCase):
         self.assertEqual((p["kind"], p["toolName"], p["toolUseId"]), ("permission", "Bash", "toolu_p1"))
         self.assertIn("rm -rf build", p["inputJson"])
 
+    def test_handoff_is_needs_you_without_a_key_pad(self):
+        # Claude ended its turn handing work back: the job says blocked with a needs note while the worker sits
+        # idle at its prompt. Regression: the phone showed an empty "Claude is asking" key pad for it.
+        hm = self.w.home
+        hm.transcript(self.w.proj, SID_B, [user_line("fix it", cwd=self.w.proj),
+                                           assistant_line("Fixed. Rebuild the app and test on the phone.")])
+        hm.job("bbbb2222", sessionId=SID_B, cwd=self.w.proj, state="blocked", tempo="blocked",
+               needs="rebuild app and test on the phone", block=None)
+        hm.registry(os.getpid(), kind="bg", status="idle", sessionId=SID_B, jobId="bbbb2222")
+        b = self.by_sid()[SID_B]
+        self.assertEqual((b["state"], b["handoff"], b["pending"]), ("needs_you", True, None))
+        self.assertEqual(b["waitingFor"], "rebuild app and test on the phone")
+
+    def test_real_waits_are_not_handoffs(self):
+        self.assertFalse(self.by_sid()[SID_B]["handoff"])  # an AskUserQuestion block
+        self.assertFalse(self.by_sid()[SID_A]["handoff"])  # working
+
     def test_retired_job_keeps_its_facts(self):
         c = self.by_sid()[SID_C]
         self.assertEqual((c["state"], c["process"], c["heldBy"]), ("done", "retired", "none"))

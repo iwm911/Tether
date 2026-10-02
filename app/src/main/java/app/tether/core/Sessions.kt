@@ -150,6 +150,11 @@ data class Session(
     val intent: String? = null,
     val state: SessionState = SessionState.IDLE,
     val waitingFor: String? = null,
+    /**
+     * NEEDS_YOU because Claude ended its turn handing work back (waitingFor = its note), not because a prompt
+     * waits on screen: answered with a normal message, no key pad.
+     */
+    val handoff: Boolean = false,
     val pending: SessionPending? = null,
     val process: SessionProcess = SessionProcess.RETIRED,
     val heldBy: Holder = Holder.NONE,
