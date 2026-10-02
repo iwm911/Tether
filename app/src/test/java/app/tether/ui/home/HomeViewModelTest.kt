@@ -1,9 +1,11 @@
 package app.tether.ui.home
 
+import app.tether.core.AppSettings
 import app.tether.core.AskAnswer
 import app.tether.core.AuthMethod
 import app.tether.core.Connection
 import app.tether.core.ConversationState
+import app.tether.core.Holder
 import app.tether.core.ImageAttachment
 import app.tether.core.LinkState
 import app.tether.core.NewSessionRequest
@@ -93,12 +95,18 @@ class HomeViewModelTest {
 
     private val perm = SessionPending.Permission(toolUseId = "tu1", toolName = "Bash", summary = "rm -rf build")
 
-    private fun TestScope.vm(hub: FakeHub, machines: List<String> = listOf("a", "b"), projects: List<ProjectSummary> = emptyList()): HomeViewModel {
+    private fun TestScope.vm(
+        hub: FakeHub,
+        machines: List<String> = listOf("a", "b"),
+        projects: List<ProjectSummary> = emptyList(),
+        settings: StateFlow<AppSettings> = MutableStateFlow(AppSettings()),
+    ): HomeViewModel {
         val vm = HomeViewModel(
             hub = hub,
             connections = MutableStateFlow(machines.map(::conn)),
             links = MutableStateFlow<Map<String, LinkState>>(emptyMap()),
             loadProjects = { projects },
+            settings = settings,
             loadTimers = false,
         )
         backgroundScope.launch { vm.state.collect {} }
@@ -132,6 +140,25 @@ class HomeViewModelTest {
         hub.list.value = hub.list.value.map { if (it.sessionId == "idle-a") it.copy(state = SessionState.NEEDS_YOU, updatedAt = 60) else it }
         advanceUntilIdle()
         assertEquals(listOf("idle-a", "ask-a", "work-b"), vm.state.value.sessions.map { it.sessionId })
+    }
+
+    @Test
+    fun terminalSessionsHiddenWhenTheSettingIsOff() = runTest(dispatcher) {
+        val hub = FakeHub(listOf(
+            s("bg", updated = 10),
+            s("term", state = SessionState.NEEDS_YOU, updated = 20, pending = perm).copy(heldBy = Holder.TERMINAL),
+        ))
+        val settings = MutableStateFlow(AppSettings())
+        val vm = vm(hub, settings = settings)
+        advanceUntilIdle()
+        assertEquals(listOf("term", "bg"), vm.state.value.sessions.map { it.sessionId })
+
+        settings.value = AppSettings(showTerminalSessions = false)
+        advanceUntilIdle()
+        val st = vm.state.value
+        assertEquals(listOf("bg"), st.sessions.map { it.sessionId })
+        assertEquals(1, st.totalSessions)
+        assertEquals(0, st.needsYouCount)
     }
 
     @Test
