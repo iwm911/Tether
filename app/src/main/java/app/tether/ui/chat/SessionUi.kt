@@ -31,6 +31,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
+import androidx.compose.material.icons.automirrored.rounded.Reply
 import androidx.compose.material.icons.rounded.CheckBox
 import androidx.compose.material.icons.rounded.CheckBoxOutlineBlank
 import androidx.compose.material.icons.rounded.Code
@@ -69,6 +70,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.tether.core.DialogKind
@@ -135,6 +137,54 @@ internal fun TerminalHeldBar(machineName: String?) {
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+    }
+}
+
+/**
+ * Above the composer while Claude has handed its turn back: what it asks the user to do, and its ready-made
+ * reply (e.g. `! gh pr merge 16`) as a chip that fills the composer, to edit or send as is.
+ */
+@Composable
+internal fun HandoffPanel(needs: String?, suggestedReply: String?, onUseReply: (String) -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        border = BorderStroke(1.dp, TetherTheme.colors.hairline),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = 8.dp),
+    ) {
+        Column(Modifier.padding(horizontal = Space.lg, vertical = Space.md)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.AutoMirrored.Rounded.Reply, contentDescription = null, tint = TetherTheme.colors.clay, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Your turn · Claude asks you to", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (!needs.isNullOrBlank()) {
+                Spacer(Modifier.height(6.dp))
+                Text(needs, style = MaterialTheme.typography.bodyMedium, maxLines = 4, overflow = TextOverflow.Ellipsis)
+            }
+            if (!suggestedReply.isNullOrBlank()) {
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(TetherTheme.colors.codeBg)
+                        .clickable(role = Role.Button, onClickLabel = "Put in the reply box") { onUseReply(suggestedReply) }
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        suggestedReply,
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Text("Use", style = MaterialTheme.typography.labelLarge, color = TetherTheme.colors.clay)
+                }
+            }
         }
     }
 }

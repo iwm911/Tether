@@ -3,11 +3,14 @@ package app.tether.ui.chat
 import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
@@ -54,6 +57,8 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -302,6 +307,10 @@ fun SessionChatScreen(
                         respondingIds = respondingIds,
                         onRespond = onRespond,
                     )
+                }
+                val s = state.session
+                AnimatedVisibility(s != null && s.needsYou && s.handoff && dialog == null, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
+                    HandoffPanel(s?.waitingFor, s?.suggestedReply, onUseReply = { vm.composer.value = TextFieldValue(it, TextRange(it.length)) })
                 }
             }
             // 0 = composer, 1 = held by a terminal, 2 = read-only subagent view

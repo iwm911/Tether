@@ -2960,6 +2960,8 @@ def make_session(slot, facts=None, tfile=None, screen=None):
         "state": state,
         "waitingFor": waiting,
         "handoff": bool(handoff),
+        # A hand-off's ready-made answer (e.g. "! gh pr merge 16"), as claude agents pre-fills its reply box.
+        "suggestedReply": (one_line(st.get("suggestedReply"), 400) or None) if handoff else None,
         "pending": pending,
         "process": "live" if (live or term) else "retired",
         "heldBy": held,

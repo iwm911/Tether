@@ -26,6 +26,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.Reply
 import androidx.compose.material.icons.rounded.Block
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
@@ -221,11 +222,24 @@ private fun NeedsYouBody(session: Session, decided: Boolean?, onOpen: () -> Unit
                 )
             }
         }
-        null -> Text(
-            session.waitingFor?.takeIf { it.isNotBlank() }?.let { "Waiting for $it" } ?: "Claude is waiting for you.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        // A hand-off: Claude ended its turn asking the user to do something; answered with a normal reply.
+        null -> if (session.handoff) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.AutoMirrored.Rounded.Reply, null, tint = TetherTheme.colors.clay, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Your turn · Claude asks you to", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            session.waitingFor?.takeIf { it.isNotBlank() }?.let {
+                Spacer(Modifier.height(6.dp))
+                Text(it, style = MaterialTheme.typography.bodyLarge, maxLines = 3, overflow = TextOverflow.Ellipsis)
+            }
+        } else {
+            Text(
+                session.waitingFor?.takeIf { it.isNotBlank() }?.let { "Waiting for $it" } ?: "Claude is waiting for you.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
     if (session.heldByTerminal) return // answered in the terminal that holds it
     Spacer(Modifier.height(12.dp))
@@ -241,6 +255,8 @@ private fun NeedsYouBody(session: Session, decided: Boolean?, onOpen: () -> Unit
                 SecondaryButton("Deny", onClick = onDeny, modifier = Modifier.weight(1f), icon = Icons.Rounded.Close)
                 PrimaryButton("Allow", onClick = onAllow, modifier = Modifier.weight(1f), icon = Icons.Rounded.Check)
             }
+            d == null && pending == null && session.handoff ->
+                PrimaryButton("Reply", onClick = onOpen, modifier = Modifier.fillMaxWidth(), icon = Icons.AutoMirrored.Rounded.Reply)
             d == null && pending is SessionPending.Question ->
                 PrimaryButton("Answer", onClick = onOpen, modifier = Modifier.fillMaxWidth(), icon = Icons.Rounded.QuestionAnswer)
             d == null -> PrimaryButton("Review", onClick = onOpen, modifier = Modifier.fillMaxWidth())
