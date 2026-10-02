@@ -228,7 +228,13 @@ tools/publish_update.sh release --code N --name X.Y.Z --notes "What's new"
 Builds the signed APK and creates GitHub release `vX.Y.Z` on the current pushed commit, with the APK
 and an `update.json` manifest (version code + SHA-256). Needs the `gh` CLI and `keystore.properties`.
 Installed apps offer the update on their next check (launch, or the twice-daily background check,
-which also posts a notification). `tools/publish_update.sh debug` publishes a
+which also posts a notification).
+
+**Beta channel.** `tools/publish_update.sh beta --code N --name X.Y.Z-beta.N --notes "…"` publishes a
+release-signed pre-release `vX.Y.Z-beta.N`. Only apps with **Settings › Beta updates** on are offered it
+(beta builds have it on), and they always get the newer of the latest stable and the latest beta.
+Stable and beta share one version-code sequence, so each new code must be higher than every published
+stable and beta release; the script checks this. `tools/publish_update.sh debug` publishes a
 pre-release that only debug builds pick up.
 
 </details>

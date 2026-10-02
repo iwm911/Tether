@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -42,8 +43,9 @@ import java.security.MessageDigest
  *
  * `tools/publish_update.sh` (in the repo) builds a signed APK and publishes it as a GitHub release
  * together with a manifest asset (`update.json`; `update-debug.json` for debug builds, published as
- * a pre-release). The app lists the releases of [BuildConfig.UPDATE_REPO], reads the newest
- * manifest for its variant, downloads the APK asset over HTTPS, checks its SHA-256 and hands it to
+ * a pre-release; betas are release-signed pre-releases with `update.json`). The app lists the
+ * releases of [BuildConfig.UPDATE_REPO] and reads the newest manifest for its variant (see
+ * [updateCandidates]; with Settings › Beta updates on, the newer of the newest stable and beta), downloads the APK asset over HTTPS, checks its SHA-256 and hands it to
  * Android's PackageInstaller — Android then asks the user to confirm, as it must for any app
  * installed outside a store, and refuses APKs not signed with the installed app's key.
  *
@@ -75,17 +77,36 @@ sealed interface UpdateState {
 }
 
 @Serializable
-private data class GhRelease(
+internal data class GhRelease(
     val draft: Boolean = false,
     val prerelease: Boolean = false,
     val assets: List<GhAsset> = emptyList(),
 )
 
 @Serializable
-private data class GhAsset(
+internal data class GhAsset(
     val name: String,
     @SerialName("browser_download_url") val url: String,
 )
+
+/**
+ * The releases (API order: newest first) that may hold the next update, each with its manifest asset:
+ * the newest stable release, plus the newest pre-release for debug builds (whose manifest only
+ * pre-releases carry) or with beta updates on. Drafts never count. The caller offers the one whose
+ * manifest has the highest versionCode, so a stable release newer than the last beta wins too.
+ */
+internal fun updateCandidates(
+    releases: List<GhRelease>,
+    manifestName: String,
+    debug: Boolean,
+    beta: Boolean,
+): List<Pair<GhRelease, GhAsset>> {
+    val withManifest = releases.asSequence().filter { !it.draft }
+        .mapNotNull { r -> r.assets.firstOrNull { it.name == manifestName }?.let { r to it } }
+    val stable = withManifest.firstOrNull { !it.first.prerelease }
+    val pre = if (debug || beta) withManifest.firstOrNull { it.first.prerelease } else null
+    return listOfNotNull(stable, pre)
+}
 
 class UpdateManager(
     private val app: Application,
@@ -113,6 +134,13 @@ class UpdateManager(
                     UpdateCheckJob.cancel(app)
                     Notifications.cancel(app, Notifications.APP_UPDATE_NOTIFICATION_ID)
                 }
+            }
+        }
+        // Turning Beta updates on or off changes what's on offer: look again.
+        scope.launch {
+            settings.settings.map { it.betaUpdates }.distinctUntilChanged().drop(1).collect {
+                source = null
+                check(silent = true)
             }
         }
         // First look shortly after launch, off the startup path.
@@ -169,19 +197,15 @@ class UpdateManager(
         prefs.edit().putInt(KEY_NOTIFIED_VERSION, info.versionCode).apply()
     }
 
-    /** Newest release (API order: newest first) carrying this variant's manifest and its APK. */
+    /** The highest-versioned release on offer ([updateCandidates]) with its APK download URL. */
     private fun newestRelease(): Pair<String, UpdateInfo>? {
-        val body = httpText("https://api.github.com/repos/${BuildConfig.UPDATE_REPO}/releases?per_page=20", "application/vnd.github+json")
+        val body = httpText("https://api.github.com/repos/${BuildConfig.UPDATE_REPO}/releases?per_page=30", "application/vnd.github+json")
         val releases = json.decodeFromString(ListSerializer(GhRelease.serializer()), body)
-        for (r in releases) {
-            // Release builds ignore pre-releases (debug builds and betas are published as those).
-            if (r.draft || (r.prerelease && !BuildConfig.DEBUG)) continue
-            val manifest = r.assets.firstOrNull { it.name == manifestName } ?: continue
+        val beta = settings.settings.value.betaUpdates
+        return updateCandidates(releases, manifestName, BuildConfig.DEBUG, beta).mapNotNull { (r, manifest) ->
             val info = json.decodeFromString(UpdateInfo.serializer(), httpText(manifest.url, "application/octet-stream"))
-            val apk = r.assets.firstOrNull { it.name == info.apk } ?: continue
-            return apk.url to info
-        }
-        return null
+            r.assets.firstOrNull { it.name == info.apk }?.let { it.url to info }
+        }.maxByOrNull { it.second.versionCode }
     }
 
     private fun open(url: String, accept: String): HttpURLConnection {
