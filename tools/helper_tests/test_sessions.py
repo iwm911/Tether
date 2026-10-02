@@ -418,6 +418,22 @@ class ScreenDraftTest(unittest.TestCase):
         nothing = u"● old reply\n❯ new prompt\n\n✶ Herding… (1s)"
         self.assertEqual(h.screen_draft(self.lines(nothing))[0], None)
 
+    def test_tool_header_still_drawing_is_not_a_draft(self):
+        # Recorded live (2.1.288): while the input streams the header is the bare name, then a long command wraps
+        # over rows before any "⎿" line; both showed on the phone as reply text for a second.
+        bare = u"❯ run it\n\n● Bash\n· Topsy-turvying… (2s · thinking)"
+        self.assertEqual(h.screen_draft(self.lines(bare)), (None, {"verb": u"Topsy-turvying…", "elapsedS": 2, "tokens": None}))
+        wrapped = (u"❯ run it\n\n● Bash(ls -la /tmp/aaaaaaaaaaaaaaaaaaaa\n  /tmp/bbbbbbbbbbbbbbbbbbbb 2>&1\n  | head -5)\n\n"
+                   u"✶ Topsy-turvying… (3s)")
+        self.assertEqual(h.screen_draft(self.lines(wrapped))[0], None)
+        unclosed = u"❯ run it\n\n● Bash(git commit -m \"$(cat <<'EOF'\n  Fix the thing\n\n✶ Herding… (3s)"
+        self.assertEqual(h.screen_draft(self.lines(unclosed))[0], None)
+        for name in (u"TodoWrite", u"Web Search(\"kotlin\")", u"context7 - resolve-library-id (MCP)(libraryName: \"x\")"):
+            self.assertEqual(h.screen_draft(self.lines(u"● %s\n\n✶ Herding… (1s)" % name))[0], None, name)
+        # Replies that merely open with a tool's word still stream.
+        for reply in (u"Read the file first, then edit it.", u"Done", u"Bash scripts are fine here.\n  More text."):
+            self.assertEqual(h.screen_draft(self.lines(u"● %s\n\n✶ Herding… (1s)" % reply))[0], reply.replace(u"\n  ", u"\n"))
+
     def test_lists_are_not_joined(self):
         w = "x" * 90
         screen = u"● Steps:\n  - %s\n  - second\n  1. third\n\n✶ Herding… (1s)" % w

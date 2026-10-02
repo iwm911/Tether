@@ -163,6 +163,16 @@ class SessionReducerTest {
     }
 
     @Test
+    fun aLandedToolCallClearsTheDraft() {
+        // The screen showed the tool's header ("Bash") as a draft for a moment; the card replaces it.
+        val r = reducer()
+        r.accept(FollowEvent.Draft("Bash"))
+        r.accept(line("""{"type":"assistant","isSidechain":false,"message":{"id":"m-t","role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"ls"}}]},"uuid":"t1","timestamp":"2026-10-01T17:16:07.000Z"}"""))
+        assertNull(r.snapshot().live!!.draft)
+        assertEquals(listOf("Bash"), r.snapshot().items.map { (it as ChatItem.ToolCall).name })
+    }
+
+    @Test
     fun theFollowStateWinsOverAWatchCopyOfTheSameMoment() {
         // Review round 2: a dialog's checkbox (screen-only, no mtime change) jumped back to the watch's copy.
         val r = reducer()
