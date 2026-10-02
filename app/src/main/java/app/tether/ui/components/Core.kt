@@ -76,6 +76,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.tether.core.MachineAccents
 import app.tether.core.RunStatus
+import app.tether.core.projectRoot
 import app.tether.ui.theme.Space
 import app.tether.ui.theme.TetherTheme
 import kotlinx.coroutines.delay
@@ -629,5 +630,5 @@ fun prettyPath(path: String, home: String? = null, maxLen: Int = 42): String {
     return p
 }
 
-/** Last path component — used as a project's display name. */
-fun projectName(path: String): String = path.trimEnd('/').substringAfterLast('/').ifEmpty { "/" }
+/** Last path component of the project root (a worktree shows its project's name) — a project's display name. */
+fun projectName(path: String): String = projectRoot(path).trimEnd('/').substringAfterLast('/').ifEmpty { "/" }

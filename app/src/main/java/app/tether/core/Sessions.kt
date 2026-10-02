@@ -186,7 +186,18 @@ data class Session(
     val title: String
         get() = name.trim().ifEmpty { null }
             ?: intent?.trim()?.lineSequence()?.firstOrNull()?.takeIf { it.isNotBlank() }?.let { if (it.length > 80) it.take(79) + "…" else it }
-            ?: cwd.trimEnd('/').substringAfterLast('/').ifEmpty { cwd.ifEmpty { short } }
+            ?: projectRoot(cwd).trimEnd('/').substringAfterLast('/').ifEmpty { cwd.ifEmpty { short } }
+}
+
+private const val WORKTREE_MARK = "/.claude/worktrees/"
+
+/**
+ * The project a folder belongs to: a Claude Code worktree (`<root>/.claude/worktrees/<name>`) counts
+ * as `<root>`, so its sessions keep the project's name and chip. Any other path is its own project.
+ */
+fun projectRoot(path: String): String {
+    val i = path.indexOf(WORKTREE_MARK)
+    return if (i > 0) path.substring(0, i) else path
 }
 
 /** `daemon-status` (also `probe.daemon`). */

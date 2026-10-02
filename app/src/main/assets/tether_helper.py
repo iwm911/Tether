@@ -608,6 +608,17 @@ def project_dir_name(cwd):
     return re.sub(r"[^A-Za-z0-9]", "-", cwd)
 
 
+WORKTREE_MARK = "/.claude/worktrees/"
+
+
+def project_root(cwd):
+    """The project a cwd belongs to: a Claude Code worktree (<root>/.claude/worktrees/<name>) counts as <root>."""
+    if not cwd:
+        return cwd
+    i = cwd.find(WORKTREE_MARK)
+    return cwd[:i] if i > 0 else cwd
+
+
 def list_session_files(project_dir):
     out = []
     try:
@@ -670,6 +681,9 @@ def cmd_projects(opts):
                 break
         if not cwd:
             cwd = decode_dir_name(name)
+        root = project_root(cwd)
+        if root != cwd:
+            cwd, branch = root, None  # a worktree's sessions count toward its project, not its branch
         last = int(files[0][2].st_mtime * 1000)
         p = projects.get(cwd)
         if p:
@@ -2624,23 +2638,22 @@ class TranscriptFacts(object):
 
 
 def all_transcripts(want_cwd=None):
-    """[(path, sid, stat)] of top-level transcripts, newest first (one project dir when want_cwd is given)."""
+    """[(path, sid, stat)] of top-level transcripts, newest first (want_cwd: its project dir and its worktrees')."""
     files = []
     if not os.path.isdir(CLAUDE_PROJECTS):
         return files
+    try:
+        names = os.listdir(CLAUDE_PROJECTS)
+    except OSError:
+        names = []
     if want_cwd:
-        d = os.path.join(CLAUDE_PROJECTS, project_dir_name(want_cwd))
+        own = project_dir_name(want_cwd)
+        trees = project_dir_name(want_cwd.rstrip("/") + WORKTREE_MARK)
+        names = [n for n in names if n == own or n.startswith(trees)]
+    for name in names:
+        d = os.path.join(CLAUDE_PROJECTS, name)
         if os.path.isdir(d):
             files.extend(list_session_files(d))
-    else:
-        try:
-            names = os.listdir(CLAUDE_PROJECTS)
-        except OSError:
-            names = []
-        for name in names:
-            d = os.path.join(CLAUDE_PROJECTS, name)
-            if os.path.isdir(d):
-                files.extend(list_session_files(d))
     files.sort(key=lambda t: t[2].st_mtime, reverse=True)
     return files
 
@@ -3030,7 +3043,7 @@ def build_sessions(src, facts, want_cwd=None, limit=SESSIONS_LIMIT, before=None)
             s = make_session(slot, facts, tf)
         except (OSError, IOError, ValueError, KeyError, TypeError):
             continue
-        if want_cwd and os.path.normpath(s["cwd"]) != want_cwd:
+        if want_cwd and project_root(os.path.normpath(s["cwd"] or "")) != want_cwd:
             continue
         if before is not None and s["updatedAt"] >= before:
             continue
