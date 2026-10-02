@@ -108,6 +108,22 @@ class SessionListTest {
     }
 
     @Test
+    fun aWorktreeSessionBelongsToItsProject() {
+        val all = listOf(
+            s("m", cwd = "/home/me/Tether", updated = 1),
+            s("w", cwd = "/home/me/Tether/.claude/worktrees/fix-label", updated = 5),
+            s("n", cwd = "/home/me/Tether/.claude/worktrees/feat/nested/", updated = 3),
+        )
+        assertEquals(listOf("/home/me/Tether" to 3), projectChips(all, null).map { it.cwd to it.count })
+        assertEquals(listOf("m", "w", "n"), all.filter(SessionFilter(project = "/home/me/Tether")::matches).map { it.sessionId })
+        assertEquals(1L, SessionPaging.cursor(PageKey("a", "/home/me/Tether"), all))
+        assertEquals("Tether", app.tether.ui.components.projectName("/home/me/Tether/.claude/worktrees/fix-label"))
+        assertEquals("Tether", all[1].title)
+        // Only Claude Code's worktree folder counts; an ordinary .claude subfolder is its own path.
+        assertEquals("agents", app.tether.ui.components.projectName("/home/me/Tether/.claude/agents"))
+    }
+
+    @Test
     fun machineChipsFollowTheUsersMachineOrder() {
         val all = listOf(s("x", conn = "c"), s("y", conn = "a"))
         assertEquals(listOf("a", "c"), machinesWithSessions(all, listOf("a", "b", "c")))

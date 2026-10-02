@@ -5,6 +5,7 @@ import app.tether.core.SessionPending
 import app.tether.core.SessionRef
 import app.tether.core.SessionState
 import app.tether.core.identity
+import app.tether.core.projectRoot
 
 /*
  * The one session list Home and the Machine screen show (one-session model, U2). Plain Kotlin so
@@ -43,10 +44,10 @@ val HomeSessionOrder: Comparator<Session> =
 
 fun List<Session>.sortedForHome(): List<Session> = sortedWith(HomeSessionOrder)
 
-/** Machine + project filter chips. Null = all. A project is a session's `cwd`. */
+/** Machine + project filter chips. Null = all. A project is a session's `cwd` (a worktree's, its root). */
 data class SessionFilter(val machine: String? = null, val project: String? = null) {
     fun matches(s: Session): Boolean =
-        (machine == null || s.connectionId == machine) && (project == null || samePath(s.cwd, project))
+        (machine == null || s.connectionId == machine) && (project == null || samePath(projectRoot(s.cwd), project))
 
     val isEmpty: Boolean get() = machine == null && project == null
 }
@@ -77,7 +78,7 @@ data class ProjectChip(val cwd: String, val count: Int, val lastActive: Long)
  */
 fun projectChips(sessions: List<Session>, machine: String?, selected: String? = null, max: Int = 8): List<ProjectChip> {
     val scoped = sessions.filter { (machine == null || it.connectionId == machine) && it.cwd.isNotBlank() }
-    val chips = scoped.groupBy { normPath(it.cwd) }
+    val chips = scoped.groupBy { normPath(projectRoot(it.cwd)) }
         .map { (cwd, list) -> ProjectChip(cwd, list.size, list.maxOf { it.updatedAt }) }
         .sortedWith(compareByDescending<ProjectChip> { it.lastActive }.thenBy { it.cwd })
     val top = chips.take(max)
@@ -124,7 +125,7 @@ object SessionPaging {
     /** `before` cursor for [key]: the oldest `updatedAt` already shown in that slice, or null. */
     fun cursor(key: PageKey, shown: List<Session>): Long? =
         shown.asSequence()
-            .filter { it.connectionId == key.connectionId && (key.cwd == null || samePath(it.cwd, key.cwd)) && it.updatedAt > 0 }
+            .filter { it.connectionId == key.connectionId && (key.cwd == null || samePath(projectRoot(it.cwd), key.cwd)) && it.updatedAt > 0 }
             .minOfOrNull { it.updatedAt }
 
     /**

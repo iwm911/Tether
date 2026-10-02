@@ -3,6 +3,7 @@ package app.tether.ui.home
 import app.tether.core.Session
 import app.tether.core.SessionDecision
 import app.tether.core.SessionHub
+import app.tether.core.projectRoot
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
@@ -42,7 +43,7 @@ class SessionListController(
         if (f.machine == machine) f else f.copy(machine = machine, project = null)
     }
 
-    fun setProject(project: String?) = _filter.update { it.copy(project = project?.let(::normPath)) }
+    fun setProject(project: String?) = _filter.update { f -> f.copy(project = project?.let { normPath(projectRoot(it)) }) }
 
     /**
      * Loads the next older page of every slice the current filter covers ([machines] = every
