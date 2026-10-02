@@ -155,6 +155,8 @@ data class Session(
      * waits on screen: answered with a normal message, no key pad.
      */
     val handoff: Boolean = false,
+    /** A hand-off's ready-made answer from Claude (e.g. `! gh pr merge 16`), offered to pre-fill the reply. */
+    val suggestedReply: String? = null,
     val pending: SessionPending? = null,
     val process: SessionProcess = SessionProcess.RETIRED,
     val heldBy: Holder = Holder.NONE,

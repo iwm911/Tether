@@ -192,14 +192,16 @@ class SessionsTest(unittest.TestCase):
         hm.transcript(self.w.proj, SID_B, [user_line("fix it", cwd=self.w.proj),
                                            assistant_line("Fixed. Rebuild the app and test on the phone.")])
         hm.job("bbbb2222", sessionId=SID_B, cwd=self.w.proj, state="blocked", tempo="blocked",
-               needs="rebuild app and test on the phone", block=None)
+               needs="rebuild app and test on the phone", block=None, suggestedReply="! ./gradlew installDebug")
         hm.registry(os.getpid(), kind="bg", status="idle", sessionId=SID_B, jobId="bbbb2222")
         b = self.by_sid()[SID_B]
         self.assertEqual((b["state"], b["handoff"], b["pending"]), ("needs_you", True, None))
         self.assertEqual(b["waitingFor"], "rebuild app and test on the phone")
+        self.assertEqual(b["suggestedReply"], "! ./gradlew installDebug")
 
     def test_real_waits_are_not_handoffs(self):
         self.assertFalse(self.by_sid()[SID_B]["handoff"])  # an AskUserQuestion block
+        self.assertIsNone(self.by_sid()[SID_B]["suggestedReply"])
         self.assertFalse(self.by_sid()[SID_A]["handoff"])  # working
 
     def test_retired_job_keeps_its_facts(self):
