@@ -1,0 +1,16 @@
+{"e":"line","line":{"type":"queue-operation","operation":"enqueue","timestamp":"2026-10-01T17:20:00.000Z","content":"<cross-session-message from=\"uds:/run/user/1001/cc-socks/99.sock\" from-name=\"builder\">tests are green</cross-session-message>","sessionId":"7b9f8c4c-6ac7-4d5a-9111-003abd24390e"}}
+{"e":"peer","dir":"in","from":"uds:/run/user/1001/cc-socks/99.sock","fromName":"builder","fromSessionId":"99999999-1111-4222-8333-444444444444","text":"tests are green","at":1790875200000}
+{"e":"peer","dir":"in","from":"uds:/run/user/1001/cc-socks/99.sock","fromName":"builder","fromSessionId":"99999999-1111-4222-8333-444444444444","text":"tests are green","at":1790875200000}
+{"e":"line","line":{"parentUuid":null,"isSidechain":false,"type":"user","message":{"role":"user","content":"<cross-session-message from=\"uds:/run/user/1001/cc-socks/99.sock\" from-name=\"builder\">tests are green</cross-session-message>"},"uuid":"u-peer","timestamp":"2026-10-01T17:20:01.000Z","sessionId":"7b9f8c4c-6ac7-4d5a-9111-003abd24390e"}}
+{"e":"line","line":{"parentUuid":"u-peer","isSidechain":false,"type":"assistant","message":{"id":"msg_s","model":"claude-haiku-4-5-20251001","role":"assistant","content":[{"type":"tool_use","id":"toolu_SEND","name":"SendMessage","input":{"to":"builder","message":"thanks, merging"}}]},"uuid":"a-send","timestamp":"2026-10-01T17:20:05.000Z","sessionId":"7b9f8c4c-6ac7-4d5a-9111-003abd24390e"}}
+{"e":"subagent","agentId":"a1b2c3","agentType":"Explore","description":"Find the config loader","toolUseId":"toolu_AG","model":"haiku","background":false,"status":"running"}
+{"e":"subagent","agentId":"a1b2c3","status":"done"}
+{"e":"subagent","agentId":"d4e5f6","agentType":"general-purpose","description":"Write docs","toolUseId":"toolu_AG2","background":true,"status":"running"}
+{"e":"task","taskId":"b7x1","toolUseId":"toolu_BG","kind":"shell","status":"running","summary":"npm run dev","outputFile":"/tmp/claude-1001/p/s/tasks/b7x1.output"}
+{"e":"task","taskId":"m9","kind":"monitor","status":"running","summary":"watch logs"}
+{"e":"task","taskId":"m9","kind":"monitor","status":"killed"}
+{"e":"task","taskId":"z1","kind":"brand-new-kind","status":"completed"}
+{"e":"todos","listId":"L1","items":[{"id":"1","subject":"Write tests","status":"completed"},{"id":"2","subject":"Fix bug","status":"in_progress"},{"id":"3","subject":"Ship","status":"pending"}]}
+{"e":"state","session":{"sessionId":"7b9f8c4c-6ac7-4d5a-9111-003abd24390e","short":"7b9f8c4c","cwd":"/home/user/tether-exp/live","name":"probe","state":"needs_you","waitingFor":"permission","pending":{"kind":"permission","toolUseId":"toolu_P","toolName":"Bash","summary":"rm -rf build","inputJson":"{\"command\":\"rm -rf build\"}"},"process":"live","heldBy":"daemon","startedAt":1000,"updatedAt":6000,"inFlight":{"tasks":1,"queued":1,"kinds":["shell"]}}}
+{"e":"caughtUp","offset":9000}
+{"e":"newKindFromTheFuture","x":1}

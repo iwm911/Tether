@@ -113,7 +113,7 @@ import app.tether.core.LinkState
 import app.tether.core.ModelOption
 import app.tether.core.PermissionMode
 import app.tether.core.ProjectSummary
-import app.tether.core.RunRef
+import app.tether.core.SessionRef
 import app.tether.ui.chat.SlashPopup
 import app.tether.ui.chat.matchSlashCommands
 import app.tether.ui.components.Hairline
@@ -152,14 +152,13 @@ private val Suggestions = listOf(
 fun NewAgentScreen(
     connectionId: String?,
     cwd: String?,
-    resumeSessionId: String?,
     onBack: () -> Unit,
-    onStarted: (RunRef) -> Unit,
+    onStarted: (SessionRef) -> Unit,
     onAddMachine: () -> Unit,
 ) {
     val container = LocalAppContainer.current
-    val vm: NewAgentViewModel = viewModel(key = "new:$connectionId:$cwd:$resumeSessionId") {
-        NewAgentViewModel(container, connectionId, cwd, resumeSessionId)
+    val vm: NewAgentViewModel = viewModel(key = "new:$connectionId:$cwd") {
+        NewAgentViewModel(container, connectionId, cwd)
     }
     val state by vm.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -190,7 +189,6 @@ fun NewAgentScreen(
         vm.addImages(uris)
     }
 
-    val resuming = state.resume != null
     val blocker = vm.blocker(state)
 
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
@@ -199,7 +197,7 @@ fun NewAgentScreen(
             Row(Modifier.fillMaxWidth().heightIn(min = 60.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onBack) { Icon(Icons.Rounded.Close, contentDescription = "Close") }
                 Spacer(Modifier.width(4.dp))
-                Text(if (resuming) "Continue session" else "New agent", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                Text("New session", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
             }
 
             // ── Steps ──
@@ -211,14 +209,10 @@ fun NewAgentScreen(
                     .padding(horizontal = Space.gutter),
                 verticalArrangement = Arrangement.spacedBy(Space.md),
             ) {
-                state.resume?.let { r ->
-                    ContinuingCard(r, onRetry = vm::retryResume)
-                }
-                PromptHero(resuming) {
+                PromptHero {
                     PromptStep(
                         vm = vm,
                         state = state,
-                        resuming = resuming,
                         canDictate = canDictate,
                         onDictate = {
                             val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
@@ -230,9 +224,7 @@ fun NewAgentScreen(
                                 scope.launch { snackbar.showSnackbar("Voice input isn't available on this device") }
                             }
                         },
-                        onAttach = if (state.effectiveBackground) null else {
-                            { imageLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
-                        },
+                        onAttach = { imageLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                     )
                 }
                 StepCard(1, "Where", summary = null) {
@@ -246,14 +238,10 @@ fun NewAgentScreen(
                                         connection = c,
                                         link = state.links[c.id],
                                         selected = c.id == state.connectionId,
-                                        enabled = !state.locked || c.id == state.connectionId,
+                                        enabled = true,
                                         onClick = { vm.selectMachine(c.id) },
                                     )
                                 }
-                            }
-                            if (state.locked) {
-                                Spacer(Modifier.height(Space.sm))
-                                Text("Continuing a session keeps its machine and folder.", style = MaterialTheme.typography.bodySmall, color = TetherTheme.colors.faint)
                             }
                         }
                         if (state.connectionId != null) {
@@ -268,26 +256,11 @@ fun NewAgentScreen(
                     }
                 }
 
-                if (!resuming) StepCard(0, "Run", summary = null) {
-                    AgentKindSelector(
-                        background = state.background,
-                        onSelect = { bg -> if (bg != state.background) { haptics.tick(); vm.selectBackground(bg) } },
-                    )
-                }
-
                 StepCard(3, "Model", summary = null) {
                     ModelStep(selected = state.model, onSelect = { vm.selectModel(it) })
                 }
 
                 StepCard(4, "Permissions", summary = null) {
-                    if (state.effectiveBackground) {
-                        Text(
-                            "A background agent's requests show here and in Claude Code on your computer. Answer in either place.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = TetherTheme.colors.info,
-                            modifier = Modifier.padding(bottom = Space.sm),
-                        )
-                    }
                     ModeStep(
                         selected = state.mode,
                         onSelect = { m ->
@@ -306,12 +279,7 @@ fun NewAgentScreen(
                     StartErrorCard(state.error ?: "", onDismiss = vm::dismissError, modifier = Modifier.padding(bottom = Space.md))
                 }
                 PrimaryButton(
-                    text = when {
-                        state.starting -> if (resuming) "Resuming…" else "Starting…"
-                        resuming -> "Continue session"
-                        state.effectiveBackground -> "Start in background"
-                        else -> "Start agent"
-                    },
+                    text = if (state.starting) "Starting…" else "Start session",
                     onClick = { vm.start() },
                     enabled = blocker == null,
                     loading = state.starting,
@@ -355,7 +323,7 @@ fun NewAgentScreen(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(Space.sm)) {
                     Text(
-                        "Claude Code hasn't been opened in this folder on ${conn?.name ?: "this machine"} yet, so it won't start a background agent here.",
+                        "Claude Code hasn't been opened in this folder on ${conn?.name ?: "this machine"} yet, so it won't start a session here.",
                         style = MaterialTheme.typography.bodyMedium,
                     )
                     Text(
@@ -386,45 +354,6 @@ fun NewAgentScreen(
         )
     }
 
-    state.mcpPrompt?.let { p ->
-        AlertDialog(
-            onDismissRequest = vm::dismissMcp,
-            icon = { Icon(Icons.Rounded.Extension, null, tint = TetherTheme.colors.info) },
-            title = { Text(if (p.servers.size == 1) "Enable this MCP server?" else "Enable these MCP servers?") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(Space.sm)) {
-                    Text(
-                        "This folder's .mcp.json lists MCP servers Claude Code hasn't been told about on ${conn?.name ?: "this machine"} yet. Claude would ask on the computer and wait there.",
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                    Text(
-                        p.servers.joinToString("\n"),
-                        style = TetherTheme.type.monoSmall,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(TetherTheme.colors.codeBg)
-                            .padding(horizontal = 10.dp, vertical = 8.dp),
-                    )
-                    Text(
-                        "MCP servers may run code or access system resources. Your choice is saved for this folder, the same as answering Claude's prompt on the computer.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { haptics.confirm(); vm.answerMcp(enable = true) }) {
-                    Text("Enable and start", fontWeight = FontWeight.SemiBold)
-                }
-            },
-            dismissButton = { TextButton(onClick = { vm.answerMcp(enable = false) }) { Text("Start without") } },
-            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-            shape = RoundedCornerShape(24.dp),
-        )
-    }
-
     if (confirmBypass) {
         AlertDialog(
             onDismissRequest = { confirmBypass = false },
@@ -449,65 +378,8 @@ fun NewAgentScreen(
     }
 }
 
-// ───────────────────────────── Live vs Background ─────────────────────────────
-
-@Composable
-private fun AgentKindSelector(background: Boolean, onSelect: (Boolean) -> Unit) {
-    val c = TetherTheme.colors
-    Column(Modifier.fillMaxWidth()) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(16.dp))
-                .background(c.subtleFill)
-                .padding(4.dp)
-                .selectableGroup(),
-        ) {
-            AgentKindOption(!background, Icons.Rounded.PhoneAndroid, "Live", { onSelect(false) }, Modifier.weight(1f))
-            AgentKindOption(background, Icons.Rounded.Computer, "Background", { onSelect(true) }, Modifier.weight(1f))
-        }
-        AnimatedContent(background, transitionSpec = { fadeIn() togetherWith fadeOut() }, label = "kindDesc") { bg ->
-            Text(
-                if (bg) "Recommended. Runs as claude --bg: it's in “claude agents” on your computer too, and you can attach to it there."
-                else "Streams here live, with images, rewind and branching. Shows in “claude agents” only while it runs.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = Space.sm, start = 4.dp),
-            )
-        }
-    }
-}
-
-@Composable
-private fun AgentKindOption(
-    selected: Boolean,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    title: String,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val c = TetherTheme.colors
-    val bg by animateColorAsState(if (selected) (if (c.isDark) Color(0xFF4A4A45) else c.card) else Color.Transparent, label = "kindBg")
-    val fg by animateColorAsState(if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant, label = "kindFg")
-    Row(
-        modifier
-            .heightIn(min = 42.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(bg)
-            .selectable(selected = selected, role = Role.RadioButton, onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.Center,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(icon, null, tint = if (selected) c.clay else fg, modifier = Modifier.size(18.dp))
-        Spacer(Modifier.width(8.dp))
-        Text(title, style = MaterialTheme.typography.labelLarge, color = fg)
-    }
-}
-
 private fun footerSummary(s: NewAgentUiState): String {
     val parts = buildList {
-        if (s.effectiveBackground) add("Background")
         s.connection?.name?.let(::add)
         s.cwd?.let { add(projectName(it)) }
         add(FallbackModels.firstOrNull { it.value == s.model }?.displayName ?: prettyModel(s.model))
@@ -533,68 +405,15 @@ private fun StepCard(number: Int, title: String, summary: String?, content: @Com
 
 /** The hero: a serif question and the big prompt card, like Claude's home composer. */
 @Composable
-private fun PromptHero(resuming: Boolean, content: @Composable () -> Unit) {
+private fun PromptHero(content: @Composable () -> Unit) {
     Column(Modifier.fillMaxWidth()) {
         Text(
-            if (resuming) "Pick up where you left off" else "What should Claude work on?",
+            "What should Claude work on?",
             style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Normal),
             color = MaterialTheme.colorScheme.onBackground,
             modifier = Modifier.padding(start = 4.dp, top = Space.sm, bottom = Space.lg),
         )
         content()
-    }
-}
-
-// ───────────────────────────── Continuing ─────────────────────────────
-
-@Composable
-private fun ContinuingCard(r: ResumeInfo, onRetry: () -> Unit) {
-    val info = TetherTheme.colors.info
-    TetherCard(Modifier.fillMaxWidth(), color = info.copy(alpha = 0.07f), border = info.copy(alpha = 0.3f), contentPadding = PaddingValues(Space.lg)) {
-        Row(verticalAlignment = Alignment.Top) {
-            IconTile(Icons.Rounded.History, info, size = 40.dp)
-            Spacer(Modifier.width(Space.md))
-            Column(Modifier.weight(1f)) {
-                Text("Continuing session", style = MaterialTheme.typography.labelMedium, color = info)
-                Spacer(Modifier.height(4.dp))
-                when (val s = r.session) {
-                    Loadable.Loading -> {
-                        SkeletonBlock(Modifier.fillMaxWidth(0.8f).height(18.dp))
-                        Spacer(Modifier.height(6.dp))
-                        SkeletonBlock(Modifier.fillMaxWidth(0.5f).height(11.dp))
-                    }
-                    is Loadable.Failed -> {
-                        Text("Session ${r.sessionId.take(8)}", style = MaterialTheme.typography.titleMedium)
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("Couldn't load its details", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
-                            TextButton(onClick = onRetry) { Text("Retry") }
-                        }
-                    }
-                    is Loadable.Ready -> {
-                        val session = s.value
-                        Text(
-                            session?.title?.ifBlank { null } ?: "Session ${r.sessionId.take(8)}",
-                            style = MaterialTheme.typography.headlineSmall.copy(fontSize = 19.sp, lineHeight = 24.sp),
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        if (session != null) {
-                            Spacer(Modifier.height(4.dp))
-                            val meta = buildList {
-                                add(projectName(session.cwd))
-                                add(relativeTime(session.updatedAt))
-                                if (session.messageCount > 0) add("${session.messageCount} messages")
-                            }
-                            Text(meta.joinToString(" · "), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            if (session.recentlyActive) {
-                                Spacer(Modifier.height(6.dp))
-                                MiniBadge("active on desktop — both will write to it", TetherTheme.colors.warning)
-                            }
-                        }
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -659,7 +478,7 @@ private fun FolderStep(state: NewAgentUiState, onPick: (String) -> Unit, onBrows
             Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(14.dp))
-                .then(if (!state.locked) Modifier.clickable(onClickLabel = "Browse folders", onClick = onBrowse) else Modifier)
+                .clickable(onClickLabel = "Browse folders", onClick = onBrowse)
                 .padding(vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -694,7 +513,6 @@ private fun FolderStep(state: NewAgentUiState, onPick: (String) -> Unit, onBrows
             }
         }
 
-        if (state.locked) return@Column
 
         Spacer(Modifier.height(Space.md))
         Text("Recent projects", style = MaterialTheme.typography.labelMedium, color = TetherTheme.colors.faint, modifier = Modifier.padding(start = 10.dp))
@@ -853,7 +671,6 @@ private fun RadioDot(selected: Boolean, color: Color) {
 private fun PromptStep(
     vm: NewAgentViewModel,
     state: NewAgentUiState,
-    resuming: Boolean,
     canDictate: Boolean,
     onDictate: () -> Unit,
     onAttach: (() -> Unit)?,
@@ -880,7 +697,7 @@ private fun PromptStep(
             Box(Modifier.fillMaxWidth().heightIn(min = 132.dp).padding(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 8.dp)) {
                 if (prompt.text.isEmpty()) {
                     Text(
-                        if (resuming) "Add a message, or start and type later…" else "How can I help you today?",
+                        "How can I help you today?",
                         style = MaterialTheme.typography.bodyLarge.copy(fontSize = 17.sp),
                         color = TetherTheme.colors.faint,
                     )
@@ -959,7 +776,7 @@ private fun PromptStep(
             }
         }
 
-        AnimatedVisibility(visible = prompt.text.isBlank() && !resuming, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
+        AnimatedVisibility(visible = prompt.text.isBlank(), enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
             FlowRow(
                 Modifier.padding(top = Space.md),
                 horizontalArrangement = Arrangement.spacedBy(Space.sm),
@@ -992,7 +809,7 @@ private fun StartErrorCard(message: String, onDismiss: () -> Unit, modifier: Mod
         Icon(Icons.Rounded.ErrorOutline, null, tint = danger, modifier = Modifier.size(20.dp))
         Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
-            Text("Couldn't start the agent", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
+            Text("Couldn't start the session", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
             Text(
                 message,
                 style = MaterialTheme.typography.bodySmall,

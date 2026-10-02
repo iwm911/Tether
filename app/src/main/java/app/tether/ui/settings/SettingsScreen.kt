@@ -57,6 +57,7 @@ import androidx.compose.material.icons.rounded.NotificationsOff
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Policy
 import androidx.compose.material.icons.rounded.Psychology
+import androidx.compose.material.icons.rounded.Science
 import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.SmartToy
@@ -295,6 +296,14 @@ fun SettingsScreen(onBack: () -> Unit, onOpenKeys: () -> Unit, onOpenMachines: (
                     icon = Icons.Rounded.SystemUpdate,
                     checked = s.notifyAppUpdates,
                     onCheckedChange = { on -> vm.update { it.copy(notifyAppUpdates = on) } },
+                )
+                RowDivider()
+                ToggleRow(
+                    title = "Beta updates",
+                    subtitle = "Get new versions early, before they're released to everyone. They may have bugs.",
+                    icon = Icons.Rounded.Science,
+                    checked = s.betaUpdates,
+                    onCheckedChange = { on -> vm.update { it.copy(betaUpdates = on) } },
                 )
                 RowDivider()
                 ToggleRow(

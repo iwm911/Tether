@@ -6,7 +6,7 @@
 
 ### Claude Code in your pocket.
 
-Start Claude Code agents on your own computers, watch them work, and approve what they do, from your Android phone.
+Start Claude Code sessions on your own computers, watch them work, and approve what they do, from your Android phone.
 
 [![Latest release](https://img.shields.io/github/v/release/iwm911/Tether?sort=semver&label=download&color=D97757)](https://github.com/iwm911/Tether/releases/latest)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
@@ -24,8 +24,9 @@ You give Claude Code a big task and walk away. Ten minutes later it stops and wa
 *"Can I run `npm test`?"* It sits there until you're back at the keyboard.
 
 **Tether sends that question to your phone.** Tap **Allow**, read the diff, or send a new instruction,
-from the couch, the train, or the queue at the coffee shop. The agent keeps running on your computer,
-with your files, your tools and your setup.
+from the couch, the train, or the queue at the coffee shop. The session keeps running on your computer,
+with your files, your tools and your setup. It's the same session `claude agents` shows there: Tether
+is a mobile `claude attach`.
 
 <table>
 <tr>
@@ -46,8 +47,8 @@ connects to it over SSH.
 <td width="33%" valign="top">
 
 ### 🔁 Survives anything
-Agents run detached on the computer. Phone asleep, signal lost, app closed: the work carries on, and
-Tether picks up where it left off.
+Sessions run in Claude Code's own background service on the computer. Phone asleep, signal lost, app
+closed: the work carries on, and Tether picks up where it left off.
 
 </td>
 </tr>
@@ -62,8 +63,8 @@ beforehand.
 <td valign="top">
 
 ### 🗂️ All your machines, all your sessions
-Laptop, desktop and servers on one home screen. Continue **any** past Claude Code session, including
-ones you started at your desk.
+Laptop, desktop and servers on one home screen. Open **any** Claude Code session, running or from
+last week, including ones you started at your desk, and just reply.
 
 </td>
 <td valign="top">
@@ -87,7 +88,7 @@ in Anthropic's cloud). Tether fits a different need:
 |---|:---:|:---:|:---:|
 | Where Claude works | 🖥️ your computers | 🖥️ your computer | ☁️ Anthropic's cloud |
 | Start a brand-new session from the phone | ✅ any machine, any folder | ⚠️ only if `claude remote-control` is already running there | ✅ GitHub repos |
-| Keeps running with no terminal open | ✅ runs detached | ❌ the `claude` process must stay open (use tmux) | ✅ |
+| Keeps running with no terminal open | ✅ Claude Code's background service | ❌ the `claude` process must stay open (use tmux) | ✅ |
 | Works with API keys, Bedrock, Vertex, LLM gateways | ✅ whatever your Claude Code uses | ❌ claude.ai subscription only | ❌ claude.ai subscription only |
 | Your local tools, MCP servers, private network | ✅ | ✅ | ❌ cloud environment only |
 | Needs GitHub | ❌ | ❌ | ✅ |
@@ -102,25 +103,27 @@ over SSH.
 
 ## ⚙️ How it works
 
-<p align="center"><img src="docs/assets/how-it-works.png" width="820" alt="Tether on your phone connects over SSH to a small helper on your computer, which starts Claude Code detached in your repo"></p>
+<p align="center"><img src="docs/assets/how-it-works.png" width="820" alt="Tether on your phone connects over SSH to a small helper on your computer, which talks to Claude Code's background service in your repo"></p>
 
 1. Tether connects to your computer over **SSH**. Your SSH key is encrypted with a key held in the phone's secure hardware.
 2. It installs a tiny helper script (`~/.tether/bin`, Python standard library only).
-3. The helper starts Claude Code **in the background**, so it doesn't depend on the phone staying
-   connected.
-4. Tether streams the conversation to your phone and sends back your messages and approvals.
+3. The helper talks to **Claude Code's own background service** (the one behind `claude agents`): it
+   starts sessions there, wakes stopped ones, and types what you send, like `claude attach` would. The
+   work doesn't depend on the phone staying connected.
+4. Tether streams the conversation to your phone word by word and sends back your messages, keys and
+   approvals.
 
 ## 🚀 Get started
 
 **You need:** an Android phone (8.0+), and a Mac or Linux computer you can SSH into with
-[Claude Code](https://code.claude.com/docs/en/quickstart) and `python3` installed. Tailscale or
+[Claude Code](https://code.claude.com/docs/en/quickstart) 2.1.286 or later and `python3` installed. Tailscale or
 WireGuard works well for reaching it from outside your home network.
 
 1. **Install.** Download the APK from [Releases](https://github.com/iwm911/Tether/releases/latest)
    and open it. Allow "Install unknown apps" when asked.
 2. **Add your computer.** Enter `user@host`. Tap **New key → Install on server** to set up
    key login with your password once.
-3. **Start an agent.** Tap **New agent**, pick a folder, type what you want done, and put your phone
+3. **Start a session.** Tap **New agent**, pick a folder, type what you want done, and put your phone
    away. It'll tell you when Claude needs you.
 
 Tether updates itself from GitHub Releases, and every update is verified before it installs.
@@ -139,7 +142,7 @@ It checks in the background about twice a day and sends a notification when a ne
 - 👆 **Optional app lock** with fingerprint, face or screen lock.
 - ✋ **Claude Code's permission rules still apply.** Tether passes your approvals through; it never
   bypasses them.
-- 📊 **Anonymous usage stats** (app opens, agents started) via open-source
+- 📊 **Anonymous usage stats** (app opens, sessions started) via open-source
   [Aptabase](https://aptabase.com). Nothing is sent until you've seen the notice, and it's one tap to
   turn off. **Never** your machines, prompts or code. [Exactly what's sent →](PRIVACY.md)
 
@@ -151,23 +154,25 @@ Found a security issue? Please report it
 <details>
 <summary><b>Full feature list</b></summary>
 
-- **Home screen for your agents.** Agents waiting on you come first, with inline Allow / Deny; then
-  running agents with live status, last message, elapsed time and cost; then recent ones.
-- **A conversation, not a terminal.** Markdown replies; tool calls as quiet one-line rows that expand
-  to diffs, command output and file previews.
-- **Approvals.** *Allow once*, *Always allow `<rule>`* or *Deny*, optionally telling Claude what to
-  do instead. Also from the notification.
-- **Full control.** Stop button, permission modes (Ask → Accept edits → Plan → Auto), switch models
-  mid-run, `/` slash-command autocomplete, voice dictation, image attachments, queued messages.
-- **Live plans and questions.** Claude's todo list as a pinned checklist; `AskUserQuestion` as
-  tappable choices.
-- **Branch and retry.** Edit an earlier message and branch from it, optionally restoring files from
-  Claude Code's checkpoints.
-- **Past sessions.** Browse and continue every Claude Code session on each machine.
-- **Same agents on phone and computer.** New agents start as `claude --bg` by default, so they're in
-  `claude agents` on the computer too. Background agents and terminal `claude` sessions started on the
-  computer show up in the app: watch them live, and reply to a terminal session to continue it in a
-  background copy.
+- **One kind of thing: a session.** Every Claude Code session on each machine, keyed by its session
+  id, exactly like `claude agents`. Opening yesterday's session works like opening one that is running
+  now: same id, same history, the reply box is always live. A stopped session wakes up under its own
+  id when you send it a message.
+- **Home screen for your sessions.** Sessions waiting on you come first, with inline Allow / Deny;
+  then working ones with live status and their last message; then recent ones. Filter by machine and
+  project.
+- **A conversation, not a terminal.** Replies stream word by word; Markdown; tool calls as quiet
+  one-line rows that expand to diffs, command output and file previews.
+- **Everything a terminal can do.** Any slash command, Shift+Tab to change the permission mode,
+  `/model` to switch models, Esc to stop the current turn, images (copied to the machine and pasted as
+  a path), voice dictation, queued messages.
+- **Every prompt is answerable.** Tool permissions (*Allow once*, *Always allow*, *Deny*, optionally
+  telling Claude what to do instead), `AskUserQuestion` as tappable choices, and Claude Code's own
+  dialogs (new project MCP servers, folder trust, notices) with their options and a key pad.
+- **Live plans, subagents, tasks and messages.** Claude's todo list as a pinned checklist, subagents
+  you can open read-only, background tasks, and messages to and from other sessions.
+- **Terminal sessions too.** A `claude` session open in a terminal on the computer is listed with its
+  live transcript; type `/bg` there to continue it from the phone.
 - **Built for mobile networks.** SSH keepalives, instant reconnect on network changes, optional
   foreground service so approvals keep arriving.
 - **Native design.** Jetpack Compose + Material 3, dark and light themes, dynamic colour, haptics.
@@ -175,28 +180,17 @@ Found a security issue? Please report it
 </details>
 
 <details>
-<summary><b>Two kinds of agents</b></summary>
-
-| | Background (default) | Live |
-|---|---|---|
-| Runs as | native `claude --bg` | `claude -p` stream-json, driven by Tether |
-| Approve tool use from the phone | ✅ panel + notification actions | ✅ panel + notification actions |
-| Shows in `claude agents` on the computer | ✅ attach, logs, stop | only while it runs |
-| Streaming | message by message | ✅ token by token |
-| Images, rewind, mode/model switch mid-run | — | ✅ |
-| Reply | any time (queues while busy) | any time (queues while busy) |
-
-</details>
-
-<details>
 <summary><b>Under the hood</b></summary>
 
 - SSH via **sshj** + BouncyCastle; the helper is uploaded over SFTP to
-  `~/.tether/bin/tether_helper.py` and re-uploaded when its version changes.
-- Agents are spawned detached (`setsid`). Claude reads stream-json from
-  `~/.tether/runs/<id>/in.jsonl` and writes `out.jsonl`; the app tails it from a byte offset.
-- A `watch` command streams status for all runs plus a heartbeat to detect dead links.
-- Past sessions come from Claude Code's own transcripts in `~/.claude/projects`.
+  `~/.tether/bin/tether_helper.py` and re-uploaded when it changes.
+- Every start, wake, message, key and stop goes through the Claude Code daemon's control socket
+  (`claude daemon`; the helper starts it the way the CLI does when it isn't running). Tether never
+  runs `claude` itself to drive a session.
+- The session list comes from the daemon's jobs, the live-process registry and the transcripts in
+  `~/.claude/projects`; a `watch` command streams changes plus a heartbeat to detect dead links.
+- A `follow` command streams one session: its transcript lines, the reply being written (cut from the
+  daemon's screen stream), the spinner, state, subagents, tasks, todos and peer messages.
 - Secrets: AES-256-GCM with a key generated inside the Android Keystore. Android backup and device
   transfer are disabled.
 
@@ -234,7 +228,13 @@ tools/publish_update.sh release --code N --name X.Y.Z --notes "What's new"
 Builds the signed APK and creates GitHub release `vX.Y.Z` on the current pushed commit, with the APK
 and an `update.json` manifest (version code + SHA-256). Needs the `gh` CLI and `keystore.properties`.
 Installed apps offer the update on their next check (launch, or the twice-daily background check,
-which also posts a notification). `tools/publish_update.sh debug` publishes a
+which also posts a notification).
+
+**Beta channel.** `tools/publish_update.sh beta --code N --name X.Y.Z-beta.N --notes "…"` publishes a
+release-signed pre-release `vX.Y.Z-beta.N`. Only apps with **Settings › Beta updates** on are offered it
+(beta builds have it on), and they always get the newer of the latest stable and the latest beta.
+Stable and beta share one version-code sequence, so each new code must be higher than every published
+stable and beta release; the script checks this. `tools/publish_update.sh debug` publishes a
 pre-release that only debug builds pick up.
 
 </details>

@@ -5,7 +5,6 @@ import android.content.SharedPreferences
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
-import app.tether.core.RunRef
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collectLatest
@@ -27,7 +26,6 @@ object Drafts {
         if (prefs == null) prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     }
 
-    fun run(ref: RunRef) = "run:${ref.connectionId}:${ref.runId}"
     fun session(connectionId: String, sessionId: String) = "session:$connectionId:$sessionId"
 
     fun text(key: String): String = prefs?.getString(key, null).orEmpty()
@@ -41,7 +39,7 @@ object Drafts {
         if (attachments.isEmpty()) images.remove(key) else images[key] = attachments
     }
 
-    /** The same conversation continued under a new id (resume / native fork): carry the draft over. */
+    /** The same conversation shown under a new key: carry the draft over. */
     fun move(from: String, to: String) {
         if (from == to) return
         val t = text(from)
@@ -53,7 +51,7 @@ object Drafts {
 
 /**
  * Loads the saved draft for the first key and then mirrors every edit into [Drafts]. When [keys]
- * emits a new key (the conversation moved to a new run), the draft is re-keyed, not reloaded.
+ * emits a new key, the draft is re-keyed, not reloaded.
  */
 internal fun ComposerState.bindDraft(scope: CoroutineScope, keys: Flow<String>) {
     scope.launch {

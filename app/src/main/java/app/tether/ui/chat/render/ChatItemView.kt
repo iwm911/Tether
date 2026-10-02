@@ -1,91 +1,173 @@
 package app.tether.ui.chat.render
 
 import androidx.compose.ui.text.font.FontWeight
+
 import androidx.compose.animation.AnimatedVisibility
+
 import androidx.compose.animation.core.animateFloatAsState
+
 import androidx.compose.animation.core.tween
+
 import androidx.compose.animation.expandVertically
+
 import androidx.compose.animation.fadeIn
+
 import androidx.compose.animation.fadeOut
+
 import androidx.compose.animation.shrinkVertically
+
 import androidx.compose.foundation.background
+
 import androidx.compose.foundation.border
+
 import androidx.compose.foundation.clickable
+
 import androidx.compose.foundation.combinedClickable
+
 import androidx.compose.foundation.layout.Arrangement
+
 import androidx.compose.foundation.layout.Box
+
 import androidx.compose.foundation.layout.Column
+
 import androidx.compose.foundation.layout.Row
+
 import androidx.compose.foundation.layout.Spacer
+
 import androidx.compose.foundation.layout.fillMaxWidth
+
 import androidx.compose.foundation.layout.height
+
 import androidx.compose.foundation.layout.heightIn
+
 import androidx.compose.foundation.layout.padding
+
 import androidx.compose.foundation.layout.size
+
 import androidx.compose.foundation.layout.width
+
 import androidx.compose.foundation.layout.widthIn
+
 import androidx.compose.foundation.shape.CircleShape
+
 import androidx.compose.foundation.shape.RoundedCornerShape
+
 import androidx.compose.foundation.text.selection.SelectionContainer
+
 import androidx.compose.material.icons.Icons
+
 import androidx.compose.material.icons.rounded.AutoAwesome
+
 import androidx.compose.material.icons.rounded.Check
+
 import androidx.compose.material.icons.rounded.Compress
+
 import androidx.compose.material.icons.rounded.ErrorOutline
+
 import androidx.compose.material.icons.rounded.ExpandMore
+
 import androidx.compose.material.icons.rounded.Image
+
 import androidx.compose.material.icons.rounded.Info
+
 import androidx.compose.material.icons.rounded.PlayCircle
+
 import androidx.compose.material.icons.rounded.Schedule
+
 import androidx.compose.material.icons.rounded.StopCircle
+
 import androidx.compose.material.icons.rounded.Terminal
+
 import androidx.compose.material.icons.rounded.Tune
+
 import androidx.compose.material.icons.rounded.WarningAmber
+
 import androidx.compose.material3.Icon
+
 import androidx.compose.material3.MaterialTheme
+
 import androidx.compose.material3.Text
+
 import androidx.compose.runtime.Composable
+
 import androidx.compose.runtime.LaunchedEffect
+
 import androidx.compose.runtime.getValue
+
 import androidx.compose.runtime.mutableLongStateOf
+
 import androidx.compose.runtime.mutableStateOf
+
 import androidx.compose.runtime.remember
+
 import androidx.compose.runtime.saveable.rememberSaveable
+
 import androidx.compose.runtime.setValue
+
 import androidx.compose.ui.Alignment
+
 import androidx.compose.ui.Modifier
+
 import androidx.compose.ui.draw.clip
+
 import androidx.compose.ui.draw.drawBehind
+
 import androidx.compose.ui.draw.rotate
+
 import androidx.compose.ui.geometry.CornerRadius
+
 import androidx.compose.ui.geometry.Size
+
 import androidx.compose.ui.graphics.Color
+
 import androidx.compose.ui.graphics.vector.ImageVector
+
 import androidx.compose.ui.platform.LocalClipboardManager
+
 import androidx.compose.ui.semantics.Role
+
 import androidx.compose.ui.semantics.contentDescription
+
 import androidx.compose.ui.semantics.semantics
+
 import androidx.compose.ui.text.AnnotatedString
+
 import androidx.compose.ui.text.SpanStyle
+
 import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontStyle
+
 import androidx.compose.ui.text.style.TextAlign
+
 import androidx.compose.ui.text.withStyle
+
 import androidx.compose.ui.unit.dp
+
 import app.tether.core.ChatItem
+
 import app.tether.core.NoticeKind
-import app.tether.ui.components.Hairline
+
 import app.tether.ui.components.ShimmerText
+
 import app.tether.ui.components.compactNumber
+
 import app.tether.ui.components.formatCost
+
 import app.tether.ui.components.formatElapsed
+
 import app.tether.ui.components.rememberHaptics
+
 import app.tether.ui.theme.Mono
+
 import app.tether.ui.theme.Motion
+
 import app.tether.ui.theme.TetherTheme
+
 import kotlinx.coroutines.delay
+
 import java.text.DateFormat
+
 import java.util.Date
+
 
 /**
  * Renders one conversation row. Emits nothing for [ChatItem.Permission], hidden tools (TodoWrite)
@@ -131,6 +213,7 @@ internal fun ChatItemContent(
         is ChatItem.Permission -> Unit
         is ChatItem.TurnSummary -> TurnSummaryView(item, modifier)
         is ChatItem.Notice -> NoticeView(item, modifier)
+        is ChatItem.Peer -> PeerView(item, modifier)
     }
 }
 
@@ -141,7 +224,6 @@ private fun UserBubble(item: ChatItem.User, modifier: Modifier) {
     val c = TetherTheme.colors
     val clipboard = LocalClipboardManager.current
     val haptics = rememberHaptics()
-    val longPress = app.tether.ui.chat.LocalUserLongPress.current
     var selectable by remember { mutableStateOf(false) }
     var copied by remember { mutableStateOf(false) }
     var showTime by remember { mutableStateOf(false) }
@@ -176,14 +258,11 @@ private fun UserBubble(item: ChatItem.User, modifier: Modifier) {
                         )
                         .combinedClickable(
                             onClickLabel = "Show time",
-                            onLongClickLabel = if (longPress != null) "Message actions" else "Copy message",
+                            onLongClickLabel = "Copy message",
                             onLongClick = {
                                 haptics.confirm()
-                                if (longPress != null) longPress(item)
-                                else {
-                                    clipboard.setText(AnnotatedString(item.text))
-                                    copied = true
-                                }
+                                clipboard.setText(AnnotatedString(item.text))
+                                copied = true
                             },
                             onClick = { if (item.timestamp != null) showTime = !showTime },
                         )

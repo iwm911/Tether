@@ -287,8 +287,10 @@ fun Composer(
     onStop: (() -> Unit)? = null,
     sending: Boolean = false,
     permissionMode: String? = null,
-    onCycleMode: (() -> PermissionMode)? = null,
+    onCycleMode: (() -> PermissionMode?)? = null,
     onSelectMode: ((PermissionMode) -> Unit)? = null,
+    /** The mode chip works (Shift+Tab needs a running session). */
+    modeEnabled: Boolean = true,
     model: String? = null,
     models: List<ModelOption> = emptyList(),
     onSelectModel: ((String) -> Unit)? = null,
@@ -436,14 +438,17 @@ fun Composer(
                                 icon = (mode ?: PermissionMode.DEFAULT).icon(),
                                 tint = (mode ?: PermissionMode.DEFAULT).tint(),
                                 emphasised = mode != null && mode != PermissionMode.DEFAULT,
-                                enabled = enabled,
-                                contentDescription = "Permission mode: ${mode?.label ?: "Ask"}. Tap to cycle, long-press for all modes",
+                                enabled = enabled && modeEnabled,
+                                contentDescription = "Permission mode: ${mode?.label ?: "Ask"}." +
+                                    if (modeEnabled) " Tap to cycle, long-press for all modes" else " Changes once the session is running",
                                 onClick = {
-                                    val next = onCycleMode?.invoke()
-                                    if (next != null) {
-                                        haptics.confirm()
-                                        toastMode = next
-                                        toastSeq++
+                                    if (onCycleMode != null) {
+                                        val next = onCycleMode()
+                                        if (next != null) {
+                                            haptics.confirm()
+                                            toastMode = next
+                                            toastSeq++
+                                        }
                                     } else showModeSheet = true
                                 },
                                 onLongClick = { haptics.confirm(); showModeSheet = true },

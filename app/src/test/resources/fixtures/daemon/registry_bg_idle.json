@@ -1,0 +1,25 @@
+{
+ "pid": 1166951,
+ "sessionId": "7b9f8c4c-6ac7-4d5a-9111-003abd24390e",
+ "cwd": "/home/user/tether-exp/live",
+ "startedAt": 1790875138649,
+ "procStart": "150261038",
+ "version": "2.1.287",
+ "peerProtocol": 1,
+ "peerFeatures": [
+  "notify_idle",
+  "reply_across_default_dirs",
+  "artifact_yield"
+ ],
+ "kind": "bg",
+ "entrypoint": "cli",
+ "pidDomain": "linux:00000000000000000000000000000000:pid:[4026531836]",
+ "messagingSocketPath": "/run/user/1001/cc-socks/1166951.sock",
+ "name": "tether h1 probe",
+ "nameSince": 1790875138773,
+ "jobId": "7b9f8c4c",
+ "updatedAt": 1790875176996,
+ "status": "idle",
+ "statusUpdatedAt": 1790875176996,
+ "nameSource": "auto"
+}

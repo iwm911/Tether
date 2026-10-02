@@ -88,12 +88,10 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.tether.LocalAppContainer
-import app.tether.core.AgentSummary
 import app.tether.core.Connection
 import app.tether.core.LinkState
 import app.tether.core.ProjectSummary
-import app.tether.core.RunRef
-import app.tether.core.RunStatus
+import app.tether.core.SessionRef
 import app.tether.ui.components.EmptyState
 import app.tether.ui.components.Hairline
 import app.tether.ui.components.MachineAvatar
@@ -115,7 +113,7 @@ import java.util.Calendar
 
 @Composable
 fun HomeScreen(
-    onOpenAgent: (RunRef) -> Unit,
+    onOpenSession: (SessionRef) -> Unit,
     onNewAgent: (String?) -> Unit,
     onOpenMachine: (String) -> Unit,
     onOpenMachines: () -> Unit,
@@ -130,22 +128,16 @@ fun HomeScreen(
     val context = LocalContext.current
     val listState = rememberLazyListState()
     val pullState = rememberPullToRefreshState()
-    var recentExpanded by rememberSaveable { mutableStateOf(true) }
 
     LaunchedEffect(vm) {
         vm.events.collect { m ->
             when (m) {
-                is HomeMessage.Removed -> launch {
-                    snackbar.currentSnackbarData?.dismiss()
-                    val r = snackbar.showSnackbar("Removed “${m.title}”", actionLabel = "Undo", duration = SnackbarDuration.Short)
-                    if (r == SnackbarResult.ActionPerformed) vm.undoDismiss(m.ref)
-                }
                 is HomeMessage.Error -> launch { snackbar.showSnackbar(m.text, withDismissAction = true, duration = SnackbarDuration.Long) }
             }
         }
     }
 
-    val showHero = state.connections.isNotEmpty() && !state.showSkeleton && !state.hasAgents
+    val showHero = state.connections.isNotEmpty() && !state.showSkeleton && !state.hasSessions
     val latest by rememberUpdatedState(state)
     LaunchedEffect(showHero, state.connections.size, state.links.values.count { it is LinkState.Connected }) {
         if (showHero) vm.ensureQuickStart(latest)
@@ -169,7 +161,7 @@ fun HomeScreen(
         },
         bottomBar = {
             if (state.connections.isNotEmpty()) {
-                StartAgentBar("Start an agent…", onClick = { haptics.tick(); onNewAgent(null) })
+                StartAgentBar("Start a session…", onClick = { haptics.tick(); onNewAgent(state.filter.machine) })
             }
         },
     ) { padding ->
@@ -241,13 +233,13 @@ fun HomeScreen(
                     }
 
                     state.showSkeleton -> {
-                        item(key = "sk:h", contentType = "sectionHeader") { SectionHeader("Loading agents", Modifier.animateItem()) }
+                        item(key = "sk:h", contentType = "sectionHeader") { SectionHeader("Loading sessions", Modifier.animateItem()) }
                         items(3, key = { "sk:$it" }, contentType = { "skeleton" }) {
                             SkeletonAgentCard(Modifier.animateItem().padding(horizontal = Space.gutter, vertical = 6.dp))
                         }
                     }
 
-                    !state.hasAgents -> {
+                    !state.hasSessions -> {
                         item(key = "hero", contentType = "hero") {
                             val first = state.quickStart?.connection ?: state.connections.first()
                             FirstAgentHero(
@@ -273,73 +265,42 @@ fun HomeScreen(
                     }
 
                     else -> {
-                        if (state.needsYou.isNotEmpty()) {
-                            item(key = "h:needs", contentType = "sectionHeader") {
-                                CountedSectionHeader("Needs you", state.needsYou.size, Modifier.animateItem(), color = TetherTheme.colors.warning)
-                            }
-                            items(state.needsYou, key = { "a:" + agentKey(it.ref.connectionId, it.ref.runId) }, contentType = { "needs" }) { a ->
-                                val reqId = a.run.pending?.requestId
-                                NeedsYouCard(
-                                    agent = a,
-                                    showMachine = true,
-                                    decided = reqId?.let { state.decisions[vm.decisionKey(a.ref, it)] },
-                                    onAllow = { haptics.confirm(); vm.respond(a, allow = true) },
-                                    onDeny = { haptics.tick(); vm.respond(a, allow = false) },
-                                    onOpen = { onOpenAgent(a.ref) },
-                                    modifier = Modifier.animateItem(placementSpec = Motion.gentle()).padding(horizontal = Space.gutter, vertical = 6.dp),
+                        item(key = "filters", contentType = "filters") {
+                            SessionFilterChips(
+                                filter = state.filter,
+                                machineChips = state.machineChips,
+                                machines = machinesById,
+                                projects = state.projectChips,
+                                onMachine = vm::selectMachine,
+                                onProject = vm::selectProject,
+                                modifier = Modifier.animateItem().padding(top = Space.sm, bottom = Space.xs),
+                            )
+                        }
+                        if (state.sessions.isEmpty()) {
+                            item(key = "filtered:empty", contentType = "hint") {
+                                Text(
+                                    "No sessions match these filters.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = TetherTheme.colors.faint,
+                                    modifier = Modifier.animateItem().fillMaxWidth().padding(horizontal = Space.gutter, vertical = Space.lg),
                                 )
                             }
                         }
-                        if (state.working.isNotEmpty()) {
-                            item(key = "h:working", contentType = "sectionHeader") {
-                                CountedSectionHeader("Working", state.working.size, Modifier.animateItem(), color = TetherTheme.colors.faint)
-                            }
-                            items(state.working, key = { "a:" + agentKey(it.ref.connectionId, it.ref.runId) }, contentType = { "agent" }) { a ->
-                                val answered = agentKey(a.ref.connectionId, a.ref.runId) in state.answeredKeys
-                                AgentRunCard(
-                                    agent = a,
-                                    onClick = { onOpenAgent(a.ref) },
-                                    showMachine = true,
-                                    statusOverride = if (answered) RunStatus.WORKING else null,
-                                    modifier = Modifier.animateItem(placementSpec = Motion.gentle()).padding(horizontal = Space.gutter, vertical = 6.dp),
-                                )
-                            }
+                        items(state.sessions, key = { "s:" + it.listKey() }, contentType = { if (it.needsYou) "needs" else "session" }) { s ->
+                            SessionCard(
+                                session = s,
+                                machine = machinesById[s.connectionId],
+                                showMachine = state.connections.size > 1,
+                                decided = s.inlinePermission()?.let { state.decisions[decisionKey(s.ref, it)] },
+                                onOpen = { onOpenSession(s.ref) },
+                                onAllow = { haptics.confirm(); vm.respond(s, allow = true) },
+                                onDeny = { haptics.tick(); vm.respond(s, allow = false) },
+                                modifier = Modifier.animateItem(placementSpec = Motion.gentle()).padding(horizontal = Space.gutter, vertical = 6.dp),
+                            )
                         }
-                        if (state.recent.isNotEmpty()) {
-                            item(key = "h:recent", contentType = "sectionHeader") {
-                                CollapsibleHeader(
-                                    "Recent",
-                                    state.recent.size,
-                                    expanded = recentExpanded,
-                                    onToggle = { haptics.tick(); recentExpanded = !recentExpanded },
-                                    modifier = Modifier.animateItem(),
-                                )
-                            }
-                            if (recentExpanded) {
-                                items(state.recent, key = { "a:" + agentKey(it.ref.connectionId, it.ref.runId) }, contentType = { "agent" }) { a ->
-                                    val itemModifier = Modifier.animateItem(placementSpec = Motion.gentle()).padding(horizontal = Space.gutter, vertical = 6.dp)
-                                    if (a.run.status == RunStatus.ENDED || a.run.status == RunStatus.FAILED) {
-                                        DismissibleAgentCard(
-                                            agent = a,
-                                            showMachine = true,
-                                            onOpen = { onOpenAgent(a.ref) },
-                                            onDismiss = { haptics.confirm(); vm.dismiss(a) },
-                                            modifier = itemModifier,
-                                        )
-                                    } else {
-                                        AgentRunCard(agent = a, onClick = { onOpenAgent(a.ref) }, modifier = itemModifier, showMachine = true)
-                                    }
-                                }
-                                if (state.recent.any { it.run.status == RunStatus.ENDED || it.run.status == RunStatus.FAILED }) {
-                                    item(key = "hint:swipe", contentType = "hint") {
-                                        Text(
-                                            "Swipe an ended agent to remove it",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = TetherTheme.colors.faint,
-                                            modifier = Modifier.animateItem().fillMaxWidth().padding(horizontal = Space.gutter, vertical = 8.dp),
-                                        )
-                                    }
-                                }
+                        if (state.canLoadOlder) {
+                            item(key = "older", contentType = "older") {
+                                ShowOlderButton(loading = state.loadingOlder, onClick = { haptics.tick(); vm.loadOlder() }, modifier = Modifier.animateItem())
                             }
                         }
                     }
@@ -363,11 +324,13 @@ private fun HomeHeader(state: HomeUiState, onOpenSettings: () -> Unit, onOpenMac
     val subtitle = when {
         state.connections.isEmpty() -> "Claude Code, on your own machines"
         state.showSkeleton -> "Checking in with your machines…"
+        // Still connecting (e.g. waiting on the trust-this-machine dialog): "No sessions yet" would be a guess.
+        !state.hasSessions && state.links.values.any { it == LinkState.Connecting } -> "Connecting to your machines…"
         else -> {
             val parts = buildList {
-                if (state.needsYou.isNotEmpty()) add(if (state.needsYou.size == 1) "One agent needs you" else "${state.needsYou.size} agents need you")
-                if (state.working.isNotEmpty()) add(if (state.working.size == 1) "1 working" else "${state.working.size} working")
-                if (isEmpty()) add(if (state.recent.isNotEmpty()) "All quiet — nothing running" else "No agents running yet")
+                if (state.needsYouCount > 0) add(if (state.needsYouCount == 1) "One session needs you" else "${state.needsYouCount} sessions need you")
+                if (state.workingCount > 0) add(if (state.workingCount == 1) "1 working" else "${state.workingCount} working")
+                if (isEmpty()) add(if (state.hasSessions) "All quiet — nothing running" else "No sessions yet")
             }
             parts.joinToString(" · ")
         }
@@ -547,7 +510,7 @@ private fun FirstAgentHero(machine: Connection, onStart: () -> Unit, modifier: M
                 Text("✻", color = clay, fontSize = 24.sp, fontWeight = FontWeight.Bold)
             }
             Spacer(Modifier.height(Space.lg))
-            Text("Start your first agent", style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Normal))
+            Text("Start your first session", style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Normal))
             Spacer(Modifier.height(Space.sm))
             Text(
                 "Pick a project on ${machine.name}, tell Claude what to do, and put your phone away. It'll ping you when it needs a decision.",
@@ -555,7 +518,7 @@ private fun FirstAgentHero(machine: Connection, onStart: () -> Unit, modifier: M
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.height(Space.xl))
-            PrimaryButton("New agent", onClick = onStart, icon = Icons.Rounded.Add, modifier = Modifier.fillMaxWidth())
+            PrimaryButton("New session", onClick = onStart, icon = Icons.Rounded.Add, modifier = Modifier.fillMaxWidth())
         }
     }
 }
@@ -606,7 +569,7 @@ private fun QuickStartRow(project: ProjectSummary, onClick: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
-            .clickable(onClickLabel = "Start an agent in ${projectName(project.cwd)}", onClick = onClick)
+            .clickable(onClickLabel = "Start a session in ${projectName(project.cwd)}", onClick = onClick)
             .padding(horizontal = Space.lg, vertical = Space.md),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -626,45 +589,5 @@ private fun QuickStartRow(project: ProjectSummary, onClick: () -> Unit) {
         }
         Spacer(Modifier.width(Space.sm))
         Icon(Icons.AutoMirrored.Rounded.ArrowForward, null, tint = TetherTheme.colors.faint, modifier = Modifier.size(18.dp))
-    }
-}
-
-// ───────────────────────────── Swipe to remove ─────────────────────────────
-
-@Composable
-private fun DismissibleAgentCard(agent: AgentSummary, onOpen: () -> Unit, onDismiss: () -> Unit, modifier: Modifier = Modifier, showMachine: Boolean = true) {
-    val currentOnDismiss by rememberUpdatedState(onDismiss)
-    val dismissState = rememberSwipeToDismissBoxState(
-        confirmValueChange = { value ->
-            if (value == SwipeToDismissBoxValue.EndToStart) {
-                currentOnDismiss(); true
-            } else false
-        },
-    )
-    SwipeToDismissBox(
-        state = dismissState,
-        modifier = modifier,
-        enableDismissFromStartToEnd = false,
-        backgroundContent = {
-            val danger = TetherTheme.colors.danger
-            val progress = dismissState.progress
-            Row(
-                Modifier
-                    .fillMaxSize()
-                    .clip(RoundedCornerShape(24.dp))
-                    .background(danger.copy(alpha = if (dismissState.dismissDirection == SwipeToDismissBoxValue.EndToStart) 0.10f + 0.12f * progress else 0f))
-                    .padding(horizontal = Space.xl),
-                horizontalArrangement = Arrangement.End,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                if (dismissState.dismissDirection == SwipeToDismissBoxValue.EndToStart) {
-                    Text("Remove", style = MaterialTheme.typography.labelLarge, color = danger)
-                    Spacer(Modifier.width(Space.sm))
-                    Icon(Icons.Rounded.DeleteOutline, contentDescription = null, tint = danger)
-                }
-            }
-        },
-    ) {
-        AgentRunCard(agent = agent, onClick = onOpen, showMachine = showMachine)
     }
 }

@@ -12,6 +12,7 @@ import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import app.tether.BuildConfig
 import app.tether.core.AppSettings
 import app.tether.core.SettingsRepository
 import app.tether.core.ThemeMode
@@ -82,6 +83,8 @@ class DataStoreSettingsRepository(context: Context, scope: CoroutineScope) : Set
             notifyPermissions = this[K.notifyPermissions] ?: d.notifyPermissions,
             notifyCompletion = this[K.notifyCompletion] ?: d.notifyCompletion,
             notifyAppUpdates = this[K.notifyAppUpdates] ?: d.notifyAppUpdates,
+            // A beta build keeps getting betas until the user turns them off.
+            betaUpdates = this[K.betaUpdates] ?: (d.betaUpdates || BuildConfig.VERSION_NAME.contains("-beta")),
             backgroundWatch = this[K.backgroundWatch] ?: d.backgroundWatch,
             keepConnectionsAlive = this[K.keepAlive] ?: d.keepConnectionsAlive,
             batteryPromptDismissed = this[K.batteryPrompt] ?: d.batteryPromptDismissed,
@@ -106,6 +109,7 @@ class DataStoreSettingsRepository(context: Context, scope: CoroutineScope) : Set
         this[K.notifyPermissions] = s.notifyPermissions
         this[K.notifyCompletion] = s.notifyCompletion
         this[K.notifyAppUpdates] = s.notifyAppUpdates
+        this[K.betaUpdates] = s.betaUpdates
         this[K.backgroundWatch] = s.backgroundWatch
         this[K.keepAlive] = s.keepConnectionsAlive
         this[K.batteryPrompt] = s.batteryPromptDismissed
@@ -129,6 +133,7 @@ class DataStoreSettingsRepository(context: Context, scope: CoroutineScope) : Set
         val notifyPermissions = booleanPreferencesKey("notify_permissions")
         val notifyCompletion = booleanPreferencesKey("notify_completion")
         val notifyAppUpdates = booleanPreferencesKey("notify_app_updates")
+        val betaUpdates = booleanPreferencesKey("beta_updates")
         val backgroundWatch = booleanPreferencesKey("background_watch")
         val keepAlive = booleanPreferencesKey("keep_connections_alive")
         val batteryPrompt = booleanPreferencesKey("battery_prompt_dismissed")

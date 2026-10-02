@@ -3,14 +3,14 @@ package app.tether
 import android.app.Application
 import androidx.compose.runtime.staticCompositionLocalOf
 import app.tether.analytics.Analytics
-import app.tether.analytics.TrackedAgentHub
-import app.tether.core.AgentHub
+import app.tether.analytics.TrackedSessionHub
 import app.tether.core.ClaudeRemote
 import app.tether.core.ConnectionRepository
 import app.tether.core.HostKeyPromptBus
 import app.tether.core.KeyRepository
 import app.tether.core.KnownHostsStore
 import app.tether.core.SecretStore
+import app.tether.core.SessionHub
 import app.tether.core.SettingsRepository
 import app.tether.core.SshManager
 import app.tether.data.DataStoreSettingsRepository
@@ -18,7 +18,7 @@ import app.tether.data.FileConnectionRepository
 import app.tether.data.FileKnownHostsStore
 import app.tether.data.KeystoreSecretStore
 import app.tether.data.SecureKeyRepository
-import app.tether.remote.DefaultAgentHub
+import app.tether.remote.DefaultSessionHub
 import app.tether.remote.HelperClaudeRemote
 import app.tether.ssh.DefaultHostKeyPromptBus
 import app.tether.ssh.SshjManager
@@ -38,9 +38,11 @@ class AppContainer(val app: Application) {
     val knownHosts: KnownHostsStore = FileKnownHostsStore(app)
     val hostKeyPrompts: HostKeyPromptBus = DefaultHostKeyPromptBus()
     val ssh: SshManager = SshjManager(app, connections, keys, secrets, knownHosts, hostKeyPrompts, scope)
-    val remote: ClaudeRemote = HelperClaudeRemote(app, ssh, connections, scope)
+    private val helperRemote = HelperClaudeRemote(app, ssh, connections, scope)
+    val remote: ClaudeRemote = helperRemote
     val analytics = Analytics(settings, scope)
-    val agents: AgentHub = TrackedAgentHub(DefaultAgentHub(remote, ssh, connections, settings, scope), analytics)
+    /** Every Claude Code session on every machine (the Claude Code daemon, one-session model). */
+    val sessions: SessionHub = TrackedSessionHub(DefaultSessionHub(helperRemote, ssh, connections, scope), analytics)
     val updates = UpdateManager(app, settings, scope)
 }
 

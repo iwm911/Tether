@@ -1,0 +1,19 @@
+{
+ "a16a79700d860b0d3": {
+  "agentType": "Explore",
+  "description": "Product brief",
+  "toolUseId": "toolu_ag1",
+  "spawnDepth": 1,
+  "requestShape": "background",
+  "requestNonInteractive": true,
+  "model": "opus"
+ },
+ "a37c067ef6ed1aec1": {
+  "agentType": "general-purpose",
+  "description": "Scan issues",
+  "toolUseId": "toolu_ag2",
+  "spawnDepth": 1,
+  "requestShape": "foreground",
+  "requestNonInteractive": false
+ }
+}

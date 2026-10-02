@@ -17,22 +17,11 @@ object NewAgentPrefs {
     private const val MODEL_BASIS = "model_basis"
     private const val MODE = "mode"
     private const val MODE_BASIS = "mode_basis"
-    private const val BACKGROUND = "background"
     private fun folderKey(connectionId: String) = "folder:$connectionId"
 
     private fun prefs(ctx: Context): SharedPreferences = ctx.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE)
 
     fun lastConnection(ctx: Context): String? = prefs(ctx).getString(LAST_CONN, null)
-
-    /**
-     * Last chosen kind: true = native background agent (`claude --bg`), false = Tether live run.
-     * Background by default, so what the phone starts is also in `claude agents` on the computer.
-     */
-    fun background(ctx: Context): Boolean = prefs(ctx).getBoolean(BACKGROUND, true)
-
-    fun rememberBackground(ctx: Context, background: Boolean) {
-        prefs(ctx).edit().putBoolean(BACKGROUND, background).apply()
-    }
 
     fun folder(ctx: Context, connectionId: String): String? = prefs(ctx).getString(folderKey(connectionId), null)
 

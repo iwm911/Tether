@@ -98,8 +98,14 @@ import app.tether.core.Connection
 import app.tether.core.LinkState
 import app.tether.core.ProbeResult
 import app.tether.core.ProjectSummary
-import app.tether.core.RunRef
-import app.tether.core.SessionSummary
+import app.tether.core.SessionRef
+import app.tether.ui.home.SessionCard
+import app.tether.ui.home.SessionFilterChips
+import app.tether.ui.home.ShowOlderButton
+import app.tether.ui.home.SkeletonAgentCard
+import app.tether.ui.home.decisionKey
+import app.tether.ui.home.inlinePermission
+import app.tether.ui.home.listKey
 import app.tether.ui.components.EmptyState
 import app.tether.ui.components.Hairline
 import app.tether.ui.components.MachineAvatar
@@ -112,7 +118,6 @@ import app.tether.ui.components.prettyPath
 import app.tether.ui.components.projectName
 import app.tether.ui.components.relativeTime
 import app.tether.ui.components.rememberHaptics
-import app.tether.ui.home.AgentRunCard
 import app.tether.ui.home.ErrorCard
 import app.tether.ui.home.GitBranchBadge
 import app.tether.ui.home.IconTile
@@ -126,14 +131,11 @@ import app.tether.ui.theme.Space
 import app.tether.ui.theme.TetherTheme
 import kotlinx.coroutines.launch
 
-private enum class MachineTab(val label: String) { AGENTS("Agents"), PROJECTS("Projects"), SESSIONS("Sessions") }
-
 @Composable
 fun MachineScreen(
     connectionId: String,
     onBack: () -> Unit,
-    onOpenAgent: (RunRef) -> Unit,
-    onOpenSession: (String, String) -> Unit,
+    onOpenSession: (SessionRef) -> Unit,
     onNewAgent: (String, String?) -> Unit,
     onEdit: (String) -> Unit,
 ) {
@@ -160,17 +162,13 @@ fun MachineScreen(
     val snackbar = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
     val pullState = rememberPullToRefreshState()
-    var tabIndex by rememberSaveable { mutableIntStateOf(-1) }
-    val tab = when {
-        tabIndex >= 0 -> MachineTab.entries[tabIndex]
-        state.agents.isNotEmpty() -> MachineTab.AGENTS
-        else -> MachineTab.PROJECTS
-    }
-    var expandedProjects by remember { mutableStateOf(setOf<String>()) }
 
     LaunchedEffect(vm) { vm.events.collect { launch { snackbar.showSnackbar(it) } } }
 
     val collapsedHeader by remember { derivedStateOf { listState.firstVisibleItemIndex > 0 } }
+    val machines = remember(conn) { mapOf(conn.id to conn) }
+    // "New session here": the selected project's folder when a project chip is on.
+    val newHere = { haptics.tick(); onNewAgent(conn.id, state.filter.project) }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -194,7 +192,10 @@ fun MachineScreen(
             }
         },
         bottomBar = {
-            app.tether.ui.home.StartAgentBar("Start an agent on ${conn.name}…", onClick = { haptics.tick(); onNewAgent(conn.id, null) })
+            app.tether.ui.home.StartAgentBar(
+                state.filter.project?.let { "New session in ${projectName(it)}…" } ?: "New session here…",
+                onClick = newHere,
+            )
         },
     ) { padding ->
         PullToRefreshBox(
@@ -220,139 +221,75 @@ fun MachineScreen(
                         error = state.machineError,
                         probe = state.probe,
                         onRetryProbe = { vm.loadProbe() },
+                        onNewSession = newHere,
                         modifier = Modifier.padding(horizontal = Space.gutter, vertical = Space.sm),
                     )
                 }
-                stickyHeader(key = "tabs", contentType = "tabs") {
-                    Box(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background).padding(horizontal = Space.gutter, vertical = Space.sm)) {
-                        SegmentedTabs(
-                            labels = MachineTab.entries.map { it.label },
-                            counts = listOf(
-                                state.agents.size.takeIf { it > 0 },
-                                state.projects.valueOrNull?.size,
-                                state.sessions.valueOrNull?.size,
-                            ),
-                            selected = tab.ordinal,
-                            onSelect = { i -> if (i != tab.ordinal) { haptics.tick(); tabIndex = i } },
+                state.machineError?.let { err ->
+                    item(key = "error", contentType = "error") {
+                        ErrorCard(
+                            title = "Couldn't load sessions",
+                            message = err,
+                            onRetry = { vm.refresh() },
+                            retrying = state.refreshing,
+                            modifier = Modifier.animateItem().padding(horizontal = Space.gutter, vertical = Space.sm),
                         )
                     }
                 }
-
-                when (tab) {
-                    MachineTab.AGENTS -> {
-                        if (state.agents.isEmpty()) {
-                            item(key = "agents:empty", contentType = "empty") {
-                                InlineEmpty(
-                                    icon = Icons.Rounded.SmartToy,
-                                    title = "No agents on ${conn.name}",
-                                    body = "Start one in any project — it keeps running on the machine even when your phone sleeps.",
-                                    actionLabel = "New agent here",
-                                    onAction = { onNewAgent(conn.id, null) },
-                                    modifier = Modifier.animateItem(),
-                                )
-                            }
-                        } else {
-                            items(state.agents, key = { "agent:" + it.ref.runId }, contentType = { "agent" }) { a ->
-                                AgentRunCard(
-                                    agent = a,
-                                    onClick = { onOpenAgent(a.ref) },
-                                    showMachine = false,
-                                    modifier = Modifier.animateItem(placementSpec = Motion.gentle()).padding(horizontal = Space.gutter, vertical = 5.dp),
-                                )
-                            }
-                        }
+                item(key = "filters", contentType = "filters") {
+                    SessionFilterChips(
+                        filter = state.filter,
+                        machineChips = emptyList(),
+                        machines = machines,
+                        projects = state.projectChips,
+                        onMachine = {},
+                        onProject = vm::selectProject,
+                        modifier = Modifier.animateItem().padding(vertical = Space.xs),
+                    )
+                }
+                when {
+                    state.loadingSessions -> items(4, key = { "ssk:$it" }, contentType = { "skeleton" }) {
+                        SkeletonAgentCard(Modifier.animateItem().padding(horizontal = Space.gutter, vertical = 6.dp))
                     }
-
-                    MachineTab.PROJECTS -> when (val p = state.projects) {
-                        Loadable.Loading -> items(5, key = { "psk:$it" }, contentType = { "skeleton" }) {
-                            TetherCard(Modifier.animateItem().padding(horizontal = Space.gutter, vertical = 4.dp).fillMaxWidth(), contentPadding = PaddingValues(0.dp)) {
-                                SkeletonListRow()
-                            }
-                        }
-                        is Loadable.Failed -> item(key = "projects:error", contentType = "error") {
-                            ErrorCard(
-                                title = "Couldn't load projects",
-                                message = p.message,
-                                onRetry = { vm.loadProjects() },
-                                modifier = Modifier.animateItem().padding(horizontal = Space.gutter, vertical = Space.sm),
-                            )
-                        }
-                        is Loadable.Ready -> if (p.value.isEmpty()) {
-                            item(key = "projects:empty", contentType = "empty") {
-                                InlineEmpty(
-                                    icon = Icons.Rounded.FolderOpen,
-                                    title = "No projects yet",
-                                    body = "Folders where Claude Code has been used on ${conn.name} will show up here.",
-                                    actionLabel = "Start in a folder",
-                                    onAction = { onNewAgent(conn.id, null) },
-                                    modifier = Modifier.animateItem(),
-                                )
-                            }
-                        } else {
-                            items(p.value, key = { "project:" + it.cwd }, contentType = { "project" }) { project ->
-                                val expanded = project.cwd in expandedProjects
-                                ProjectCard(
-                                    project = project,
-                                    expanded = expanded,
-                                    sessions = state.projectSessions[project.cwd],
-                                    onToggle = {
-                                        haptics.tick()
-                                        expandedProjects = if (expanded) expandedProjects - project.cwd else expandedProjects + project.cwd
-                                        if (!expanded) vm.loadProjectSessions(project.cwd)
-                                    },
-                                    onRetrySessions = { vm.loadProjectSessions(project.cwd, force = true) },
-                                    onOpenSession = { s -> openSession(s, conn.id, onOpenAgent, onOpenSession) },
-                                    onNewAgentHere = { onNewAgent(conn.id, project.cwd) },
-                                    modifier = Modifier.animateItem(placementSpec = Motion.gentle()).padding(horizontal = Space.gutter, vertical = 4.dp),
-                                )
-                            }
-                        }
+                    state.totalSessions == 0 -> item(key = "sessions:empty", contentType = "empty") {
+                        InlineEmpty(
+                            icon = Icons.Rounded.Forum,
+                            title = "No sessions on ${conn.name}",
+                            body = "Every Claude Code session on ${conn.name} — from Tether or a terminal — shows up here.",
+                            actionLabel = "New session here",
+                            onAction = newHere,
+                            modifier = Modifier.animateItem(),
+                        )
                     }
-
-                    MachineTab.SESSIONS -> when (val s = state.sessions) {
-                        Loadable.Loading -> items(6, key = { "ssk:$it" }, contentType = { "skeleton" }) {
-                            TetherCard(Modifier.animateItem().padding(horizontal = Space.gutter, vertical = 4.dp).fillMaxWidth(), contentPadding = PaddingValues(0.dp)) {
-                                SkeletonListRow(leading = false)
-                            }
-                        }
-                        is Loadable.Failed -> item(key = "sessions:error", contentType = "error") {
-                            ErrorCard(
-                                title = "Couldn't load sessions",
-                                message = s.message,
-                                onRetry = { vm.loadSessions() },
-                                modifier = Modifier.animateItem().padding(horizontal = Space.gutter, vertical = Space.sm),
-                            )
-                        }
-                        is Loadable.Ready -> if (s.value.isEmpty()) {
-                            item(key = "sessions:empty", contentType = "empty") {
-                                InlineEmpty(
-                                    icon = Icons.Rounded.Forum,
-                                    title = "No sessions yet",
-                                    body = "Every Claude Code conversation on ${conn.name} — from Tether or the desktop — lands here.",
-                                    modifier = Modifier.animateItem(),
-                                )
-                            }
-                        } else {
-                            items(s.value, key = { "session:" + it.sessionId }, contentType = { "session" }) { session ->
-                                TetherCard(
-                                    Modifier.animateItem().padding(horizontal = Space.gutter, vertical = 4.dp).fillMaxWidth(),
-                                    onClick = { openSession(session, conn.id, onOpenAgent, onOpenSession) },
-                                    contentPadding = PaddingValues(0.dp),
-                                ) {
-                                    SessionRow(session, showProject = true)
-                                }
-                            }
-                        }
+                    state.sessions.isEmpty() -> item(key = "sessions:filtered", contentType = "hint") {
+                        Text(
+                            "No sessions in this project yet.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = TetherTheme.colors.faint,
+                            modifier = Modifier.animateItem().fillMaxWidth().padding(horizontal = Space.gutter, vertical = Space.lg),
+                        )
+                    }
+                    else -> items(state.sessions, key = { "s:" + it.listKey() }, contentType = { if (it.needsYou) "needs" else "session" }) { s ->
+                        SessionCard(
+                            session = s,
+                            machine = conn,
+                            showMachine = false,
+                            decided = s.inlinePermission()?.let { state.decisions[decisionKey(s.ref, it)] },
+                            onOpen = { onOpenSession(s.ref) },
+                            onAllow = { haptics.confirm(); vm.respond(s, allow = true) },
+                            onDeny = { haptics.tick(); vm.respond(s, allow = false) },
+                            modifier = Modifier.animateItem(placementSpec = Motion.gentle()).padding(horizontal = Space.gutter, vertical = 6.dp),
+                        )
+                    }
+                }
+                if (state.canLoadOlder && !state.loadingSessions) {
+                    item(key = "older", contentType = "older") {
+                        ShowOlderButton(loading = state.loadingOlder, onClick = { haptics.tick(); vm.loadOlder() }, modifier = Modifier.animateItem())
                     }
                 }
             }
         }
     }
-}
-
-private fun openSession(s: SessionSummary, connectionId: String, onOpenAgent: (RunRef) -> Unit, onOpenSession: (String, String) -> Unit) {
-    val live = s.liveRunId
-    if (live != null) onOpenAgent(RunRef(connectionId, live)) else onOpenSession(connectionId, s.sessionId)
 }
 
 // ───────────────────────────── Top bar ─────────────────────────────
@@ -421,6 +358,7 @@ private fun MachineHeaderCard(
     error: String?,
     probe: Loadable<ProbeResult>,
     onRetryProbe: () -> Unit,
+    onNewSession: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val look = linkLook(link, error ?: (probe as? Loadable.Failed)?.message)
@@ -501,6 +439,14 @@ private fun MachineHeaderCard(
                     TextButton(onClick = onRetryProbe) { Text("Retry", color = TetherTheme.colors.danger) }
                 }
             }
+            Spacer(Modifier.height(Space.lg))
+            SecondaryButton(
+                "New session here",
+                onClick = onNewSession,
+                icon = Icons.Rounded.Add,
+                contentColor = TetherTheme.colors.clay,
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
     }
 }
@@ -521,198 +467,6 @@ private fun InfoCell(label: String, value: String?, loading: Boolean, modifier: 
                 overflow = TextOverflow.Ellipsis,
             )
         }
-    }
-}
-
-// ───────────────────────────── Segmented tabs ─────────────────────────────
-
-@Composable
-private fun SegmentedTabs(labels: List<String>, counts: List<Int?>, selected: Int, onSelect: (Int) -> Unit, modifier: Modifier = Modifier) {
-    val outer = RoundedCornerShape(14.dp)
-    val inner = RoundedCornerShape(10.dp)
-    BoxWithConstraints(
-        modifier
-            .fillMaxWidth()
-            .height(46.dp)
-            .clip(outer)
-            .background(TetherTheme.colors.subtleFill)
-            .padding(4.dp),
-    ) {
-        val segment = maxWidth / labels.size
-        val indicatorOffset by animateDpAsState(segment * selected, animationSpec = Motion.gentle(), label = "tabIndicator")
-        Box(
-            Modifier
-                .offset(x = indicatorOffset)
-                .width(segment)
-                .fillMaxHeight()
-                .clip(inner)
-                .background(if (TetherTheme.colors.isDark) Color(0xFF4A4A45) else TetherTheme.colors.card)
-        )
-        Row(Modifier.fillMaxSize().selectableGroup()) {
-            labels.forEachIndexed { i, label ->
-                val isSel = i == selected
-                val color by animateColorAsState(if (isSel) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant, label = "tabColor")
-                Box(
-                    Modifier
-                        .weight(1f)
-                        .fillMaxHeight()
-                        .clip(inner)
-                        .selectable(selected = isSel, role = Role.Tab, onClick = { onSelect(i) }),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(label, style = MaterialTheme.typography.labelLarge.copy(fontWeight = if (isSel) FontWeight.SemiBold else FontWeight.Medium), color = color)
-                        val c = counts.getOrNull(i)
-                        if (c != null) {
-                            Spacer(Modifier.width(5.dp))
-                            Text("$c", style = MaterialTheme.typography.labelSmall, color = TetherTheme.colors.faint)
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-// ───────────────────────────── Projects ─────────────────────────────
-
-@Composable
-private fun ProjectCard(
-    project: ProjectSummary,
-    expanded: Boolean,
-    sessions: Loadable<List<SessionSummary>>?,
-    onToggle: () -> Unit,
-    onRetrySessions: () -> Unit,
-    onOpenSession: (SessionSummary) -> Unit,
-    onNewAgentHere: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val rot by animateFloatAsState(if (expanded) 180f else 0f, label = "projChevron")
-    val border by animateColorAsState(if (expanded) TetherTheme.colors.clay.copy(alpha = 0.35f) else TetherTheme.colors.cardBorder, label = "projBorder")
-    TetherCard(modifier.fillMaxWidth(), border = border, contentPadding = PaddingValues(0.dp)) {
-        Column {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .clickable(onClickLabel = if (expanded) "Collapse" else "Show sessions", onClick = onToggle)
-                    .padding(horizontal = Space.lg, vertical = 14.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconTile(Icons.Rounded.Folder, if (project.exists) TetherTheme.colors.clay else TetherTheme.colors.faint)
-                Spacer(Modifier.width(14.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        projectName(project.cwd),
-                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                        color = if (project.exists) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Text(prettyPath(project.cwd), style = TetherTheme.type.monoSmall, color = TetherTheme.colors.faint, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Spacer(Modifier.height(5.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text(
-                            buildString {
-                                append(if (project.sessionCount == 1) "1 session" else "${project.sessionCount} sessions")
-                                append(" · ")
-                                append(relativeTime(project.lastActiveAt))
-                            },
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        project.gitBranch?.let { GitBranchBadge(it, Modifier.weight(1f, fill = false)) }
-                        if (!project.exists) MiniBadge("Missing", TetherTheme.colors.faint)
-                    }
-                }
-                Icon(Icons.Rounded.ExpandMore, null, tint = TetherTheme.colors.faint, modifier = Modifier.rotate(rot))
-            }
-            AnimatedVisibility(visible = expanded, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
-                Column {
-                    Hairline()
-                    when (sessions) {
-                        null, Loadable.Loading -> repeat(2) { SkeletonListRow(leading = false) }
-                        is Loadable.Failed -> Row(Modifier.fillMaxWidth().padding(start = Space.lg, end = 4.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text(sessions.message, style = MaterialTheme.typography.bodySmall, color = TetherTheme.colors.danger, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                            TextButton(onClick = onRetrySessions) { Text("Retry") }
-                        }
-                        is Loadable.Ready -> if (sessions.value.isEmpty()) {
-                            Text(
-                                "No sessions in this folder yet.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = TetherTheme.colors.faint,
-                                modifier = Modifier.padding(horizontal = Space.lg, vertical = Space.md),
-                            )
-                        } else {
-                            val shown = sessions.value.take(8)
-                            shown.forEachIndexed { i, s ->
-                                Box(Modifier.fillMaxWidth().clickable(onClick = { onOpenSession(s) })) { SessionRow(s, showProject = false, compact = true) }
-                                if (i < shown.lastIndex) Hairline(Modifier.padding(start = Space.lg))
-                            }
-                            if (sessions.value.size > shown.size) {
-                                Text(
-                                    "+ ${sessions.value.size - shown.size} older — see the Sessions tab",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = TetherTheme.colors.faint,
-                                    modifier = Modifier.padding(horizontal = Space.lg, vertical = Space.sm),
-                                )
-                            }
-                        }
-                    }
-                    Hairline()
-                    Row(Modifier.fillMaxWidth().padding(Space.md), horizontalArrangement = Arrangement.End) {
-                        SecondaryButton(
-                            "New agent here",
-                            onClick = onNewAgentHere,
-                            icon = Icons.Rounded.Add,
-                            enabled = project.exists,
-                            contentColor = TetherTheme.colors.clay,
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-// ───────────────────────────── Sessions ─────────────────────────────
-
-@Composable
-private fun SessionRow(session: SessionSummary, showProject: Boolean, compact: Boolean = false) {
-    Row(
-        Modifier.fillMaxWidth().padding(horizontal = Space.lg, vertical = if (compact) 11.dp else 14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(
-                session.title.ifBlank { "Untitled session" },
-                style = if (compact) MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium) else MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Spacer(Modifier.height(4.dp))
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                val meta = buildList {
-                    if (showProject) add(projectName(session.cwd))
-                    add(relativeTime(session.updatedAt))
-                    if (session.messageCount > 0) add(if (session.messageCount == 1) "1 message" else "${session.messageCount} messages")
-                }
-                Text(
-                    meta.joinToString(" · "),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f, fill = false),
-                )
-                if (session.liveRunId != null) {
-                    MiniBadge("live", TetherTheme.colors.clay, pulsing = true)
-                } else if (session.recentlyActive) {
-                    MiniBadge("active on desktop", TetherTheme.colors.info)
-                }
-            }
-        }
-        Spacer(Modifier.width(Space.sm))
-        Icon(Icons.Rounded.ChevronRight, null, tint = TetherTheme.colors.faint, modifier = Modifier.size(20.dp))
     }
 }
 

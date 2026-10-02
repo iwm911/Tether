@@ -1,0 +1,37 @@
+{
+ "state": "done",
+ "detail": "replied with PONG-FOUR",
+ "tempo": "idle",
+ "inFlight": {
+  "tasks": 0,
+  "queued": 0,
+  "kinds": [],
+  "drainableMonitors": 0
+ },
+ "tokens": 2709,
+ "output": {
+  "result": "PONG-FOUR"
+ },
+ "children": null,
+ "linkScanOffset": 290791,
+ "linkScanPath": "/home/user/.claude/projects/-home-user-tether-exp-live/7b9f8c4c-6ac7-4d5a-9111-003abd24390e.jsonl",
+ "template": "bg",
+ "respawnFlags": [
+  "--model",
+  "haiku",
+  "--permission-mode",
+  "acceptEdits"
+ ],
+ "intent": "Reply with exactly: PONG-ONE. Do not use any tools.",
+ "name": "tether h1 probe",
+ "sessionId": "7b9f8c4c-6ac7-4d5a-9111-003abd24390e",
+ "resumeSessionId": "7b9f8c4c-6ac7-4d5a-9111-003abd24390e",
+ "daemonShort": "7b9f8c4c",
+ "cliVersion": "2.1.287",
+ "cwd": "/home/user/tether-exp/live",
+ "backend": "daemon",
+ "createdAt": "2026-10-01T17:15:05.658Z",
+ "updatedAt": "2026-10-01T17:19:36.990Z",
+ "firstTerminalAt": "2026-10-01T17:17:05.997Z",
+ "lastTerminalAt": "2026-10-01T17:19:36.990Z"
+}

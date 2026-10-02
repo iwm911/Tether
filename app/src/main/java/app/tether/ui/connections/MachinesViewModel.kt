@@ -5,8 +5,8 @@ import androidx.lifecycle.viewModelScope
 import app.tether.AppContainer
 import app.tether.core.Connection
 import app.tether.core.LinkState
-import app.tether.core.RunStatus
-import app.tether.ui.components.isLive
+import app.tether.core.SessionState
+import app.tether.service.SessionAlerts
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -35,16 +35,16 @@ internal class MachinesViewModel(private val container: AppContainer) : ViewMode
     val items: StateFlow<List<MachineItem>> = combine(
         container.connections.connections,
         container.ssh.states,
-        container.agents.agents,
-        container.agents.machineErrors,
-    ) { conns, links, agents, errors ->
+        container.sessions.sessions,
+        container.sessions.machineErrors,
+    ) { conns, links, sessions, errors ->
         conns.map { c ->
-            val mine = agents.filter { it.connection.id == c.id }
+            val live = SessionAlerts.live(sessions.filter { it.connectionId == c.id })
             MachineItem(
                 connection = c,
                 link = links[c.id] ?: LinkState.Idle,
-                running = mine.count { it.run.displayStatus.isLive },
-                needsYou = mine.count { it.run.status == RunStatus.AWAITING_PERMISSION },
+                running = live.size,
+                needsYou = live.count { it.state == SessionState.NEEDS_YOU },
                 error = errors[c.id],
             )
         }
@@ -65,7 +65,7 @@ internal class MachinesViewModel(private val container: AppContainer) : ViewMode
     fun test(connection: Connection) {
         testJob?.cancel()
         _test.value = MachineTestUi(connection, TestUi(running = true))
-        container.agents.release(connection.id)
+        container.sessions.release(connection.id)
         testJob = viewModelScope.launch {
             val result = runPacedTest(
                 block = { onProgress -> container.ssh.test(connection, null, onProgress) },
@@ -87,7 +87,7 @@ internal class MachinesViewModel(private val container: AppContainer) : ViewMode
 
     fun disconnect(connection: Connection) {
         viewModelScope.launch {
-            container.agents.hold(connection.id) // else the watch stream reconnects straight away
+            container.sessions.hold(connection.id) // else the watch stream reconnects straight away
             runCatching { container.ssh.disconnect(connection.id) }
             _messages.tryEmit("Disconnected from ${connection.name}")
         }

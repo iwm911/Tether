@@ -1,92 +1,177 @@
 package app.tether.ui.chat
 
 import androidx.compose.animation.AnimatedContent
+
 import androidx.compose.animation.AnimatedVisibility
+
 import androidx.compose.animation.core.LinearEasing
+
 import androidx.compose.animation.core.Spring
+
 import androidx.compose.animation.core.VisibilityThreshold
+
 import androidx.compose.animation.core.animateFloatAsState
+
 import androidx.compose.animation.core.animateFloat
+
 import androidx.compose.animation.core.infiniteRepeatable
+
 import androidx.compose.animation.core.rememberInfiniteTransition
+
 import androidx.compose.animation.core.spring
+
 import androidx.compose.animation.core.tween
+
 import androidx.compose.animation.expandVertically
+
 import androidx.compose.animation.fadeIn
+
 import androidx.compose.animation.fadeOut
+
 import androidx.compose.animation.scaleIn
+
 import androidx.compose.animation.scaleOut
+
 import androidx.compose.animation.shrinkVertically
+
 import androidx.compose.animation.slideInVertically
+
 import androidx.compose.animation.slideOutVertically
+
 import androidx.compose.animation.togetherWith
+
 import androidx.compose.foundation.BorderStroke
+
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.scrollBy
+
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
+
 import androidx.compose.foundation.layout.Arrangement
+
 import androidx.compose.foundation.layout.Box
+
 import androidx.compose.foundation.layout.Column
+
 import androidx.compose.foundation.layout.PaddingValues
+
 import androidx.compose.foundation.layout.Row
+
 import androidx.compose.foundation.layout.Spacer
+
 import androidx.compose.foundation.layout.fillMaxSize
+
 import androidx.compose.foundation.layout.fillMaxWidth
+
 import androidx.compose.foundation.layout.height
+
 import androidx.compose.foundation.layout.padding
+
 import androidx.compose.foundation.layout.size
+
 import androidx.compose.foundation.layout.width
+
 import androidx.compose.foundation.lazy.LazyColumn
+
 import androidx.compose.foundation.lazy.LazyListState
+
 import androidx.compose.foundation.lazy.items
+
 import androidx.compose.foundation.lazy.rememberLazyListState
+
 import androidx.compose.foundation.shape.CircleShape
+
 import androidx.compose.foundation.shape.RoundedCornerShape
+
 import androidx.compose.material.icons.Icons
+
 import androidx.compose.material.icons.rounded.ArrowDownward
+
 import androidx.compose.material.icons.rounded.ErrorOutline
+
 import androidx.compose.material.icons.rounded.ExpandMore
+
 import androidx.compose.material.icons.rounded.Refresh
+
 import androidx.compose.material3.Icon
+
 import androidx.compose.material3.MaterialTheme
+
 import androidx.compose.material3.Surface
+
 import androidx.compose.material3.Text
+
 import androidx.compose.material3.TextButton
+
 import androidx.compose.runtime.Composable
+
 import androidx.compose.runtime.LaunchedEffect
+
 import androidx.compose.runtime.SideEffect
+
 import androidx.compose.runtime.derivedStateOf
+
 import androidx.compose.runtime.getValue
+
 import androidx.compose.runtime.mutableIntStateOf
+
 import androidx.compose.runtime.mutableStateOf
+
 import androidx.compose.runtime.remember
+
 import androidx.compose.runtime.rememberCoroutineScope
+
 import androidx.compose.runtime.rememberUpdatedState
+
 import androidx.compose.runtime.saveable.rememberSaveable
+
 import androidx.compose.runtime.setValue
+
 import androidx.compose.runtime.snapshotFlow
+
 import androidx.compose.ui.Alignment
+
 import androidx.compose.ui.Modifier
+
 import androidx.compose.ui.draw.clip
+
 import androidx.compose.ui.draw.rotate
+
 import androidx.compose.ui.geometry.Offset
+
 import androidx.compose.ui.graphics.Brush
+
 import androidx.compose.ui.semantics.contentDescription
+
 import androidx.compose.ui.semantics.semantics
+
 import androidx.compose.ui.text.style.TextAlign
+
 import androidx.compose.ui.text.style.TextOverflow
+
 import androidx.compose.ui.unit.Dp
+
 import androidx.compose.ui.unit.IntOffset
+
 import androidx.compose.ui.unit.dp
+
 import app.tether.core.ChatItem
+
 import app.tether.ui.chat.render.ChatItemView
+
 import app.tether.ui.components.SecondaryButton
+
 import app.tether.ui.components.rememberHaptics
+
 import app.tether.ui.theme.Motion
+
 import app.tether.ui.theme.Space
+
 import app.tether.ui.theme.TetherTheme
+
 import kotlinx.coroutines.flow.collectLatest
+
 import kotlinx.coroutines.launch
+
 
 private fun ChatItem.contentType(): Int = when (this) {
     is ChatItem.User -> 1
@@ -96,6 +181,7 @@ private fun ChatItem.contentType(): Int = when (this) {
     is ChatItem.Permission -> 5
     is ChatItem.TurnSummary -> 6
     is ChatItem.Notice -> 7
+    is ChatItem.Peer -> 8
 }
 
 /** Vertical rhythm: prose breathes, tool rows stack tightly like the CLI. */
@@ -107,6 +193,7 @@ private fun ChatItem.verticalGap(): Dp = when (this) {
     is ChatItem.Permission -> 8.dp
     is ChatItem.TurnSummary -> 8.dp
     is ChatItem.Notice -> 8.dp
+    is ChatItem.Peer -> 10.dp
 }
 
 /**
@@ -135,9 +222,7 @@ internal fun ChatList(
     footer: (@Composable () -> Unit)? = null,
     empty: (@Composable () -> Unit)? = null,
     permission: @Composable (ChatItem.Permission, Modifier) -> Unit = { p, m -> PermissionCard(p, responding = false, onRespond = { _, _ -> }, modifier = m) },
-    actions: MessageActions? = null,
 ) {
-    val ends = remember(items, actions != null) { if (actions != null) turnEnds(items) else emptyMap() }
     val scope = rememberCoroutineScope()
     val haptics = rememberHaptics()
     val dragged by listState.interactionSource.collectIsDraggedAsState()
@@ -164,9 +249,9 @@ internal fun ChatList(
     }
 
     // A new row is inserted at index 0, below the row the list keeps anchored, so it lands below the
-    // fold and the effect above only catches up a frame later. A live run hides that behind its
-    // "Working…" footer (the anchor stays the footer); a background agent has none and adds whole
-    // rows in bursts, which made the list jump on every one. Re-pin within the same frame instead.
+    // fold and the effect above only catches up a frame later. A session adds whole rows in bursts
+    // (transcript lines land several at a time), which made the list jump on every one. Re-pin
+    // within the same frame instead.
     val newestKey = items.lastOrNull()?.key
     val pinnedNewest = remember { arrayOf(newestKey) }
     SideEffect {
@@ -216,14 +301,7 @@ internal fun ChatList(
                     .fillMaxWidth()
                     .padding(horizontal = Space.gutter, vertical = item.verticalGap())
                 if (item is ChatItem.Permission) permission(item, m)
-                else if (actions != null && item is ChatItem.AssistantText && ends.containsKey(item.key)) {
-                    androidx.compose.foundation.layout.Column(m) {
-                        ChatItemView(item, Modifier.fillMaxWidth(), showThinking = showThinking, compactTools = compactTools)
-                        MessageActionRow(item, ends[item.key], actions)
-                    }
-                } else androidx.compose.runtime.CompositionLocalProvider(LocalUserLongPress provides actions?.onUserMessage) {
-                    ChatItemView(item, m, showThinking = showThinking, compactTools = compactTools)
-                }
+                else ChatItemView(item, m, showThinking = showThinking, compactTools = compactTools)
             }
             if (loading && items.isEmpty()) {
                 item(key = "__skeleton", contentType = 101) {
@@ -433,4 +511,5 @@ private fun rawDescribe(item: ChatItem): Pair<String, String> = when (item) {
     is ChatItem.Permission -> "permission ${item.state.name.lowercase()}" to "${item.toolName} ${item.inputJson.take(200)}"
     is ChatItem.TurnSummary -> "result" to "success=${item.success} turns=${item.numTurns} ms=${item.durationMs} cost=${item.costUsd}" + (item.errorText?.let { " err=$it" } ?: "")
     is ChatItem.Notice -> "notice:${item.kind.name.lowercase()}" to item.text
+    is ChatItem.Peer -> (if (item.incoming) "peer:in" else "peer:out") to "${item.peerName ?: item.peer ?: "?"}: ${item.text}"
 }

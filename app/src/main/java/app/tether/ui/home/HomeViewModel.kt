@@ -3,15 +3,12 @@ package app.tether.ui.home
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.tether.AppContainer
-import app.tether.core.AgentSummary
 import app.tether.core.Connection
 import app.tether.core.LinkState
-import app.tether.core.PermissionDecision
 import app.tether.core.ProjectSummary
-import app.tether.core.RunRef
-import app.tether.core.RunStatus
+import app.tether.core.Session
+import app.tether.core.SessionHub
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -24,39 +21,40 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-/** One decision the user made from a Home card, before the hub reports the agent moving on. */
-data class QuickDecision(val allow: Boolean, val settled: Boolean)
-
 data class QuickStart(val connection: Connection, val projects: Loadable<List<ProjectSummary>>)
 
 data class HomeUiState(
     val connections: List<Connection> = emptyList(),
     val links: Map<String, LinkState> = emptyMap(),
     val machineErrors: Map<String, String> = emptyMap(),
-    val needsYou: List<AgentSummary> = emptyList(),
-    val working: List<AgentSummary> = emptyList(),
-    val recent: List<AgentSummary> = emptyList(),
-    /** Unsettled optimistic decisions, keyed by [HomeViewModel.decisionKey]. */
+    /** The one list: every session of every machine that matches [filter], needs-you first then most recent. */
+    val sessions: List<Session> = emptyList(),
+    /** Sessions before filtering (to tell "nothing here yet" from "nothing matches the chips"). */
+    val totalSessions: Int = 0,
+    val needsYouCount: Int = 0,
+    val workingCount: Int = 0,
+    val filter: SessionFilter = SessionFilter(),
+    /** Machine chips (ids, in the user's machine order); shown when sessions span more than one machine. */
+    val machineChips: List<String> = emptyList(),
+    val projectChips: List<ProjectChip> = emptyList(),
+    /** Optimistic Allow (true) / Deny (false) by [decisionKey]. */
     val decisions: Map<String, Boolean> = emptyMap(),
-    /** Agents whose card was optimistically answered and now reads as working. */
-    val answeredKeys: Set<String> = emptySet(),
     val liveCountByMachine: Map<String, Int> = emptyMap(),
+    val canLoadOlder: Boolean = false,
+    val loadingOlder: Boolean = false,
     val showSkeleton: Boolean = false,
     val refreshing: Boolean = false,
     val retrying: Set<String> = emptySet(),
     val quickStart: QuickStart? = null,
 ) {
-    val hasAgents get() = needsYou.isNotEmpty() || working.isNotEmpty() || recent.isNotEmpty()
+    val hasSessions get() = totalSessions > 0
 }
 
 sealed interface HomeMessage {
-    data class Removed(val ref: RunRef, val title: String) : HomeMessage
     data class Error(val text: String) : HomeMessage
 }
 
 private data class Local(
-    val decisions: Map<String, QuickDecision> = emptyMap(),
-    val hidden: Set<String> = emptySet(),
     val refreshing: Boolean = false,
     val retrying: Set<String> = emptySet(),
     /** 0 = first 2.5 s, 1 = grace while a machine is still connecting, 2 = settled. */
@@ -65,35 +63,48 @@ private data class Local(
     val quickStart: QuickStart? = null,
 )
 
-class HomeViewModel(private val container: AppContainer) : ViewModel() {
-    private val hub = container.agents
-    private val local = MutableStateFlow(Local())
+private data class ListBits(val filter: SessionFilter, val pages: Map<PageKey, Page>, val decisions: Map<String, Boolean>)
+
+/** Home: one list of every session on every machine (one-session model). */
+class HomeViewModel(
+    private val hub: SessionHub,
+    private val connections: StateFlow<List<Connection>>,
+    private val links: StateFlow<Map<String, LinkState>>,
+    private val loadProjects: suspend (connectionId: String) -> List<ProjectSummary>,
+    /** False in tests: skip the skeleton timers. */
+    loadTimers: Boolean = true,
+) : ViewModel() {
+    constructor(container: AppContainer) : this(
+        hub = container.sessions,
+        connections = container.connections.connections,
+        links = container.ssh.states,
+        loadProjects = { id -> container.remote.listProjects(id) },
+    )
+
+    private val local = MutableStateFlow(Local(loadPhase = if (loadTimers) 0 else 2))
     private val messages = Channel<HomeMessage>(Channel.BUFFERED)
     val events: Flow<HomeMessage> = messages.receiveAsFlow()
-
-    private val pendingRemovals = mutableMapOf<String, Pair<RunRef, Job>>()
     private var quickStartJob: Job? = null
 
-    val state: StateFlow<HomeUiState> = combine(
-        container.connections.connections,
-        container.ssh.states,
-        hub.agents,
-        hub.machineErrors,
-        local,
-    ) { conns, links, agents, errors, l -> reduce(conns, links, agents, errors, l) }
-        .stateIn(
-            viewModelScope,
-            SharingStarted.WhileSubscribed(5_000),
-            // Seed from current values so the first frame is already the right state (no empty-state flash).
-            reduce(container.connections.connections.value, container.ssh.states.value, hub.agents.value, hub.machineErrors.value, local.value),
-        )
+    val list = SessionListController(viewModelScope, hub, onError = { messages.trySend(HomeMessage.Error(it)) })
+
+    private val listBits = combine(list.filter, list.pages, list.decisions) { f, p, d -> ListBits(f, p, d) }
+
+    val state: StateFlow<HomeUiState> = combine(connections, links, hub.sessions, hub.machineErrors, combine(local, listBits) { l, b -> l to b }) { conns, lk, sessions, errors, (l, b) ->
+        reduce(conns, lk, sessions, errors, l, b)
+    }.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5_000),
+        // Seed from current values so the first frame is already the right state (no empty-state flash).
+        reduce(connections.value, links.value, hub.sessions.value, hub.machineErrors.value, local.value, ListBits(list.filter.value, list.pages.value, list.decisions.value)),
+    )
 
     init {
         viewModelScope.launch {
             attempt { hub.refresh() }
             local.update { it.copy(firstRefreshDone = true) }
         }
-        viewModelScope.launch {
+        if (loadTimers) viewModelScope.launch {
             delay(2_500)
             local.update { it.copy(loadPhase = 1) }
             delay(5_500)
@@ -103,88 +114,70 @@ class HomeViewModel(private val container: AppContainer) : ViewModel() {
 
     private fun reduce(
         conns: List<Connection>,
-        links: Map<String, LinkState>,
-        agents: List<AgentSummary>,
+        lk: Map<String, LinkState>,
+        all: List<Session>,
         errors: Map<String, String>,
         l: Local,
+        b: ListBits,
     ): HomeUiState {
-        val known = conns.map { it.id }.toSet()
-        val visible = agents.filter { agentKey(it.ref.connectionId, it.ref.runId) !in l.hidden && it.ref.connectionId in known }
-        val answered = mutableSetOf<String>()
-        val unsettled = mutableMapOf<String, Boolean>()
-        val needs = mutableListOf<AgentSummary>()
-        val working = mutableListOf<AgentSummary>()
-        val recent = mutableListOf<AgentSummary>()
-        for (a in visible.sortedForDisplay()) {
-            val p = a.run.pending
-            when (a.run.displayStatus) {
-                RunStatus.AWAITING_PERMISSION -> {
-                    val d = p?.let { l.decisions[decisionKey(a.ref, it.requestId)] }
-                    if (d != null && d.settled) {
-                        answered += agentKey(a.ref.connectionId, a.ref.runId)
-                        working += a
-                    } else {
-                        if (d != null) unsettled[decisionKey(a.ref, p.requestId)] = d.allow
-                        needs += a
-                    }
-                }
-                RunStatus.STARTING, RunStatus.WORKING -> working += a
-                RunStatus.IDLE, RunStatus.ENDED, RunStatus.FAILED -> recent += a
-            }
-        }
-        val liveCounts = visible.filter { it.run.displayStatus.let { s -> s == RunStatus.STARTING || s == RunStatus.WORKING || s == RunStatus.AWAITING_PERMISSION } }
-            .groupingBy { it.ref.connectionId }.eachCount()
-        val anyConnecting = conns.any { links[it.id] == LinkState.Connecting }
+        val order = conns.map { it.id }
+        val known = order.toSet()
+        val watched = all.filter { it.connectionId in known }
+        // A filter on a machine that was deleted (or a project that is gone) is dropped, not a dead end.
+        val filter = b.filter.let { f -> if (f.machine != null && f.machine !in known) SessionFilter() else f }
+        val older = SessionPaging.olderFor(SessionFilter(machine = filter.machine), b.pages).filter { it.connectionId in known }
+        val everything = mergeSessions(watched, older)
+        val visible = visibleSessions(watched, b.pages, filter).filter { it.connectionId in known }
+        val anyConnecting = conns.any { lk[it.id] == LinkState.Connecting }
         val stillLoading = when (l.loadPhase) {
             0 -> true
             1 -> anyConnecting && !l.firstRefreshDone
             else -> false
         }
         val relevantErrors = errors.filterKeys { it in known }
-        val skeleton = visible.isEmpty() && conns.isNotEmpty() && relevantErrors.isEmpty() && stillLoading
+        val machineChips = machinesWithSessions(everything, order).let { present ->
+            // The selected machine stays visible even when it has nothing left.
+            if (filter.machine != null && filter.machine !in present) order.filter { it in present || it == filter.machine } else present
+        }
+        val pageMachines = order.filter { it !in relevantErrors }
         return HomeUiState(
             connections = conns,
-            links = links,
+            links = lk,
             machineErrors = relevantErrors,
-            needsYou = needs,
-            working = working,
-            recent = recent,
-            decisions = unsettled,
-            answeredKeys = answered,
-            liveCountByMachine = liveCounts,
-            showSkeleton = skeleton,
+            sessions = visible,
+            totalSessions = everything.size,
+            needsYouCount = watched.count { it.needsYou && !it.offline },
+            workingCount = watched.count { it.state == app.tether.core.SessionState.WORKING && !it.offline },
+            filter = filter,
+            machineChips = if (machineChips.size > 1 || filter.machine != null) machineChips else emptyList(),
+            projectChips = projectChips(everything, filter.machine, filter.project),
+            decisions = b.decisions,
+            liveCountByMachine = watched.liveCountByMachine(),
+            canLoadOlder = everything.isNotEmpty() && SessionPaging.canLoadMore(filter, pageMachines, b.pages),
+            loadingOlder = SessionPaging.loading(filter, pageMachines, b.pages),
+            showSkeleton = watched.isEmpty() && conns.isNotEmpty() && relevantErrors.isEmpty() && stillLoading,
             refreshing = l.refreshing,
             retrying = l.retrying,
             quickStart = l.quickStart?.takeIf { qs -> conns.any { it.id == qs.connection.id } },
         )
     }
 
-    fun decisionKey(ref: RunRef, requestId: String) = "${ref.connectionId}/${ref.runId}/$requestId"
+    // ───────────── Filters & paging ─────────────
 
-    fun respond(agent: AgentSummary, allow: Boolean) {
-        val pending = agent.run.pending ?: return
-        val key = decisionKey(agent.ref, pending.requestId)
-        if (local.value.decisions.containsKey(key)) return
-        local.update { it.copy(decisions = it.decisions + (key to QuickDecision(allow, settled = false))) }
-        viewModelScope.launch {
-            val minDelay = async { delay(750) }
-            val decision = if (allow) PermissionDecision.Allow() else PermissionDecision.Deny()
-            val result = attempt { hub.respond(agent.ref, pending.requestId, decision) }
-            minDelay.await()
-            result.fold(
-                onSuccess = {
-                    local.update { l -> l.copy(decisions = l.decisions + (key to QuickDecision(allow, settled = true))) }
-                    // Forget the decision once the hub has certainly caught up, so a later identical id can't collide.
-                    delay(60_000)
-                    local.update { l -> l.copy(decisions = l.decisions - key) }
-                },
-                onFailure = { e ->
-                    local.update { l -> l.copy(decisions = l.decisions - key) }
-                    messages.trySend(HomeMessage.Error("Couldn't send your answer — ${e.humanMessage()}"))
-                },
-            )
-        }
+    fun selectMachine(id: String?) = list.setMachine(id)
+
+    fun selectProject(cwd: String?) = list.setProject(cwd)
+
+    fun loadOlder() {
+        val s = state.value
+        list.loadOlder(s.connections.map { it.id }.filter { it !in s.machineErrors }, s.sessions)
     }
+
+    // ───────────── Inline answers ─────────────
+
+    fun respond(session: Session, allow: Boolean) = list.respond(session, allow)
+
+    // ───────────── Refresh ─────────────
 
     fun refresh() {
         if (local.value.refreshing) return
@@ -192,11 +185,12 @@ class HomeViewModel(private val container: AppContainer) : ViewModel() {
         viewModelScope.launch {
             val t0 = System.currentTimeMillis()
             val r = attempt { hub.refresh() }
+            list.resetPages()
             val spent = System.currentTimeMillis() - t0
             if (spent < 650) delay(650 - spent)
             local.update { it.copy(refreshing = false, firstRefreshDone = true) }
             r.exceptionOrNull()?.let { messages.trySend(HomeMessage.Error("Refresh failed — ${it.humanMessage()}")) }
-            local.value.quickStart?.let { qs -> if (qs.projects is Loadable.Failed) loadQuickStart(qs.connection, force = true) }
+            local.value.quickStart?.let { qs -> if (qs.projects is Loadable.Failed) loadQuickStart(qs.connection) }
         }
     }
 
@@ -209,34 +203,9 @@ class HomeViewModel(private val container: AppContainer) : ViewModel() {
         }
     }
 
-    /** Swipe-to-dismiss on an ended agent: hide now, delete after the Undo window. */
-    fun dismiss(agent: AgentSummary) {
-        val key = agentKey(agent.ref.connectionId, agent.ref.runId)
-        if (key in local.value.hidden) return
-        local.update { it.copy(hidden = it.hidden + key) }
-        messages.trySend(HomeMessage.Removed(agent.ref, agent.run.displayTitle()))
-        val job = viewModelScope.launch {
-            delay(4_600)
-            pendingRemovals.remove(key)
-            commitRemove(agent.ref, key)
-        }
-        pendingRemovals[key] = agent.ref to job
-    }
+    // ───────────── First-session quick start ─────────────
 
-    fun undoDismiss(ref: RunRef) {
-        val key = agentKey(ref.connectionId, ref.runId)
-        pendingRemovals.remove(key)?.second?.cancel()
-        local.update { it.copy(hidden = it.hidden - key) }
-    }
-
-    private suspend fun commitRemove(ref: RunRef, key: String) {
-        attempt { hub.remove(ref) }.onFailure { e ->
-            local.update { it.copy(hidden = it.hidden - key) }
-            messages.trySend(HomeMessage.Error("Couldn't remove the agent — ${e.humanMessage()}"))
-        }
-    }
-
-    /** Pick the machine for the "start your first agent" quick-start list (sticky once chosen). */
+    /** Pick the machine for the "start your first session" quick-start list (sticky once chosen). */
     fun ensureQuickStart(s: HomeUiState) {
         val current = local.value.quickStart
         if (current != null && current.projects !is Loadable.Failed) return
@@ -247,33 +216,23 @@ class HomeViewModel(private val container: AppContainer) : ViewModel() {
             ?: return
         // A failed machine is only retried by the user; auto-switch only to a different one.
         if (current != null && current.connection.id == target.id) return
-        loadQuickStart(target, force = true)
+        loadQuickStart(target)
     }
 
     fun retryQuickStart() {
-        local.value.quickStart?.let { loadQuickStart(it.connection, force = true) }
+        local.value.quickStart?.let { loadQuickStart(it.connection) }
     }
 
-    private fun loadQuickStart(conn: Connection, force: Boolean) {
-        if (!force && local.value.quickStart?.connection?.id == conn.id) return
+    private fun loadQuickStart(conn: Connection) {
         quickStartJob?.cancel()
         local.update { it.copy(quickStart = QuickStart(conn, Loadable.Loading)) }
         quickStartJob = viewModelScope.launch {
-            val r = attempt { container.remote.listProjects(conn.id) }
+            val r = attempt { loadProjects(conn.id) }
             val value: Loadable<List<ProjectSummary>> = r.fold(
                 onSuccess = { list -> Loadable.Ready(list.filter { it.exists }.sortedByDescending { it.lastActiveAt }.take(4)) },
                 onFailure = { Loadable.Failed(it.humanMessage()) },
             )
             local.update { it.copy(quickStart = QuickStart(conn, value)) }
         }
-    }
-
-    override fun onCleared() {
-        // Leaving Home inside the Undo window still honours the swipe.
-        val refs = pendingRemovals.values.map { it.first }
-        pendingRemovals.values.forEach { it.second.cancel() }
-        pendingRemovals.clear()
-        refs.forEach { ref -> container.scope.launch { attempt { hub.remove(ref) } } }
-        super.onCleared()
     }
 }

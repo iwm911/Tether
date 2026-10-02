@@ -3,16 +3,23 @@ package app.tether.ui.machine
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.tether.AppContainer
-import app.tether.core.AgentSummary
 import app.tether.core.Connection
 import app.tether.core.LinkState
 import app.tether.core.ProbeResult
-import app.tether.core.ProjectSummary
-import app.tether.core.SessionSummary
+import app.tether.core.Session
+import app.tether.core.SessionHub
 import app.tether.ui.home.Loadable
+import app.tether.ui.home.Page
+import app.tether.ui.home.PageKey
+import app.tether.ui.home.ProjectChip
+import app.tether.ui.home.SessionFilter
+import app.tether.ui.home.SessionListController
+import app.tether.ui.home.SessionPaging
 import app.tether.ui.home.attempt
 import app.tether.ui.home.humanMessage
-import app.tether.ui.home.sortedForDisplay
+import app.tether.ui.home.mergeSessions
+import app.tether.ui.home.projectChips
+import app.tether.ui.home.visibleSessions
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
@@ -33,51 +40,51 @@ data class MachineUiState(
     val known: Boolean = true,
     val link: LinkState? = null,
     val machineError: String? = null,
-    val agents: List<AgentSummary> = emptyList(),
     val probe: Loadable<ProbeResult> = Loadable.Loading,
-    val projects: Loadable<List<ProjectSummary>> = Loadable.Loading,
-    val sessions: Loadable<List<SessionSummary>> = Loadable.Loading,
-    val projectSessions: Map<String, Loadable<List<SessionSummary>>> = emptyMap(),
+    /** This machine's sessions matching [filter]: needs-you first, then most recent. */
+    val sessions: List<Session> = emptyList(),
+    /** Every session of this machine (before the project filter). */
+    val totalSessions: Int = 0,
+    val filter: SessionFilter = SessionFilter(),
+    val projectChips: List<ProjectChip> = emptyList(),
+    val decisions: Map<String, Boolean> = emptyMap(),
+    /** True until the first `sessions` of this machine came back (skeleton rows meanwhile). */
+    val loadingSessions: Boolean = true,
+    val canLoadOlder: Boolean = false,
+    val loadingOlder: Boolean = false,
     val refreshing: Boolean = false,
     val disconnecting: Boolean = false,
 )
 
 private data class MachineLocal(
     val probe: Loadable<ProbeResult> = Loadable.Loading,
-    val projects: Loadable<List<ProjectSummary>> = Loadable.Loading,
-    val sessions: Loadable<List<SessionSummary>> = Loadable.Loading,
-    val projectSessions: Map<String, Loadable<List<SessionSummary>>> = emptyMap(),
+    val firstLoadDone: Boolean = false,
     val refreshing: Boolean = false,
     val disconnecting: Boolean = false,
 )
 
+private data class MachineList(val filter: SessionFilter, val pages: Map<PageKey, Page>, val decisions: Map<String, Boolean>)
+
+/** One machine: its header (probe) and the session list filtered to it. */
 class MachineViewModel(private val container: AppContainer, val connectionId: String) : ViewModel() {
+    private val hub: SessionHub = container.sessions
     private val local = MutableStateFlow(MachineLocal())
     private val messages = Channel<String>(Channel.BUFFERED)
     val events: Flow<String> = messages.receiveAsFlow()
-    private val projectJobs = mutableMapOf<String, Job>()
+
+    val list = SessionListController(viewModelScope, hub, SessionFilter(machine = connectionId), onError = { messages.trySend(it) })
+
+    private val listBits = combine(list.filter, list.pages, list.decisions) { f, p, d -> MachineList(f, p, d) }
 
     val state: StateFlow<MachineUiState> = combine(
         container.connections.connections,
         container.ssh.states,
-        container.agents.agents,
-        container.agents.machineErrors,
-        local,
-    ) { conns, links, agents, errors, l ->
+        hub.sessions,
+        hub.machineErrors,
+        combine(local, listBits) { l, b -> l to b },
+    ) { conns, links, sessions, errors, (l, b) ->
         val conn = conns.firstOrNull { it.id == connectionId }
-        MachineUiState(
-            connection = conn,
-            known = conn != null,
-            link = links[connectionId],
-            machineError = errors[connectionId],
-            agents = agents.filter { it.ref.connectionId == connectionId }.sortedForDisplay(),
-            probe = l.probe,
-            projects = l.projects,
-            sessions = l.sessions,
-            projectSessions = l.projectSessions,
-            refreshing = l.refreshing,
-            disconnecting = l.disconnecting,
-        )
+        reduce(conn, links[connectionId], errors[connectionId], sessions, l, b)
     }.stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5_000),
@@ -86,12 +93,44 @@ class MachineViewModel(private val container: AppContainer, val connectionId: St
 
     init {
         if (container.connections.get(connectionId) != null) {
-            container.agents.release(connectionId) // opening a machine connects it again
+            // Opening a machine connects it again.
+            hub.release(connectionId)
             loadProbe()
-            loadProjects()
-            loadSessions()
+            viewModelScope.launch {
+                attempt { hub.refresh(connectionId) }
+                local.update { it.copy(firstLoadDone = true) }
+            }
         }
     }
+
+    private fun reduce(conn: Connection?, link: LinkState?, error: String?, all: List<Session>, l: MachineLocal, b: MachineList): MachineUiState {
+        val mine = all.filter { it.connectionId == connectionId }
+        val filter = b.filter.copy(machine = connectionId)
+        val everything = mergeSessions(mine, SessionPaging.olderFor(SessionFilter(machine = connectionId), b.pages))
+        return MachineUiState(
+            connection = conn,
+            known = conn != null,
+            link = link,
+            machineError = error,
+            probe = l.probe,
+            sessions = visibleSessions(mine, b.pages, filter),
+            totalSessions = everything.size,
+            filter = filter,
+            projectChips = projectChips(everything, connectionId, filter.project),
+            decisions = b.decisions,
+            loadingSessions = mine.isEmpty() && !l.firstLoadDone && error == null,
+            canLoadOlder = everything.isNotEmpty() && SessionPaging.canLoadMore(filter, listOf(connectionId), b.pages),
+            loadingOlder = SessionPaging.loading(filter, listOf(connectionId), b.pages),
+            refreshing = l.refreshing,
+            disconnecting = l.disconnecting,
+        )
+    }
+
+    fun selectProject(cwd: String?) = list.setProject(cwd)
+
+    fun loadOlder() = list.loadOlder(listOf(connectionId), state.value.sessions)
+
+    fun respond(session: Session, allow: Boolean) = list.respond(session, allow)
 
     fun loadProbe(): Job = viewModelScope.launch {
         if (local.value.probe !is Loadable.Ready) local.update { it.copy(probe = Loadable.Loading) }
@@ -105,58 +144,19 @@ class MachineViewModel(private val container: AppContainer, val connectionId: St
         }
     }
 
-    fun loadProjects(): Job = viewModelScope.launch {
-        if (local.value.projects !is Loadable.Ready) local.update { it.copy(projects = Loadable.Loading) }
-        val r = attempt { container.remote.listProjects(connectionId) }
-        r.onSuccess { list ->
-            local.update { it.copy(projects = Loadable.Ready(list.sortedByDescending { p -> p.lastActiveAt })) }
-        }.onFailure { e ->
-            if (local.value.projects is Loadable.Ready) messages.trySend("Couldn't refresh projects — ${e.humanMessage()}")
-            else local.update { it.copy(projects = Loadable.Failed(e.humanMessage())) }
-        }
-    }
-
-    fun loadSessions(): Job = viewModelScope.launch {
-        if (local.value.sessions !is Loadable.Ready) local.update { it.copy(sessions = Loadable.Loading) }
-        val r = attempt { container.remote.listSessions(connectionId, null, 60) }
-        r.onSuccess { list ->
-            local.update { it.copy(sessions = Loadable.Ready(list.sortedByDescending { s -> s.updatedAt })) }
-        }.onFailure { e ->
-            if (local.value.sessions is Loadable.Ready) messages.trySend("Couldn't refresh sessions — ${e.humanMessage()}")
-            else local.update { it.copy(sessions = Loadable.Failed(e.humanMessage())) }
-        }
-    }
-
-    /** Sessions of one project, loaded when its row is expanded. */
-    fun loadProjectSessions(cwd: String, force: Boolean = false) {
-        val current = local.value.projectSessions[cwd]
-        if (!force && (current is Loadable.Ready || projectJobs[cwd]?.isActive == true)) return
-        projectJobs[cwd]?.cancel()
-        if (current !is Loadable.Ready) local.update { it.copy(projectSessions = it.projectSessions + (cwd to Loadable.Loading)) }
-        projectJobs[cwd] = viewModelScope.launch {
-            val r = attempt { container.remote.listSessions(connectionId, cwd, 12) }
-            val v: Loadable<List<SessionSummary>> = r.fold(
-                onSuccess = { Loadable.Ready(it.sortedByDescending { s -> s.updatedAt }) },
-                onFailure = { Loadable.Failed(it.humanMessage()) },
-            )
-            if (v is Loadable.Failed && current is Loadable.Ready) return@launch
-            local.update { it.copy(projectSessions = it.projectSessions + (cwd to v)) }
-        }
-    }
-
     fun refresh() {
         if (local.value.refreshing) return
         local.update { it.copy(refreshing = true) }
         viewModelScope.launch {
             val t0 = System.currentTimeMillis()
-            val hub = launch { attempt { container.agents.refresh(connectionId) } }
-            val expanded = local.value.projectSessions.keys.toList()
-            val jobs = listOf(loadProbe(), loadProjects(), loadSessions(), hub)
-            expanded.forEach { loadProjectSessions(it, force = true) }
-            jobs.joinAll()
+            val sessions = launch {
+                attempt { hub.refresh(connectionId) }.onFailure { messages.trySend("Couldn't refresh sessions — ${it.humanMessage()}") }
+                list.resetPages()
+            }
+            listOf(loadProbe(), sessions).joinAll()
             val spent = System.currentTimeMillis() - t0
             if (spent < 650) delay(650 - spent)
-            local.update { it.copy(refreshing = false) }
+            local.update { it.copy(refreshing = false, firstLoadDone = true) }
         }
     }
 
@@ -165,7 +165,8 @@ class MachineViewModel(private val container: AppContainer, val connectionId: St
         local.update { it.copy(disconnecting = true) }
         viewModelScope.launch {
             val name = state.value.connection?.name ?: "machine"
-            container.agents.hold(connectionId) // else the watch stream reconnects straight away
+            // Else the watch streams reconnect straight away.
+            hub.hold(connectionId)
             attempt { container.ssh.disconnect(connectionId) }
                 .onSuccess { messages.trySend("Disconnected from $name") }
                 .onFailure { messages.trySend("Couldn't disconnect — ${it.humanMessage()}") }
