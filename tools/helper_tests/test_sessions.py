@@ -1129,6 +1129,26 @@ class ModelGuardTest(unittest.TestCase):
         self.assertLess(time.time() - t0, 7, "the guard stops once the transcript shows the switch")
         self.assertEqual(self.read(), before)
         self.assertFalse(os.path.exists(self.h.MODEL_GUARD_PATH))
+        # Seen on the emulator: the phone then said "Model set to Haiku 4.5 and saved as your default for new
+        # sessions" although the guard had undone the save. The guarded output reads "for this session only".
+        with open(tpath, "rb") as f:
+            raw = [l for l in f.read().splitlines() if b"local-command-stdout" in l][-1]
+        line = json.loads(self.h.transcript_line_out(raw))
+        self.assertEqual(line["message"]["content"],
+                         "<local-command-stdout>Set model to Haiku 4.5 for this session only</local-command-stdout>")
+
+    def test_unguarded_model_output_is_left_alone(self):
+        # `/model` typed in a terminal really saves the default: its output stays as Claude Code wrote it.
+        text = "<local-command-stdout>Set model to Haiku 4.5 and saved as your default for new sessions</local-command-stdout>"
+        raw = json.dumps(user_line(text, uuid="u-terminal", sessionId=SID_C), separators=(",", ":")).encode()
+        self.assertEqual(json.loads(self.h.transcript_line_out(raw))["message"]["content"], text)
+        # ...but while a guard for that session runs (the follow stream sees the line before the guard is done),
+        # it is the phone's switch.
+        token, _ = self.h.model_guard_begin(SID_C, None, "haiku")
+        try:
+            self.assertIn("for this session only", self.h.transcript_line_out(raw))
+        finally:
+            self.h.model_guard_release(token)
 
     def test_a_default_the_user_changed_meanwhile_is_kept(self):
         # Regression: a guard whose switch never landed ("Switch model?" answered "No") kept writing the old value

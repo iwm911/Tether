@@ -753,6 +753,8 @@ def transcript_line_out(raw, before_ms=None, sidechain_ok=False):
         ts = iso_to_ms(o.get("timestamp"))
         if ts is not None and ts >= before_ms:
             return None
+    if t == "user" and b"saved as your default" in raw:
+        o = session_only_model_line(o)
     if len(raw) > 64 * 1024:
         o = slim_line(o)
     else:
@@ -4444,24 +4446,59 @@ def model_guard_restore():
         return True
 
 
-def model_command_done(tpath, offset):
-    """The transcript, past offset, has the output of a slash command: the switch is applied (or refused)."""
+def model_command_output(tpath, offset):
+    """The output lines of slash commands in the transcript past offset: once there is one, the switch is applied
+    (or refused)."""
     if not tpath:
-        return False
+        return []
     try:
         with open(tpath, "rb") as f:
             f.seek(offset)
             data = f.read()
     except OSError:
-        return False
+        return []
+    out = []
     for raw in iter_lines_bytes(data):
         if b"<local-command-std" in raw:
             o = parse_line(raw)
             msg = o.get("message") if o and o.get("type") == "user" and isinstance(o.get("message"), dict) else {}
             content = msg.get("content")
             if isinstance(content, str) and content.lstrip().startswith(("<local-command-stdout>", "<local-command-stderr>")):
-                return True
-    return False
+                out.append(o)
+    return out
+
+
+MODEL_SAVED_SUFFIX = " and saved as your default for new sessions"
+MODEL_GUARD_LINES_PATH = os.path.join(TETHER_DIR, "model_guard_lines.json")
+
+
+def remember_guarded_lines(lines):
+    """The uuids of `/model` outputs whose "saved as your default" the guard undid (the transcript keeps saying so)."""
+    uuids = [o.get("uuid") for o in lines if isinstance(o.get("uuid"), str) and MODEL_SAVED_SUFFIX in
+             (o["message"].get("content") or "")]
+    if not uuids:
+        return
+    with model_guard_lock():
+        cur = read_json(MODEL_GUARD_LINES_PATH, []) or []
+        cur = [u for u in cur if isinstance(u, str) and u not in uuids] + uuids
+        write_json_atomic(MODEL_GUARD_LINES_PATH, cur[-200:])
+
+
+def model_save_undone(o):
+    """A `/model` output line whose save to the machine default a guard undid (or is undoing right now)."""
+    if o.get("uuid") in (read_json(MODEL_GUARD_LINES_PATH, []) or []):
+        return True
+    g = read_guard()
+    return bool(g) and any(t.get("sid") == o.get("sessionId") for t in g["tokens"].values())
+
+
+def session_only_model_line(o):
+    """Rewrites a guarded `/model` output to what happened: the switch is for this session only."""
+    msg = o.get("message")
+    content = msg.get("content") if isinstance(msg, dict) else None
+    if isinstance(content, str) and MODEL_SAVED_SUFFIX in content and model_save_undone(o):
+        msg["content"] = content.replace(MODEL_SAVED_SUFFIX, " for this session only")
+    return o
 
 
 def model_guard_watch(token, sid, offset, seconds=MODEL_GUARD_SECONDS, poll=0.3):
@@ -4474,8 +4511,11 @@ def model_guard_watch(token, sid, offset, seconds=MODEL_GUARD_SECONDS, poll=0.3)
         while time.time() < end:
             model_guard_restore()
             tpath = tpath or find_transcript(sid)
-            if done_at is None and model_command_done(tpath, offset):
-                done_at = time.time()
+            if done_at is None:
+                lines = model_command_output(tpath, offset)
+                if lines:
+                    done_at = time.time()
+                    remember_guarded_lines(lines)
             if done_at is not None and time.time() - done_at >= MODEL_GUARD_SETTLE:
                 break
             time.sleep(poll)
