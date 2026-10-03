@@ -44,7 +44,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.ui.platform.LocalWindowInfo
-import android.view.WindowManager
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
@@ -84,13 +83,10 @@ fun AppLockGate(content: @Composable () -> Unit) {
     val lockEnabled = settings.biometricLock
     val locked = lockEnabled && !unlocked
 
-    // With the lock on: no Recents thumbnail, screenshots or screen recording of agents (FLAG_SECURE
-    // covers every Android version; Compose dialogs inherit it).
+    // With the lock on, keep agents out of the Recents thumbnail (API 33+). Screenshots and screen
+    // recording stay allowed: no FLAG_SECURE.
     LaunchedEffect(lockEnabled, activity) {
-        val window = activity?.window ?: return@LaunchedEffect
-        if (lockEnabled) window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-        else window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
-        if (Build.VERSION.SDK_INT >= 33) activity.setRecentsScreenshotEnabled(!lockEnabled)
+        if (activity != null && Build.VERSION.SDK_INT >= 33) activity.setRecentsScreenshotEnabled(!lockEnabled)
     }
 
     var error by remember { mutableStateOf<String?>(null) }
