@@ -267,9 +267,11 @@ fun SessionChatScreen(
                 )
                 RateLimitBanner(conv.rateLimit)
                 TodoStrip(conv.todos)
-                BackgroundTasksStrip(conv.backgroundTasks)
-                if (agentId == null) SubagentStrip(
-                    live?.subagents.orEmpty(),
+                // Subagents get their own strip (it opens their transcripts): keep them out of "Background".
+                val subagents = if (agentId == null) live?.subagents.orEmpty() else emptyList()
+                BackgroundTasksStrip(if (subagents.isEmpty()) conv.backgroundTasks else conv.backgroundTasks.filterNot { it.isAgent })
+                SubagentStrip(
+                    subagents,
                     onOpen = { onOpenSubagent(it.agentId) },
                     workflowNames = remember(live?.tasks) { workflowNames(live?.tasks.orEmpty()) },
                 )
