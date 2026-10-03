@@ -118,7 +118,11 @@ screen is not the one the app answered). Errors may also carry `daemonCode`.
 - `{"e":"peer","dir":"in","from":"uds:…","fromName":"str","fromSessionId":"uuid|null","text":"…","at":ms}`
   (outgoing peers come from `SendMessage` tool_use lines; the app derives `dir:"out"`).
 - `{"e":"subagent","agentId":"…","agentType":"…","description":"…","toolUseId":"…","model":"…","background":bool,"status":"running|done"}`
-- `{"e":"task","taskId":"…","toolUseId":"…","kind":"shell|monitor|agent|other","status":"running|completed|failed|killed","summary":"…","outputFile":"…"}`
+  — a workflow agent also has `"workflowRunId":"wf_…"` and, when known, `"phase":"…"`; its `description` is the
+  agent's label from the run's `journal.jsonl`, its `toolUseId` the Workflow call's, and it is `done` once the
+  journal has its result or the run's task stopped. They come from `subagents/workflows/wf_<run>/agent-*`.
+- `{"e":"task","taskId":"…","toolUseId":"…","kind":"shell|monitor|agent|workflow|other","status":"running|completed|failed|killed","summary":"…","outputFile":"…"}`
+  — a workflow also has `"name":"…"` (its script's meta name) and `"runId":"wf_…"`.
 - `{"e":"todos","listId":"…","items":[{"id":"…","subject":"…","status":"pending|in_progress|completed"}]}`
 - `{"e":"caughtUp","offset":N}`
 

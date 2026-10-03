@@ -105,6 +105,8 @@ class SessionReducer(
                     description = event.info.description ?: prev.description,
                     toolUseId = event.info.toolUseId ?: prev.toolUseId,
                     model = event.info.model ?: prev.model,
+                    workflowRunId = event.info.workflowRunId ?: prev.workflowRunId,
+                    phase = event.info.phase ?: prev.phase,
                 )
                 if (subagents.put(next.agentId, next) != next) version++
             }
@@ -115,6 +117,8 @@ class SessionReducer(
                     toolUseId = event.task.toolUseId ?: prev.toolUseId,
                     summary = event.task.summary ?: prev.summary,
                     outputFile = event.task.outputFile ?: prev.outputFile,
+                    name = event.task.name ?: prev.name,
+                    runId = event.task.runId ?: prev.runId,
                 )
                 if (tasks.put(next.taskId, next) != next) version++
             }
@@ -357,14 +361,27 @@ class SessionReducer(
 
     private fun backgroundTaskOf(t: SessionTask) = BackgroundTask(
         id = t.taskId,
-        description = t.summary?.takeIf { it.isNotBlank() } ?: t.kind.name.lowercase(),
+        description = t.summary?.takeIf { it.isNotBlank() } ?: t.name?.takeIf { it.isNotBlank() } ?: t.kind.name.lowercase(),
         type = when (t.kind) {
             SessionTaskKind.SHELL -> "local_bash"
             SessionTaskKind.AGENT -> "local_agent"
             SessionTaskKind.MONITOR -> "monitor"
+            SessionTaskKind.WORKFLOW -> BackgroundTask.WORKFLOW
             SessionTaskKind.OTHER -> null
         },
+        summary = if (t.kind == SessionTaskKind.WORKFLOW) workflowProgress(t.runId) else null,
     )
+
+    /** "Verify · 2 of 6 agents running": a running workflow's agents (from its run's journal) and current phase. */
+    private fun workflowProgress(runId: String?): String? {
+        if (runId == null) return null
+        val agents = subagents.values.filter { it.workflowRunId == runId }
+        if (agents.isEmpty()) return null
+        val running = agents.filter { it.status == SubagentStatus.RUNNING }
+        val phase = (running.lastOrNull() ?: agents.last()).phase
+        val count = if (running.isEmpty()) "${agents.size} agents done" else "${running.size} of ${agents.size} agents running"
+        return listOfNotNull(phase, count).joinToString(" · ")
+    }
 
     /** Outgoing peer messages: the session's own SendMessage tool calls. */
     private fun outgoingPeers(items: List<ChatItem>): List<PeerMessage> {

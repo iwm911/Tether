@@ -834,6 +834,32 @@ def rel_path(p, cwd):
     return p
 
 
+META_FIELD_RE = r"""\b%s\s*:\s*(['"`])((?:\\.|(?!\1).)*)\1"""
+
+
+def script_meta_field(script, field):
+    """A string field of a workflow script's `export const meta = {...}` literal, or None."""
+    m = re.search(r"\bmeta\s*=\s*\{", script or "")
+    if not m:
+        return None
+    block = re.sub(r"\bphases\s*:\s*\[.*?\]", "", script[m.end():m.end() + 6000], count=1, flags=re.S)  # their titles
+    f = re.search(META_FIELD_RE % re.escape(field), block, re.S)
+    return re.sub(r"\\(.)", r"\1", f.group(2)) if f else None
+
+
+def workflow_title(inp):
+    """What a Workflow call runs, in words: its description (the input's, else the script meta's), else its name."""
+    if not isinstance(inp, dict):
+        return None
+
+    def s(k):
+        return inp.get(k) if isinstance(inp.get(k), str) else ""
+
+    return one_line(s("description"), 160) or one_line(script_meta_field(s("script"), "description"), 160) or \
+        one_line(script_meta_field(s("script"), "name"), 160) or one_line(s("name"), 160) or \
+        one_line(re.sub(r"\.js$", "", os.path.basename(s("scriptPath"))), 160) or None
+
+
 def permission_summary(tool, inp, cwd):
     if not isinstance(inp, dict):
         return tool
@@ -853,6 +879,8 @@ def permission_summary(tool, inp, cwd):
         return (pat + (" in " + where if where else "")) or tool
     if tool in ("Task", "Agent"):
         return one_line(inp.get("description") or inp.get("prompt"), 160) or tool
+    if tool == "Workflow":
+        return workflow_title(inp) or tool
     for v in inp.values():
         if isinstance(v, str) and v.strip():
             return one_line(v, 160)
@@ -3466,6 +3494,7 @@ class TranscriptEvents(object):
         self.tasks = {}  # taskId -> last task event
         self.peers = set()
         self.notified = set()  # agent task ids that reported completion
+        self.workflows = {}  # workflow runId -> {taskId, toolUseId} (from the Workflow tool's result)
         self.landed = collections.deque(maxlen=6)  # text_key of the newest assistant texts
         self.todowrite = None
 
@@ -3544,10 +3573,14 @@ class TranscriptEvents(object):
         summary = one_line(tag_value(body, "summary"), 300) or prev.get("summary") or ""
         kind = prev.get("kind") or self.kind_of(tuid) or ("agent" if summary.startswith("Agent ") else
                                                           "shell" if summary.startswith("Background command") else
-                                                          "monitor" if summary.startswith("Monitor") else "other")
+                                                          "monitor" if summary.startswith("Monitor") else
+                                                          "workflow" if summary.startswith("Dynamic workflow") else "other")
         ev = {"e": "task", "taskId": tid, "toolUseId": tuid or prev.get("toolUseId") or "", "kind": kind,
               "status": status, "summary": summary,
               "outputFile": tag_value(body, "output-file") or prev.get("outputFile") or self.task_output_path(tid) or ""}
+        for k in ("name", "runId"):
+            if prev.get(k):
+                ev[k] = prev[k]
         if kind == "agent" and status != "running":
             self.notified.add(tid)
         if prev == ev:
@@ -3557,7 +3590,7 @@ class TranscriptEvents(object):
 
     def kind_of(self, tool_use_id):
         name = (self.tool_uses.get(tool_use_id) or (None, None))[0]
-        return {"Bash": "shell", "Monitor": "monitor", "Agent": "agent", "Task": "agent"}.get(name)
+        return {"Bash": "shell", "Monitor": "monitor", "Agent": "agent", "Task": "agent", "Workflow": "workflow"}.get(name)
 
     def tool_result(self, b, tur):
         tid = b["tool_use_id"]
@@ -3565,8 +3598,16 @@ class TranscriptEvents(object):
         name, inp = self.tool_uses.get(tid) or (None, {})
         inp = inp or {}
         task_id = kind = None
+        extra = {}
         if isinstance(tur, dict):
-            if isinstance(tur.get("backgroundTaskId"), str):
+            if tur.get("taskType") == "local_workflow" and isinstance(tur.get("taskId"), str):
+                task_id, kind = tur["taskId"], "workflow"
+                if isinstance(tur.get("workflowName"), str) and tur["workflowName"]:
+                    extra["name"] = tur["workflowName"]
+                if isinstance(tur.get("runId"), str) and tur["runId"]:
+                    extra["runId"] = tur["runId"]
+                    self.workflows[tur["runId"]] = {"taskId": task_id, "toolUseId": tid}
+            elif isinstance(tur.get("backgroundTaskId"), str):
                 task_id = tur["backgroundTaskId"]
                 kind = {"Monitor": "monitor"}.get(name, "shell" if name in (None, "Bash") else "other")
             elif (tur.get("isAsync") or tur.get("status") == "async_launched") and isinstance(tur.get("agentId"), str):
@@ -3582,10 +3623,14 @@ class TranscriptEvents(object):
         if isinstance(text, list):
             text = " ".join(x.get("text") or "" for x in text if isinstance(x, dict))
         m = re.search(r"written to:\s*(\S+?\.output)", text or "")
-        summary = one_line(inp.get("description") or inp.get("command") or inp.get("prompt") or
-                           (tur.get("description") if isinstance(tur, dict) else None), 300) or ""
+        if kind == "workflow":
+            summary = one_line(tur.get("summary") or workflow_title(inp) or tur.get("workflowName"), 300) or ""
+        else:
+            summary = one_line(inp.get("description") or inp.get("command") or inp.get("prompt") or
+                               (tur.get("description") if isinstance(tur, dict) else None), 300) or ""
         ev = {"e": "task", "taskId": task_id, "toolUseId": tid, "kind": kind, "status": "running",
               "summary": summary, "outputFile": (m.group(1) if m else None) or self.task_output_path(task_id) or ""}
+        ev.update(extra)
         if self.tasks.get(task_id, {}).get("status") not in (None, "running"):
             return []  # already finished (a notification came first)
         self.tasks[task_id] = ev
@@ -3632,20 +3677,128 @@ def subagents_dir(tpath, sid):
     return os.path.join(os.path.dirname(tpath), sid, "subagents") if tpath else None
 
 
+WF_RUN_RE = re.compile(r"^wf_[0-9A-Za-z_-]{1,64}$")
+_journals = {}  # journal path -> ((mtime, size), {agentId: {label, phase, done}})
+
+
+def read_journal(path):
+    """agentId -> {label, phase, done} from a workflow run's journal.jsonl (started / result lines); cached by
+    mtime and size, since a long run's journal is read on every poll."""
+    sig = (mtime_ms(path), file_size(path))
+    hit = _journals.get(path)
+    if hit and hit[0] == sig:
+        return hit[1]
+    agents = {}
+    try:
+        with open(path, "rb") as f:
+            for raw in f:
+                o = parse_line(raw)
+                aid = o.get("agentId") if isinstance(o, dict) else None
+                if not isinstance(aid, str):
+                    continue
+                a = agents.setdefault(aid, {})
+                if o.get("type") == "started":
+                    for k in ("label", "phase"):
+                        if isinstance(o.get(k), str) and o[k]:
+                            a[k] = o[k]
+                elif o.get("type") == "result":
+                    a["done"] = True
+    except (OSError, IOError):
+        pass
+    _journals[path] = (sig, agents)
+    return agents
+
+
+_metas = {}  # agent meta path -> (mtime, meta): a long session's runs hold hundreds, read on every poll
+
+
+def read_meta_cached(path):
+    sig = mtime_ms(path)
+    hit = _metas.get(path)
+    if hit and hit[0] == sig:
+        return hit[1]
+    meta = read_json(path, None)
+    _metas[path] = (sig, meta)
+    return meta
+
+
+def workflow_runs_dir(tpath, sid):
+    d = subagents_dir(tpath, sid)
+    return os.path.join(d, "workflows") if d else None
+
+
+def read_workflow_agents(tpath, sid):
+    """agentId -> meta of the agents of the session's workflow runs (subagents/workflows/wf_<run>/agent-*), each
+    with its run (workflowRunId), phase, label (as description) and whether the journal has its result (done)."""
+    d = workflow_runs_dir(tpath, sid)
+    out = {}
+    try:
+        runs = sorted(os.listdir(d)) if d else []
+    except OSError:
+        return out
+    for run in runs:
+        if not WF_RUN_RE.match(run):
+            continue
+        rd = os.path.join(d, run)
+        try:
+            names = sorted(os.listdir(rd))
+        except OSError:
+            continue
+        journal = read_journal(os.path.join(rd, "journal.jsonl"))
+        for n in names:
+            if not (n.startswith("agent-") and n.endswith(".meta.json")):
+                continue
+            aid = n[len("agent-"):-len(".meta.json")]
+            meta = read_meta_cached(os.path.join(rd, n))
+            if not isinstance(meta, dict):
+                continue
+            j = journal.get(aid) or {}
+            meta = dict(meta, workflowRunId=run, done=bool(j.get("done")))
+            if j.get("label"):
+                meta["description"] = j["label"]
+            if j.get("phase") or meta.get("workflowPhase"):
+                meta["workflowPhase"] = j.get("phase") or meta.get("workflowPhase")
+            out[aid] = meta
+    return out
+
+
 def read_subagents(tpath, sid):
-    """agentId -> meta ({agentType, description, toolUseId, model, requestShape}) of the session's subagents."""
+    """agentId -> meta ({agentType, description, toolUseId, model, requestShape}) of the session's subagents,
+    workflow agents included (see read_workflow_agents)."""
     d = subagents_dir(tpath, sid)
     out = {}
     try:
         names = os.listdir(d) if d else []
     except OSError:
-        return out
+        names = []
     for n in names:
         if n.startswith("agent-") and n.endswith(".meta.json"):
             meta = read_json(os.path.join(d, n), None)
             if isinstance(meta, dict):
                 out[n[len("agent-"):-len(".meta.json")]] = meta
+    for aid, meta in read_workflow_agents(tpath, sid).items():
+        out.setdefault(aid, meta)
     return out
+
+
+def subagent_transcript(tpath, sid, agent_id):
+    """The path of a subagent's own transcript: subagents/agent-<id>.jsonl, or a workflow run's."""
+    d = subagents_dir(tpath, sid)
+    if not d:
+        return None
+    p = os.path.join(d, "agent-%s.jsonl" % agent_id)
+    if os.path.isfile(p):
+        return p
+    wd = workflow_runs_dir(tpath, sid)
+    try:
+        runs = sorted(os.listdir(wd))
+    except OSError:
+        return None
+    for run in runs:
+        p = os.path.join(wd, run, "agent-%s.jsonl" % agent_id)
+        if WF_RUN_RE.match(run) and os.path.isfile(p):
+            return p
+    return None
 
 
 class Follower(object):
@@ -3761,6 +3914,9 @@ class Follower(object):
 
     # ── subagents / todos ──
     def subagent_event(self, aid, meta):
+        run = meta.get("workflowRunId")
+        if run:
+            return self.workflow_agent_event(aid, meta, run)
         background = meta.get("requestShape") == "background"
         tuid = meta.get("toolUseId") or ""
         if background:
@@ -3773,6 +3929,20 @@ class Follower(object):
                 "description": meta.get("description") or inp.get("description") or "", "toolUseId": tuid,
                 "model": meta.get("model") or inp.get("model") or "", "background": background,
                 "status": "done" if done else "running"}
+
+    def workflow_agent_event(self, aid, meta, run):
+        """A workflow agent: done once the run's journal has its result, or once the whole run stopped."""
+        wf = self.tev.workflows.get(run) or {}
+        task = self.tev.tasks.get(wf.get("taskId")) or {}
+        done = bool(meta.get("done")) or task.get("status") not in (None, "running")
+        ev = {"e": "subagent", "agentId": aid, "agentType": meta.get("agentType") or "",
+              "description": meta.get("description") or "", "model": meta.get("model") or "", "background": False,
+              "status": "done" if done else "running", "workflowRunId": run}
+        if wf.get("toolUseId"):
+            ev["toolUseId"] = wf["toolUseId"]
+        if meta.get("workflowPhase"):
+            ev["phase"] = meta["workflowPhase"]
+        return ev
 
     def update_subagents(self, rescan=False, emit=True):
         if rescan:
@@ -3938,8 +4108,26 @@ class Follower(object):
                 self.clear_draft()
 
     # ── main loop ──
+    def prime_workflows(self):
+        """A follow resumed past the start never reads the Workflow calls, results and notifications before it: learn
+        them (no events) so a run's agents keep their tool call and finish with their run."""
+        if not self.tpath or self.pos <= 0:
+            return
+        try:
+            with open(self.tpath, "rb") as f:
+                data = f.read(self.pos)
+        except (OSError, IOError):
+            return
+        for raw in data.split(b"\n"):
+            if b'"Workflow"' in raw or b"local_workflow" in raw or b"<task-notification>" in raw:
+                self.tev.feed(raw, 0)
+        self.tev.landed.clear()
+
     def run(self):
         self.metas = read_subagents(self.tpath, self.sid)
+        if self.pos > max(file_size(self.tpath) if self.tpath else -1, 0):
+            self.pos = 0
+        self.prime_workflows()
         self.history()
         self.update_subagents(emit=True)
         self.update_todos(force=True)
@@ -3999,9 +4187,8 @@ def follow_agent(ref, agent_id, from_offset, out=None, gone=None):
     """`follow <sid> --agent ID`: a subagent's transcript lines, caughtUp, then new lines."""
     if not AGENT_ID_RE.match(agent_id or ""):
         raise HelperError("Invalid agent id.")
-    d = subagents_dir(ref.tpath, ref.sid)
-    path = os.path.join(d, "agent-%s.jsonl" % agent_id) if d else None
-    if not path or not os.path.isfile(path):
+    path = subagent_transcript(ref.tpath, ref.sid, agent_id)
+    if not path:
         raise coded_error("No subagent %s in this session." % agent_id, "ENOSESSION")
     f = Follower(ref, from_offset, out, gone)
     f.tpath = path

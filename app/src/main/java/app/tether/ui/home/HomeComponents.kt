@@ -67,6 +67,7 @@ import androidx.compose.material.icons.rounded.Edit
 
 import androidx.compose.material.icons.rounded.ExpandMore
 
+import androidx.compose.material.icons.rounded.Hub
 import androidx.compose.material.icons.rounded.Language
 
 import androidx.compose.material.icons.rounded.Search
@@ -212,6 +213,7 @@ fun permissionVerb(toolName: String): String = when (toolName) {
     "WebFetch" -> "wants to fetch"
     "WebSearch" -> "wants to search the web for"
     "Task", "Agent" -> "wants to start a subagent"
+    "Workflow" -> "wants to run a workflow"
     "ExitPlanMode" -> "is ready to leave plan mode"
     else -> "wants to use $toolName"
 }
@@ -223,6 +225,7 @@ fun toolIcon(toolName: String): ImageVector = when (toolName) {
     "Grep", "Glob", "LS" -> Icons.Rounded.Search
     "WebFetch", "WebSearch" -> Icons.Rounded.Language
     "Task", "Agent" -> Icons.Rounded.SmartToy
+    "Workflow" -> Icons.Rounded.Hub
     else -> Icons.Rounded.Code
 }
 

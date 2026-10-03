@@ -70,8 +70,11 @@ import app.tether.core.PermissionDecision
 import app.tether.core.RunStatus
 import app.tether.core.SessionRef
 import app.tether.core.SessionState
+import app.tether.core.SubagentStatus
 import app.tether.ui.chat.render.LocalChatCwd
 import app.tether.ui.chat.render.LocalSubagentLinks
+import app.tether.ui.chat.render.LocalWorkflowAgents
+import app.tether.ui.chat.render.WorkflowAgentLink
 import app.tether.ui.components.LocalPlanName
 import app.tether.ui.components.MachineBadge
 import app.tether.ui.components.TetherTopBar
@@ -174,7 +177,16 @@ fun SessionChatScreen(
     // Task/Agent rows that spawned a subagent link to its transcript.
     val subagentLinks: Map<String, () -> Unit> = remember(live?.subagents, agentId) {
         if (agentId != null) emptyMap()
-        else live?.subagents.orEmpty().mapNotNull { s -> s.toolUseId?.let { id -> id to { onOpenSubagent(s.agentId) } } }.toMap()
+        else live?.subagents.orEmpty().filter { it.workflowRunId == null }
+            .mapNotNull { s -> s.toolUseId?.let { id -> id to { onOpenSubagent(s.agentId) } } }.toMap()
+    }
+    // Workflow rows list their run's agents.
+    val workflowAgents: Map<String, List<WorkflowAgentLink>> = remember(live?.subagents, agentId) {
+        if (agentId != null) emptyMap()
+        else live?.subagents.orEmpty().filter { it.workflowRunId != null && !it.toolUseId.isNullOrEmpty() }
+            .groupBy({ it.toolUseId!! }) { s ->
+                WorkflowAgentLink(subagentLabel(s), s.phase, s.status == SubagentStatus.RUNNING) { onOpenSubagent(s.agentId) }
+            }
     }
     val subagentTitle = remember(live?.subagents, agentId) {
         agentId?.let { id -> live?.subagents?.firstOrNull { it.agentId == id }?.let(::subagentLabel) ?: "Subagent" }
@@ -246,7 +258,11 @@ fun SessionChatScreen(
                 RateLimitBanner(conv.rateLimit)
                 TodoStrip(conv.todos)
                 BackgroundTasksStrip(conv.backgroundTasks)
-                if (agentId == null) SubagentStrip(live?.subagents.orEmpty(), onOpen = { onOpenSubagent(it.agentId) })
+                if (agentId == null) SubagentStrip(
+                    live?.subagents.orEmpty(),
+                    onOpen = { onOpenSubagent(it.agentId) },
+                    workflowNames = remember(live?.tasks) { workflowNames(live?.tasks.orEmpty()) },
+                )
                 Box(Modifier.fillMaxWidth().height(1.dp).background(headerLine))
             }
 
@@ -265,7 +281,7 @@ fun SessionChatScreen(
                     if (raw) {
                         RawItemsList(state.items, contentPadding = listPadding)
                     } else {
-                        CompositionLocalProvider(LocalChatCwd provides conv.cwd, LocalSubagentLinks provides subagentLinks) {
+                        CompositionLocalProvider(LocalChatCwd provides conv.cwd, LocalSubagentLinks provides subagentLinks, LocalWorkflowAgents provides workflowAgents) {
                             ChatList(
                                 items = state.items,
                                 listState = listState,

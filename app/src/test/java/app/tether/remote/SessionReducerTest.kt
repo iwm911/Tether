@@ -429,6 +429,29 @@ class SessionReducerTest {
     }
 
     @Test
+    fun workflowTaskIsARunningWorkflowWithItsAgentsProgress() {
+        val r = reducer()
+        fun parse(s: String) = SessionProtocol.parseFollowLine(s)!!
+        r.accept(parse("""{"e":"task","taskId":"w1","toolUseId":"tu_wf","kind":"workflow","status":"running","summary":"Audit the helper","name":"audit","runId":"wf_1"}"""))
+        r.accept(parse("""{"e":"subagent","agentId":"a1","agentType":"workflow-subagent","description":"trace:helper","toolUseId":"tu_wf","background":false,"status":"done","workflowRunId":"wf_1","phase":"Trace"}"""))
+        r.accept(parse("""{"e":"subagent","agentId":"a2","agentType":"workflow-subagent","description":"verify:helper","toolUseId":"tu_wf","background":false,"status":"running","workflowRunId":"wf_1","phase":"Verify"}"""))
+        val bg = r.snapshot().backgroundTasks.single()
+        assertEquals("Audit the helper", bg.description)
+        assertTrue(bg.isWorkflow)
+        assertFalse(bg.isAgent)
+        assertEquals("Verify · 1 of 2 agents running", bg.summary)
+        val sub = r.snapshot().live!!.subagents.first { it.agentId == "a2" }
+        assertEquals("wf_1" to "Verify", sub.workflowRunId to sub.phase)
+
+        // The completion notification keeps the run's name and id (it carries neither) and ends the row.
+        r.accept(parse("""{"e":"task","taskId":"w1","toolUseId":"tu_wf","kind":"workflow","status":"completed","summary":"Dynamic workflow \"Audit the helper\" completed"}"""))
+        assertTrue(r.snapshot().backgroundTasks.isEmpty())
+        val t = r.snapshot().live!!.tasks.single()
+        assertEquals("audit" to "wf_1", t.name to t.runId)
+        assertEquals(SessionTaskStatus.COMPLETED, t.status)
+    }
+
+    @Test
     fun subagentViewShowsSidechainLines() {
         val r = reducer(agentId = "a1b2c3")
         r.accept(line("""{"type":"user","isSidechain":true,"message":{"role":"user","content":"Find the config loader"},"uuid":"s-u","timestamp":"2026-10-01T17:16:00.000Z"}"""))

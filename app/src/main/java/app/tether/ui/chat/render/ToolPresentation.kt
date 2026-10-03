@@ -11,6 +11,7 @@ import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.EditNote
 import androidx.compose.material.icons.rounded.Extension
 import androidx.compose.material.icons.rounded.FolderOpen
+import androidx.compose.material.icons.rounded.Hub
 import androidx.compose.material.icons.rounded.Map
 import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.QuestionAnswer
@@ -19,6 +20,8 @@ import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.material.icons.rounded.TravelExplore
 import androidx.compose.ui.graphics.vector.ImageVector
 import app.tether.core.SEND_MESSAGE
+import app.tether.core.WORKFLOW_TOOL
+import app.tether.core.WorkflowMeta
 import app.tether.core.peerDisplayName
 import app.tether.ui.components.prettyPath
 import kotlinx.serialization.json.JsonObject
@@ -98,6 +101,7 @@ object ToolPresentation {
             "SlashCommand" -> ToolLabel("Command", f("command") ?: "", Icons.Rounded.AutoAwesome)
             SEND_MESSAGE -> ToolLabel("Message", peerDisplayName(f("toName") ?: f("name"), f("to") ?: f("recipient")) ?: "", Icons.AutoMirrored.Rounded.CallMade)
             "AskUserQuestion" -> ToolLabel("Ask", firstQuestion(obj) ?: "", Icons.Rounded.QuestionAnswer)
+            WORKFLOW_TOOL -> ToolLabel("Workflow", WorkflowMeta.of(obj).title?.let { clip(it, 80) } ?: "", Icons.Rounded.Hub)
             else -> if (name.startsWith("mcp__")) {
                 val (server, tool) = mcpParts(name)
                 ToolLabel("$server · $tool", obj?.let { firstShortValue(it) } ?: "", Icons.Rounded.Extension)

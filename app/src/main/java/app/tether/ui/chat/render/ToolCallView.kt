@@ -188,6 +188,29 @@ internal fun ToolCallView(
             }
         }
 
+        // A workflow returns at once and runs in the background: while its agents work, say where it is.
+        if (!expanded && item.name == app.tether.core.WORKFLOW_TOOL) {
+            val agents = item.toolUseId?.let { LocalWorkflowAgents.current[it] }.orEmpty()
+            val running = agents.filter { it.running }
+            if (running.isNotEmpty()) {
+                val line = listOfNotNull(running.last().phase, "${running.size} of ${agents.size} agents running").joinToString(" · ")
+                AnimatedContent(
+                    targetState = line,
+                    transitionSpec = { fadeIn(tween(Motion.Short)) togetherWith fadeOut(tween(Motion.Short)) },
+                    label = "workflowStep",
+                ) { text ->
+                    Text(
+                        "↳ $text",
+                        style = TetherTheme.type.monoSmall,
+                        color = colors.faint,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(start = 50.dp, end = 8.dp, bottom = 6.dp),
+                    )
+                }
+            }
+        }
+
         AnimatedVisibility(
             visible = expanded,
             enter = expandVertically(animationSpec = tween(Motion.Medium, easing = Motion.Emphasized), expandFrom = Alignment.Top) +

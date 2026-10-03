@@ -88,6 +88,12 @@ val LocalChatCwd = compositionLocalOf<String?> { null }
  */
 val LocalSubagentLinks = compositionLocalOf<Map<String, () -> Unit>> { emptyMap() }
 
+/** One agent of a workflow run, for the Workflow row's detail: tap opens its transcript. */
+data class WorkflowAgentLink(val label: String, val phase: String?, val running: Boolean, val open: () -> Unit)
+
+/** A workflow run's agents keyed by the Workflow tool_use id that launched it. Empty = none known. */
+val LocalWorkflowAgents = compositionLocalOf<Map<String, List<WorkflowAgentLink>>> { emptyMap() }
+
 /** Multiplier for code/mono text (Settings → Code text size). */
 val LocalCodeFontScale = compositionLocalOf { 1f }
 

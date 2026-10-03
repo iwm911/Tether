@@ -28,6 +28,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AccountTree
 import androidx.compose.material.icons.rounded.ExpandMore
+import androidx.compose.material.icons.rounded.Hub
 import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -58,7 +59,7 @@ import app.tether.ui.theme.Space
 import app.tether.ui.theme.TetherTheme
 
 /**
- * "Background · 2" — shell commands and subagents the session started that keep running after the
+ * "Background · 2" — shell commands, subagents and workflows the session started that keep running after the
  * turn ends (they never stream into the conversation). Collapsed it shows the newest one; expanded, all.
  */
 @Composable
@@ -84,7 +85,12 @@ private fun BackgroundTasksCard(tasks: List<BackgroundTask>) {
     val shape = RoundedCornerShape(18.dp)
     val latest = tasks.lastOrNull()
     val agents = tasks.count { it.isAgent }
-    val title = if (agents == tasks.size) (if (agents == 1) "Subagent" else "Subagents") else "Background"
+    val workflows = tasks.count { it.isWorkflow }
+    val title = when (tasks.size) {
+        agents -> if (agents == 1) "Subagent" else "Subagents"
+        workflows -> if (workflows == 1) "Workflow" else "Workflows"
+        else -> "Background"
+    }
 
     Column(
         Modifier
@@ -152,7 +158,11 @@ private fun BackgroundTaskRow(task: BackgroundTask) {
     val c = TetherTheme.colors
     Row(verticalAlignment = Alignment.Top) {
         Icon(
-            if (task.isAgent) Icons.Rounded.AccountTree else Icons.Rounded.Terminal,
+            when {
+                task.isWorkflow -> Icons.Rounded.Hub
+                task.isAgent -> Icons.Rounded.AccountTree
+                else -> Icons.Rounded.Terminal
+            },
             contentDescription = null,
             tint = c.clay,
             modifier = Modifier.padding(top = 2.dp).size(16.dp),
@@ -166,7 +176,11 @@ private fun BackgroundTaskRow(task: BackgroundTask) {
                 maxLines = 2, overflow = TextOverflow.Ellipsis,
             )
             val meta = buildList {
-                add(task.subagentType ?: if (task.isAgent) "Agent" else "Shell")
+                add(task.subagentType ?: when {
+                    task.isWorkflow -> "Workflow"
+                    task.isAgent -> "Agent"
+                    else -> "Shell"
+                })
                 task.lastToolName?.let { add(it) }
                 task.toolUses?.takeIf { it > 0 }?.let { add(if (it == 1) "1 tool use" else "$it tool uses") }
                 task.totalTokens?.takeIf { it > 0 }?.let { add("${compactNumber(it)} tokens") }

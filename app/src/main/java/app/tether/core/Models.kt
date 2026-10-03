@@ -192,6 +192,11 @@ data class BackgroundTask(
     val toolUses: Int? = null,
 ) {
     val isAgent: Boolean get() = type?.contains("agent") == true || type == "in_process_teammate" || subagentType != null
+    val isWorkflow: Boolean get() = type == WORKFLOW
+
+    companion object {
+        const val WORKFLOW = "local_workflow"
+    }
 }
 enum class TodoStatus { PENDING, IN_PROGRESS, COMPLETED }
 

@@ -587,6 +587,138 @@ class TranscriptEventsTest(unittest.TestCase):
         self.assertIsNone(self.hh.read_task_list("nope"))
 
 
+WF_SCRIPT = ("export const meta = {\n  name: 'audit',\n  phases: [{ title: 'Trace', description: 'not this' }],\n"
+             "  description: 'Audit the helper',\n}\nphase('Trace')\n")
+
+
+def workflow_lines(run="wf_9e8310d6-b94", task="w6i6uepat", tuid="toolu_wf"):
+    """The Workflow call, its async_launched result and the completion notification, as 2.1.287 writes them."""
+    return [
+        assistant_line([{"type": "tool_use", "id": tuid, "name": "Workflow", "input": {"script": WF_SCRIPT}}]),
+        {"type": "user", "isSidechain": False, "uuid": "u-wf", "timestamp": "2026-10-03T13:44:10.000Z",
+         "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tuid,
+                                                  "content": "Workflow launched in background. Task ID: %s" % task}]},
+         "toolUseResult": {"status": "async_launched", "taskId": task, "taskType": "local_workflow",
+                           "workflowName": "audit", "runId": run, "summary": "Audit the helper",
+                           "transcriptDir": "/elsewhere/%s" % run, "scriptPath": "/elsewhere/audit-%s.js" % run}},
+    ], {"type": "queue-operation", "operation": "enqueue", "timestamp": "2026-10-03T13:46:30.000Z",
+        "content": "<task-notification>\n<task-id>%s</task-id>\n<tool-use-id>%s</tool-use-id>\n<output-file>/tmp/x/%s.output"
+                   "</output-file>\n<status>completed</status>\n<summary>Dynamic workflow \"Audit the helper\" completed"
+                   "</summary>\n<result>[]</result>\n</task-notification>" % (task, tuid, task)}
+
+
+class WorkflowTest(unittest.TestCase):
+    """Workflow (ultracode) runs: the task, its agents from the run dir and journal, their transcripts, the prompt."""
+
+    RUN = "wf_9e8310d6-b94"
+
+    def setUp(self):
+        self.home = FakeHome()
+        self.hh = self.home.h
+        self.proj = self.home.folder("proj")
+
+    def tearDown(self):
+        self.home.close()
+
+    def run_dir(self, tp, agents, journal):
+        rd = os.path.join(os.path.dirname(tp), FOLLOW_SID, "subagents", "workflows", self.RUN)
+        os.makedirs(rd)
+        for aid, phase in agents:
+            with open(os.path.join(rd, "agent-%s.meta.json" % aid), "w") as fh:
+                json.dump({"agentType": "workflow-subagent", "description": "meta-" + aid, "workflowPhase": phase,
+                           "spawnDepth": 1, "requestShape": "foreground"}, fh)
+            with open(os.path.join(rd, "agent-%s.jsonl" % aid), "w") as fh:
+                fh.write(json.dumps(dict(user_line("work " + aid), isSidechain=True, agentId=aid)) + "\n")
+        with open(os.path.join(rd, "journal.jsonl"), "w") as fh:
+            for j in journal:
+                fh.write(json.dumps(j) + "\n")
+        return rd
+
+    def feed(self, tev, lines):
+        out = []
+        for o in lines:
+            out.extend(e for e in tev.feed(json.dumps(o).encode(), 0) if isinstance(e, dict))
+        return out
+
+    def test_task_runs_then_completes_with_its_name_and_run(self):
+        launch, done = workflow_lines()
+        tev = self.hh.TranscriptEvents(FOLLOW_SID, "/x/-p/%s.jsonl" % FOLLOW_SID)
+        evs = [e for e in self.feed(tev, launch + [done]) if e["e"] == "task"]
+        self.assertEqual([(e["kind"], e["status"]) for e in evs], [("workflow", "running"), ("workflow", "completed")])
+        self.assertEqual((evs[0]["summary"], evs[0]["name"], evs[0]["runId"], evs[0]["toolUseId"]),
+                         ("Audit the helper", "audit", self.RUN, "toolu_wf"))
+        self.assertEqual((evs[1]["name"], evs[1]["runId"]), ("audit", self.RUN))
+
+    def test_notification_alone_is_a_workflow(self):
+        _launch, done = workflow_lines()
+        tev = self.hh.TranscriptEvents(FOLLOW_SID, None)
+        self.assertEqual(self.feed(tev, [done])[0]["kind"], "workflow")
+
+    def test_agents_from_the_run_dir_and_journal(self):
+        launch, done = workflow_lines()
+        tp = self.home.transcript(self.proj, FOLLOW_SID, launch)
+        self.run_dir(tp, [("a1", "Trace"), ("a2", "Verify"), ("a3", None)], [
+            {"type": "launched"},
+            {"type": "started", "key": "k1", "agentId": "a1", "label": "trace:helper", "phase": "Trace"},
+            {"type": "started", "key": "k2", "agentId": "a2", "label": "verify:helper", "phase": "Verify"},
+            {"type": "started", "key": "k3", "agentId": "a3"},
+            {"type": "result", "key": "k1", "agentId": "a1", "result": {"ok": True}},
+        ])
+        f = self.hh.Follower.__new__(self.hh.Follower)
+        f.tev = self.hh.TranscriptEvents(FOLLOW_SID, tp)
+        self.feed(f.tev, launch)
+        f.subagents, f.out = {}, io.StringIO()
+        f.metas = self.hh.read_subagents(tp, FOLLOW_SID)
+        f.update_subagents()
+        evs = dict((e["agentId"], e) for e in parse(f.out))
+        self.assertEqual(evs["a1"], {"e": "subagent", "agentId": "a1", "agentType": "workflow-subagent",
+                                     "description": "trace:helper", "toolUseId": "toolu_wf", "model": "",
+                                     "background": False, "status": "done", "workflowRunId": self.RUN, "phase": "Trace"})
+        self.assertEqual((evs["a2"]["status"], evs["a2"]["phase"]), ("running", "Verify"))
+        self.assertEqual((evs["a3"]["description"], evs["a3"]["status"]), ("meta-a3", "running"))
+        self.assertNotIn("phase", evs["a3"])
+        # The run ended (stopped mid-way too): every agent still without a result is done.
+        self.feed(f.tev, [done])
+        f.out = io.StringIO()
+        f.update_subagents()
+        self.assertEqual(sorted((e["agentId"], e["status"]) for e in parse(f.out)), [("a2", "done"), ("a3", "done")])
+
+    def test_a_resumed_follow_still_knows_its_runs(self):
+        launch, done = workflow_lines()
+        tp = self.home.transcript(self.proj, FOLLOW_SID, launch + [done])
+        self.run_dir(tp, [("a2", "Verify")], [{"type": "started", "key": "k2", "agentId": "a2", "label": "verify:helper",
+                                               "phase": "Verify"}])
+        self.home.serve()
+        out = io.StringIO()
+        f = self.hh.Follower(self.hh.SessionRef(FOLLOW_SID), os.path.getsize(tp), out,
+                             GoneAfter(lambda: "caughtUp" in out.getvalue(), 10))
+        f.run()
+        evs = parse(out)
+        self.assertNotIn("line", [e["e"] for e in evs])
+        sub = [e for e in evs if e["e"] == "subagent"][0]
+        self.assertEqual((sub["toolUseId"], sub["status"]), ("toolu_wf", "done"))
+
+    def test_agent_follow_opens_a_workflow_agent(self):
+        launch, _done = workflow_lines()
+        tp = self.home.transcript(self.proj, FOLLOW_SID, launch)
+        self.run_dir(tp, [("a1", "Trace")], [{"type": "started", "key": "k1", "agentId": "a1", "label": "trace:helper",
+                                              "phase": "Trace"}])
+        self.home.serve()
+        out = io.StringIO()
+        self.hh.follow_agent(self.hh.SessionRef(FOLLOW_SID), "a1", 0, out, GoneAfter(lambda: "caughtUp" in out.getvalue(), 10))
+        evs = parse(out)
+        self.assertEqual([e["e"] for e in evs], ["line", "subagent", "caughtUp"])
+        self.assertEqual((evs[1]["description"], evs[1]["status"], evs[1]["workflowRunId"]), ("trace:helper", "running", self.RUN))
+
+    def test_permission_summary(self):
+        ps = self.hh.permission_summary
+        self.assertEqual(ps("Workflow", {"script": WF_SCRIPT}, "/"), "Audit the helper")
+        self.assertEqual(ps("Workflow", {"script": "export const meta = { name: 'only-name' }"}, "/"), "only-name")
+        self.assertEqual(ps("Workflow", {"scriptPath": "/s/audit-wf_1.js", "description": "Re-run"}, "/"), "Re-run")
+        self.assertEqual(ps("Workflow", {"scriptPath": "/s/audit-wf_1.js"}, "/"), "audit-wf_1")
+        self.assertEqual(ps("Workflow", {}, "/"), "Workflow")
+
+
 class GoneAfter(object):
     """ReaderGone stand-in: the reader 'goes' once until() is true or the deadline passes."""
 
