@@ -2,6 +2,7 @@ package app.tether.ui.chat
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import app.tether.core.ASK_USER_QUESTION
 import app.tether.core.AppSettings
 import app.tether.core.ChatItem
 import app.tether.core.Connection
@@ -60,6 +61,8 @@ data class SessionChatUiState(
     /** The message being sent had to wake a retired session first. */
     val waking: Boolean = false,
     val respondingIds: Set<String> = emptySet(),
+    /** Why the last answer to a question didn't go through, by request id (shown in the question panel). */
+    val respondErrors: Map<String, String> = emptyMap(),
     /** Keys for a dialog are on their way. */
     val pressing: Boolean = false,
     val stopping: Boolean = false,
@@ -98,6 +101,7 @@ private data class LocalSessionState(
     val sending: Boolean = false,
     val waking: Boolean = false,
     val respondingIds: Set<String> = emptySet(),
+    val respondErrors: Map<String, String> = emptyMap(),
     val pressing: Boolean = false,
     val stopping: Boolean = false,
     val removing: Boolean = false,
@@ -158,6 +162,7 @@ class SessionChatViewModel(
             sending = l.sending,
             waking = l.waking,
             respondingIds = l.respondingIds,
+            respondErrors = l.respondErrors,
             pressing = l.pressing,
             stopping = l.stopping,
             removing = l.removing,
@@ -374,7 +379,7 @@ class SessionChatViewModel(
     fun respond(requestId: String, decision: PermissionDecision) {
         if (requestId in local.value.respondingIds || agentId != null) return
         val toolName = conv.value.pendingPermissions.firstOrNull { it.requestId == requestId }?.toolName.orEmpty()
-        local.update { it.copy(respondingIds = it.respondingIds + requestId) }
+        local.update { it.copy(respondingIds = it.respondingIds + requestId, respondErrors = it.respondErrors - requestId) }
         viewModelScope.launch {
             try {
                 when (val r = sessionReplyFor(toolName, decision)) {
@@ -385,7 +390,9 @@ class SessionChatViewModel(
             } catch (ce: CancellationException) {
                 throw ce
             } catch (t: Throwable) {
-                say("Couldn't answer Claude — ${describe(t)}")
+                // A question shows its error in its own panel, next to the Submit that failed: a snackbar hides behind it.
+                if (toolName == ASK_USER_QUESTION) local.update { it.copy(respondErrors = it.respondErrors + (requestId to describe(t))) }
+                else say("Couldn't answer Claude — ${describe(t)}")
             } finally {
                 local.update { it.copy(respondingIds = it.respondingIds - requestId) }
             }

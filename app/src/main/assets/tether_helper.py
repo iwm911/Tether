@@ -4729,8 +4729,11 @@ def question_plan(questions, answers):
         multi = bool(q.get("multiSelect"))
         other = a.get("other") if isinstance(a, dict) else None
         choices = [c for c in (a.get("choices") or []) if isinstance(c, int) and 0 <= c < opts_n] if isinstance(a, dict) else []
-        if isinstance(other, str) and other.strip() and not multi:
-            plan.append(("other", opts_n, other.strip().replace("\n", " ")))
+        other = other.strip().replace("\n", " ") if isinstance(other, str) and other.strip() else None
+        if other and not multi:
+            plan.append(("other", opts_n, other))
+        elif multi and other:
+            plan.append(("multi_other", opts_n, (sorted(set(choices)), other)))
         elif multi:
             if not choices:
                 raise HelperError("Pick at least one option for: %s" % (q.get("question") or "question"))
@@ -4742,8 +4745,20 @@ def question_plan(questions, answers):
     return plan
 
 
+def focus_type_something(tui, opts_n):
+    """Moves a multi-select question's cursor onto its "Type something" row. Digits only toggle there, and
+    ↑/↓ wrap through the option rows, so press ↑ until the footer offers the row's editor ("ctrl+g to edit")."""
+    for _ in range(opts_n + 1):
+        m = tui.mark()
+        tui.send(b"\x1b[A", 0.6)
+        if "ctrl+gtoedit" in tui.text(m):
+            return
+    raise HelperError("Couldn't reach the typed answer on the machine's screen.")
+
+
 def press_answers(tui, qs, questions, plan):
-    """Types the plan into the question UI (single = digit; multi = digits + →; other = n+1, paste, Enter)."""
+    """Types the plan into the question UI (single = digit; multi = digits + →; other = n+1, paste, Enter;
+    multi with a typed answer = digits, ↑ to "Type something", paste (that checks it), ↓ to Submit, Enter)."""
     if not goto_question(tui, qs, 0):
         raise HelperError("Couldn't find the first question on the machine's screen.")
     for i, (kind, opts_n, val) in enumerate(plan):
@@ -4755,11 +4770,22 @@ def press_answers(tui, qs, questions, plan):
             tui.send(str(opts_n + 1).encode(), 0.8)
             tui.send(b"\x1b[200~" + val.encode("utf-8") + b"\x1b[201~", 1.0)
             tui.send(b"\r", 1.0)
+        elif kind == "multi_other":
+            choices, text = val
+            for c in choices:
+                tui.send(str(c + 1).encode(), 0.35)
+            focus_type_something(tui, opts_n)
+            tui.send(b"\x1b[200~" + text.encode("utf-8") + b"\x1b[201~", 1.0)
+            tui.send(b"\x1b[B", 0.6)
+            tui.send(b"\r", 1.0)
         else:
             for c in val:
                 tui.send(str(c + 1).encode(), 0.35)
             tui.send(b"\x1b[C", 1.0)
-    if len(questions) > 1 or any(k == "multi" for k, _n, _v in plan):
+        # Every answer moves the TUI on to the next tab by itself; stepping there again would land on the
+        # Submit review, whose list of the questions reads like a question.
+        tui.qcur = i + 1 if i + 1 < len(plan) else None
+    if len(questions) > 1 or any(k in ("multi", "multi_other") for k, _n, _v in plan):
         for _ in range(3):
             if "Submitanswers" in tui.text(max(0, tui.mark() - 6000)):
                 tui.send(b"1", 1.0)

@@ -3,6 +3,7 @@ package app.tether.ui.chat
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -20,18 +21,23 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.QuestionAnswer
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -50,10 +56,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.coerceAtLeast
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.tether.core.AskAnswer
@@ -77,12 +89,14 @@ import kotlinx.coroutines.launch
 /**
  * Claude's AskUserQuestion as a native picker — the phone version of Claude Code's question UI.
  * One question at a time ("1 of 2"), options as tappable cards (radio or checkbox), an optional
- * typed answer, then Submit. Single-choice questions advance on tap.
+ * typed answer, then Submit. Single-choice questions advance on tap. The header folds the panel
+ * down to one line, so the conversation above it can be read before answering.
  */
 @Composable
 internal fun QuestionBody(
     item: ChatItem.Permission,
     responding: Boolean,
+    error: String?,
     onRespond: (String, PermissionDecision) -> Unit,
     onFetch: (suspend () -> String)?,
 ) {
@@ -114,7 +128,11 @@ internal fun QuestionBody(
         if (prompt.needsFetch && onFetch != null) fetch()
     }
 
-    val maxPanel = (LocalConfiguration.current.screenHeightDp * 0.62f).dp
+    var collapsed by remember(item.requestId) { mutableStateOf(false) }
+    LaunchedEffect(error) { if (error != null) collapsed = false }
+    // The dock rides the keyboard: size the panel against the screen the keyboard leaves.
+    val imeDp = with(LocalDensity.current) { WindowInsets.ime.getBottom(this).toDp() }
+    val maxPanel = ((LocalConfiguration.current.screenHeightDp.dp - imeDp) * 0.55f).coerceAtLeast(180.dp)
     Surface(
         shape = RoundedCornerShape(24.dp),
         color = MaterialTheme.colorScheme.surfaceContainer,
@@ -145,20 +163,29 @@ internal fun QuestionBody(
                         TextButton(onClick = { onRespond(item.requestId, PermissionDecision.Deny("The user chose not to answer.")) }) { Text("Skip") }
                     }
                 }
-                else -> QuestionSteps(item, questions, responding, onRespond)
+                else -> QuestionSteps(item, questions, responding, error, collapsed, { collapsed = !collapsed }, onRespond)
             }
         }
     }
 }
 
 @Composable
-private fun Header(step: Int?, total: Int?) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
+private fun Header(step: Int?, total: Int?, collapsed: Boolean = false, onToggle: (() -> Unit)? = null) {
+    val rot by animateFloatAsState(if (collapsed) 180f else 0f, label = "questionFold")
+    Row(
+        if (onToggle == null) Modifier
+        else Modifier.clip(RoundedCornerShape(10.dp)).clickable(onClickLabel = if (collapsed) "Show the question" else "Hide the question", onClick = onToggle),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         Icon(Icons.Rounded.QuestionAnswer, contentDescription = null, tint = TetherTheme.colors.clay, modifier = Modifier.size(18.dp))
         Spacer(Modifier.width(8.dp))
         Text("Claude has a question", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
         if (step != null && total != null && total > 1) {
             Text("$step of $total", style = MaterialTheme.typography.labelMedium, color = TetherTheme.colors.faint)
+        }
+        if (onToggle != null) {
+            Spacer(Modifier.width(6.dp))
+            Icon(Icons.Rounded.ExpandMore, contentDescription = null, tint = TetherTheme.colors.faint, modifier = Modifier.size(22.dp).rotate(rot))
         }
     }
 }
@@ -168,12 +195,17 @@ private fun androidx.compose.foundation.layout.ColumnScope.QuestionSteps(
     item: ChatItem.Permission,
     questions: List<AskQuestion>,
     responding: Boolean,
+    error: String?,
+    collapsed: Boolean,
+    onToggleCollapsed: () -> Unit,
     onRespond: (String, PermissionDecision) -> Unit,
 ) {
     val haptics = rememberHaptics()
     val answers = remember(item.requestId, questions.size) { mutableStateListOf(*Array(questions.size) { AskAnswer() }) }
     var step by remember(item.requestId) { mutableIntStateOf(0) }
     var otherOpen by remember(item.requestId) { mutableStateOf(setOf<Int>()) }
+    // Set when "Something else…" is tapped open: its text field takes the focus (and the keyboard).
+    var focusOther by remember(item.requestId) { mutableStateOf<Int?>(null) }
     val scope = rememberCoroutineScope()
     val last = step == questions.lastIndex
 
@@ -182,7 +214,19 @@ private fun androidx.compose.foundation.layout.ColumnScope.QuestionSteps(
         onRespond(item.requestId, PermissionDecision.Answer(answers.toList()))
     }
 
-    Header(step + 1, questions.size)
+    Header(step + 1, questions.size, collapsed, onToggleCollapsed)
+    if (collapsed) {
+        // Folded to one line of the question, so the chat above can be scrolled and read.
+        Text(
+            questions[step].question,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 6.dp).clickable(onClick = onToggleCollapsed),
+        )
+        return
+    }
     Spacer(Modifier.height(10.dp))
     AnimatedContent(
         targetState = step,
@@ -242,21 +286,43 @@ private fun androidx.compose.foundation.layout.ColumnScope.QuestionSteps(
                     onClick = {
                         haptics.tick()
                         otherOpen = if (otherSelected) otherOpen - i else otherOpen + i
+                        focusOther = if (otherSelected) null else i
                         if (!q.multiSelect && !otherSelected) answers[i] = AskAnswer(other = answers[i].other)
                         if (otherSelected) answers[i] = answers[i].copy(other = null)
                     },
                 )
                 AnimatedVisibility(otherSelected, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
+                    val focus = remember { FocusRequester() }
+                    val bring = remember { BringIntoViewRequester() }
+                    val keyboard = LocalSoftwareKeyboardController.current
+                    LaunchedEffect(focusOther) {
+                        if (focusOther != i) return@LaunchedEffect
+                        focusOther = null
+                        delay(Motion.Medium.toLong())  // let the field expand first
+                        runCatching { focus.requestFocus() }
+                        keyboard?.show()
+                        delay(300)  // then scroll it into view once the keyboard has pushed the panel up
+                        bring.bringIntoView()
+                    }
                     TetherTextField(
                         value = answers[i].other.orEmpty(),
                         onValueChange = { v -> answers[i] = answers[i].copy(other = v, choices = if (q.multiSelect) answers[i].choices else emptyList()) },
                         label = "Your answer",
                         singleLine = false,
-                        modifier = Modifier.padding(top = 2.dp),
+                        modifier = Modifier.padding(top = 2.dp).bringIntoViewRequester(bring).focusRequester(focus),
                     )
                 }
             }
         }
+    }
+    if (error != null) {
+        // Next to the buttons, never scrolled out of sight: the answer didn't go through.
+        Text(
+            "Couldn't send your answer — $error",
+            style = MaterialTheme.typography.bodySmall,
+            color = TetherTheme.colors.danger,
+            modifier = Modifier.padding(top = 10.dp),
+        )
     }
     Spacer(Modifier.height(12.dp))
     Row(verticalAlignment = Alignment.CenterVertically) {
