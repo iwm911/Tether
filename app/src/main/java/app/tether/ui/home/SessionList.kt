@@ -72,15 +72,26 @@ fun mergeSessions(watched: List<Session>, older: List<Session>): List<Session> {
 /** One project chip: the folder and how many sessions it has in the current machine scope. */
 data class ProjectChip(val cwd: String, val count: Int, val lastActive: Long)
 
+/** Every project in [sessions], most recently active first: the order project chips keep until the next snapshot. */
+fun projectOrder(sessions: List<Session>): List<String> =
+    sessions.filter { it.cwd.isNotBlank() }
+        .groupBy { normPath(projectRoot(it.cwd)) }
+        .map { (cwd, list) -> cwd to list.maxOf { it.updatedAt } }
+        .sortedWith(compareByDescending<Pair<String, Long>> { it.second }.thenBy { it.first })
+        .map { it.first }
+
 /**
- * Project chips for the sessions of [machine] (null = every machine): most recently active
- * first, at most [max]. The selected project always stays in the list so it can be cleared.
+ * Project chips for the sessions of [machine] (null = every machine), at most [max]. Projects in
+ * [order] (a [projectOrder] snapshot) keep that order, so live activity doesn't reshuffle them;
+ * any others follow, most recently active first. The selected project always stays in the list so
+ * it can be cleared.
  */
-fun projectChips(sessions: List<Session>, machine: String?, selected: String? = null, max: Int = 8): List<ProjectChip> {
+fun projectChips(sessions: List<Session>, machine: String?, selected: String? = null, max: Int = 8, order: List<String> = emptyList()): List<ProjectChip> {
     val scoped = sessions.filter { (machine == null || it.connectionId == machine) && it.cwd.isNotBlank() }
+    val rank = order.withIndex().associate { (i, cwd) -> cwd to i }
     val chips = scoped.groupBy { normPath(projectRoot(it.cwd)) }
         .map { (cwd, list) -> ProjectChip(cwd, list.size, list.maxOf { it.updatedAt }) }
-        .sortedWith(compareByDescending<ProjectChip> { it.lastActive }.thenBy { it.cwd })
+        .sortedWith(compareBy<ProjectChip> { rank[it.cwd] ?: Int.MAX_VALUE }.thenByDescending { it.lastActive }.thenBy { it.cwd })
     val top = chips.take(max)
     if (selected == null || top.any { samePath(it.cwd, selected) }) return top
     val sel = chips.firstOrNull { samePath(it.cwd, selected) } ?: ProjectChip(normPath(selected), 0, 0)

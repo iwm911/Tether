@@ -70,6 +70,7 @@ private data class MachineList(
     val pages: Map<PageKey, Page>,
     val decisions: Map<String, Boolean>,
     val showTerminal: Boolean,
+    val projectOrder: List<String>,
 )
 
 /** One machine: its header (probe) and the session list filtered to it. */
@@ -81,7 +82,7 @@ class MachineViewModel(private val container: AppContainer, val connectionId: St
 
     val list = SessionListController(viewModelScope, hub, SessionFilter(machine = connectionId), onError = { messages.trySend(it) })
 
-    private val listBits = combine(list.filter, list.pages, list.decisions, container.settings.settings.map { it.showTerminalSessions }) { f, p, d, t -> MachineList(f, p, d, t) }
+    private val listBits = combine(list.filter, list.pages, list.decisions, container.settings.settings.map { it.showTerminalSessions }, list.projectOrder) { f, p, d, t, o -> MachineList(f, p, d, t, o) }
 
     val state: StateFlow<MachineUiState> = combine(
         container.connections.connections,
@@ -105,6 +106,7 @@ class MachineViewModel(private val container: AppContainer, val connectionId: St
             loadProbe()
             viewModelScope.launch {
                 attempt { hub.refresh(connectionId) }
+                list.resortProjects()
                 local.update { it.copy(firstLoadDone = true) }
             }
         }
@@ -123,7 +125,7 @@ class MachineViewModel(private val container: AppContainer, val connectionId: St
             sessions = visibleSessions(mine, b.pages, filter).withTerminal(b.showTerminal),
             totalSessions = everything.size,
             filter = filter,
-            projectChips = projectChips(everything, connectionId, filter.project),
+            projectChips = projectChips(everything, connectionId, filter.project, order = b.projectOrder),
             decisions = b.decisions,
             loadingSessions = mine.isEmpty() && !l.firstLoadDone && error == null,
             canLoadOlder = everything.isNotEmpty() && SessionPaging.canLoadMore(filter, listOf(connectionId), b.pages),
@@ -134,6 +136,8 @@ class MachineViewModel(private val container: AppContainer, val connectionId: St
     }
 
     fun selectProject(cwd: String?) = list.setProject(cwd)
+
+    fun resortProjects() = list.resortProjects()
 
     fun loadOlder() = list.loadOlder(listOf(connectionId), state.value.sessions)
 
@@ -159,6 +163,7 @@ class MachineViewModel(private val container: AppContainer, val connectionId: St
             val sessions = launch {
                 attempt { hub.refresh(connectionId) }.onFailure { messages.trySend("Couldn't refresh sessions — ${it.humanMessage()}") }
                 list.resetPages()
+                list.resortProjects()
             }
             listOf(loadProbe(), sessions).joinAll()
             val spent = System.currentTimeMillis() - t0

@@ -85,6 +85,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.tether.LocalAppContainer
@@ -128,6 +130,9 @@ fun HomeScreen(
     val context = LocalContext.current
     val listState = rememberLazyListState()
     val pullState = rememberPullToRefreshState()
+
+    // Project chips re-sort only on entering the list (app open, back from a session), not live.
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { vm.resortProjects() }
 
     LaunchedEffect(vm) {
         vm.events.collect { m ->

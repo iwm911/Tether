@@ -91,6 +91,8 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.tether.LocalAppContainer
@@ -162,6 +164,9 @@ fun MachineScreen(
     val snackbar = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
     val pullState = rememberPullToRefreshState()
+
+    // Project chips re-sort only on entering the list (app open, back from a session), not live.
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { vm.resortProjects() }
 
     LaunchedEffect(vm) { vm.events.collect { launch { snackbar.showSnackbar(it) } } }
 
