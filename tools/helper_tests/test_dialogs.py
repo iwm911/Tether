@@ -73,6 +73,16 @@ class CutDialogTest(unittest.TestCase):
         self.assertEqual(d["options"], [{"label": "Yes, switch to Sonnet 5.5", "key": "1"}, {"label": "No, go back", "key": "2"}])
         self.assertEqual(d["keys"], ["up", "down", "enter", "esc"])
 
+    def test_bash_permission_prompt_drops_the_dashed_fences(self):
+        # Recorded live (2.1.288): the command sits between ╌╌╌ rules. They were kept in the body, and the rule row
+        # was joined to the command as a soft wrap, so the phone showed a wall of dashes.
+        d = h.cut_dialog(screen_of("subscribe_dialog_bash_permission.jsonl"))
+        self.assertEqual(d["title"], "Bash command")
+        self.assertEqual(d["body"], "Create and delete temp file\n\ntouch /tmp/tether_probe_file && rm /tmp/tether_probe_file"
+                                    "\n\nDo you want to proceed?")
+        self.assertEqual([o["key"] for o in d["options"]], ["1", "2", "3"])
+        self.assertNotIn(u"╌", h.screen_fallback(screen_of("subscribe_dialog_bash_permission.jsonl")))
+
     def test_no_dialog_on_ordinary_screens(self):
         for name in ("subscribe_streaming_reply.jsonl", "subscribe_reply.jsonl", "subscribe_kill_settled.jsonl",
                      "attach_raw_after_esc.bin", "attach_raw_before_shifttab.bin", "attach_raw_after_shifttab.bin"):

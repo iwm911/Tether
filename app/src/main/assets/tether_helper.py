@@ -2719,6 +2719,9 @@ def session_state(held, live, st, rec, term, bg, last_entry=None):
 
 DIALOG_WAITING = ("dialog open", "input needed")
 DIALOG_RULE_CHARS = frozenset(u"─━▔▁═ ")
+# A permission prompt fences the command / diff in dashed rules ("Bash command" / ╌╌╌ / touch x / ╌╌╌ / Do you
+# want to proceed?): inside the body, not the dialog's top edge.
+DIALOG_INNER_RULE_CHARS = frozenset(u"╌┄┈╍┅┉ ")
 DIALOG_OPT_NUM_RE = re.compile(u"^\\s*(❯\\s*)?(\\d)\\.\\s+(\\S.*?)\\s*$")
 DIALOG_OPT_BOX_RE = re.compile(u"^\\s*(❯\\s*)?\\[([^\\]]?)\\]\\s+(\\S.*?)\\s*$")
 DIALOG_HINT_RE = re.compile(u"(?:^|·)\\s*(?:Enter|Esc|Space|Tab|Shift\\+Tab|↑/↓|↑↓|←/→|Ctrl\\+\\w)\\s+to\\s+\\w")
@@ -2732,6 +2735,11 @@ _dialog_screens = {}  # short -> (time, lines)
 def dialog_rule(line):
     t = line.strip()
     return len(t) > 20 and set(t) <= DIALOG_RULE_CHARS
+
+
+def dialog_inner_rule(line):
+    t = line.strip()
+    return len(t) > 20 and set(t) <= DIALOG_INNER_RULE_CHARS
 
 
 def box_edge(line):
@@ -2791,9 +2799,11 @@ def cut_dialog(lines):
         ti = texts[0] if texts and texts[0] not in opts and texts[0] not in hints else None
         title = block[ti].strip() if ti is not None else ""
         body_lines = block[(ti + 1) if ti is not None else 0:min(opts + hints)]
-        indent = min([len(l) - len(l.lstrip()) for l in body_lines if l.strip()] or [0])
+        indent = min([len(l) - len(l.lstrip()) for l in body_lines if l.strip() and not dialog_inner_rule(l)] or [0])
         out, prev = [], ""
         for raw in body_lines:
+            if dialog_inner_rule(raw):
+                raw = ""  # a fence around the command: a paragraph break, never joined to the text as a wrap
             text = raw[indent:].rstrip() if raw.strip() else ""
             if out and text and out[-1] and soft_wrapped(prev, text, width):
                 out[-1] = out[-1] + " " + text.strip()
@@ -2818,7 +2828,7 @@ def cut_dialog(lines):
 
 def screen_fallback(lines, cap=16):
     """The bottom of the screen as plain text, for a dialog cut_dialog can't read."""
-    rows = [l.rstrip() for l in lines or [] if l.strip() and not dialog_rule(l)][-cap:]
+    rows = [l.rstrip() for l in lines or [] if l.strip() and not dialog_rule(l) and not dialog_inner_rule(l)][-cap:]
     indent = min([len(l) - len(l.lstrip()) for l in rows] or [0])
     return "\n".join(l[indent:] for l in rows)
 
