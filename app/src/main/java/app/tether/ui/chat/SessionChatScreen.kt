@@ -220,6 +220,16 @@ fun SessionChatScreen(
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f, fill = false),
                         )
+                        state.project?.let { project ->
+                            Text(
+                                " · $project",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TetherTheme.colors.faint,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false),
+                            )
+                        }
                     },
                     onBack = onBack,
                     actions = {
