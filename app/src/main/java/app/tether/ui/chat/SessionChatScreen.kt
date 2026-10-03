@@ -306,6 +306,7 @@ fun SessionChatScreen(
                         pending = conv.pendingPermissions,
                         respondingIds = respondingIds,
                         onRespond = onRespond,
+                        respondErrors = state.respondErrors,
                     )
                 }
                 val s = state.session

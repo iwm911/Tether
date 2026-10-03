@@ -973,6 +973,10 @@ class WritesTest(unittest.TestCase):
         self.assertEqual(h_.question_plan(qs, [{"choices": [1]}, {"choices": [2, 0, 2]}]),
                          [("single", 2, 1), ("multi", 3, [0, 2])])
         self.assertEqual(h_.question_plan(qs[:1], [{"choices": [], "other": "z\nz"}]), [("other", 2, "z z")])
+        # a typed answer on a multi-select question, alone or with choices
+        self.assertEqual(h_.question_plan(qs, [{"choices": [0]}, {"choices": [], "other": "kiwi"}]),
+                         [("single", 2, 0), ("multi_other", 3, ([], "kiwi"))])
+        self.assertEqual(h_.question_plan(qs[1:], [{"choices": [2, 0], "other": " s "}]), [("multi_other", 3, ([0, 2], "s"))])
         with self.assertRaises(h_.HelperError):
             h_.question_plan(qs, [{"choices": [0]}])
 

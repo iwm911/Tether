@@ -461,6 +461,7 @@ fun DecisionPanel(
     respondingIds: Set<String>,
     onRespond: (String, PermissionDecision) -> Unit,
     modifier: Modifier = Modifier,
+    respondErrors: Map<String, String> = emptyMap(),
     onFetchQuestion: (suspend () -> String)? = null,
 ) {
     val first = pending.firstOrNull()
@@ -486,7 +487,13 @@ fun DecisionPanel(
         if (req == null) {
             Spacer(Modifier.fillMaxWidth())
         } else if (req.toolName == app.tether.core.ASK_USER_QUESTION) {
-            QuestionBody(req, responding = req.requestId in respondingIds, onRespond = onRespond, onFetch = onFetchQuestion)
+            QuestionBody(
+                req,
+                responding = req.requestId in respondingIds,
+                error = respondErrors[req.requestId],
+                onRespond = onRespond,
+                onFetch = onFetchQuestion,
+            )
         } else {
             DecisionBody(
                 item = req,
