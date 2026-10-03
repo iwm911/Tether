@@ -4,9 +4,10 @@
 
 # Tether
 
-### Claude Code in your pocket.
+### `claude agents`, on your Android phone.
 
-Start Claude Code sessions on your own computers, watch them work, and approve what they do, from your Android phone.
+Every Claude Code session on your computers, in your pocket: start new ones, watch them work, and approve
+what they do. Unofficial and open source.
 
 [![Latest release](https://img.shields.io/github/v/release/iwm911/Tether?sort=semver&label=download&color=D97757)](https://github.com/iwm911/Tether/releases/latest)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
@@ -42,8 +43,9 @@ You give Claude Code a big task and walk away. Ten minutes later it stops and wa
 
 **Tether sends that question to your phone.** Tap **Allow**, read the diff, or send a new instruction,
 from the couch, the train, or the queue at the coffee shop. The session keeps running on your computer,
-with your files, your tools and your setup. It's the same session `claude agents` shows there: Tether
-is a mobile `claude attach`.
+with your files, your tools and your setup. Tether shows the same sessions `claude agents` lists there,
+and opening one works like `claude attach`. Think of it as `claude agents` for Android. It's a community
+project, not an official Anthropic app.
 
 <table>
 <tr>
