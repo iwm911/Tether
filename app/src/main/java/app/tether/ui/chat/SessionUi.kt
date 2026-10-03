@@ -41,6 +41,7 @@ import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Dns
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.FolderOpen
+import androidx.compose.material.icons.rounded.Hub
 import androidx.compose.material.icons.rounded.Keyboard
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.StopCircle
@@ -77,6 +78,7 @@ import app.tether.core.DialogKind
 import app.tether.core.SessionKey
 import app.tether.core.SessionPending
 import app.tether.core.SessionStatusLine
+import app.tether.core.SessionTask
 import app.tether.core.SubagentInfo
 import app.tether.core.SubagentStatus
 import app.tether.ui.components.ClaudeSpinner
@@ -219,17 +221,37 @@ internal fun ReadOnlySubagentBar(label: String, onOpenSession: () -> Unit) {
 
 // ───────────────────────────── Subagents ─────────────────────────────
 
+private val WORKFLOW_DONE = Regex("^Dynamic workflow \"(.*)\" \\w+$")
+
+/** runId → what each workflow run is called: its description (also once the completion summary wraps it), else its name. */
+internal fun workflowNames(tasks: List<SessionTask>): Map<String, String> =
+    tasks.mapNotNull { t ->
+        val runId = t.runId ?: return@mapNotNull null
+        val summary = t.summary?.takeIf { it.isNotBlank() }?.let { WORKFLOW_DONE.find(it)?.groupValues?.get(1) ?: it }
+        (summary ?: t.name)?.let { runId to it }
+    }.toMap()
+
 internal fun subagentLabel(s: SubagentInfo): String =
     s.description?.takeIf { it.isNotBlank() }
-        ?: s.agentType?.takeIf { it.isNotBlank() && it != "general-purpose" }?.replace('-', ' ')?.replaceFirstChar { it.uppercase() }
+        ?: s.agentType?.takeIf { it.isNotBlank() && it != "general-purpose" && it != "workflow-subagent" }?.replace('-', ' ')?.replaceFirstChar { it.uppercase() }
         ?: "Subagent ${s.agentId.take(6)}"
 
-/** The session's subagents: one quiet line, tap to list them; each opens its transcript. */
+/**
+ * The session's subagents: one quiet line, tap to list them; each opens its transcript. A workflow's agents
+ * are grouped under their run ([workflowNames]: runId → name), running runs open, finished ones folded.
+ */
 @Composable
-internal fun SubagentStrip(subagents: List<SubagentInfo>, onOpen: (SubagentInfo) -> Unit, modifier: Modifier = Modifier) {
+internal fun SubagentStrip(
+    subagents: List<SubagentInfo>,
+    onOpen: (SubagentInfo) -> Unit,
+    modifier: Modifier = Modifier,
+    workflowNames: Map<String, String> = emptyMap(),
+) {
     if (subagents.isEmpty()) return
     var expanded by remember { mutableStateOf(false) }
     val running = subagents.count { it.status == SubagentStatus.RUNNING }
+    val plain = subagents.filter { it.workflowRunId == null }
+    val runs = subagents.filter { it.workflowRunId != null }.groupBy { it.workflowRunId!! }
     Surface(
         shape = RoundedCornerShape(14.dp),
         color = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -260,34 +282,78 @@ internal fun SubagentStrip(subagents: List<SubagentInfo>, onOpen: (SubagentInfo)
                 Icon(Icons.Rounded.ExpandMore, contentDescription = null, tint = TetherTheme.colors.faint, modifier = Modifier.size(18.dp).rotate(rot))
             }
             AnimatedVisibility(expanded, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
-                Column(Modifier.padding(bottom = 6.dp)) {
-                    for (s in subagents.sortedByDescending { it.status == SubagentStatus.RUNNING }) {
-                        Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .heightIn(min = 44.dp)
-                                .clickable(role = Role.Button, onClickLabel = "Open transcript") { onOpen(s) }
-                                .padding(horizontal = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            if (s.status == SubagentStatus.RUNNING) ClaudeSpinner(fontSize = 12f)
-                            else StatusDot(TetherTheme.colors.success, size = 6.dp)
-                            Spacer(Modifier.width(8.dp))
-                            Column(Modifier.weight(1f)) {
-                                Text(subagentLabel(s), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                val meta = listOfNotNull(
-                                    s.agentType?.takeIf { it.isNotBlank() },
-                                    s.model?.let { modelLabel(it, emptyList()) },
-                                    "background".takeIf { s.background },
-                                ).joinToString(" · ")
-                                if (meta.isNotEmpty()) Text(meta, style = MaterialTheme.typography.labelSmall, color = TetherTheme.colors.faint, maxLines = 1)
-                            }
-                            Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = null, tint = TetherTheme.colors.faint, modifier = Modifier.size(16.dp))
-                        }
-                    }
+                Column(
+                    Modifier
+                        .heightIn(max = (LocalConfiguration.current.screenHeightDp * 0.5f).dp)
+                        .verticalScroll(rememberScrollState())
+                        .padding(bottom = 6.dp),
+                ) {
+                    for (s in plain.sortedByDescending { it.status == SubagentStatus.RUNNING }) SubagentRow(s, onOpen)
+                    val ordered = runs.entries.sortedByDescending { (_, agents) -> agents.any { it.status == SubagentStatus.RUNNING } }
+                    for ((runId, agents) in ordered) WorkflowRunGroup(workflowNames[runId] ?: runId, agents, onOpen)
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun WorkflowRunGroup(name: String, agents: List<SubagentInfo>, onOpen: (SubagentInfo) -> Unit) {
+    val active = agents.count { it.status == SubagentStatus.RUNNING }
+    var open by remember(name) { mutableStateOf(active > 0) }
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 40.dp)
+            .clickable(role = Role.Button, onClickLabel = if (open) "Hide workflow agents" else "Show workflow agents") { open = !open }
+            .padding(horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Rounded.Hub, contentDescription = null, tint = TetherTheme.colors.clay, modifier = Modifier.size(16.dp))
+        Spacer(Modifier.width(8.dp))
+        Text(name, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+        Spacer(Modifier.width(8.dp))
+        Text(
+            if (active > 0) "$active of ${agents.size} running" else "${agents.size} done",
+            style = MaterialTheme.typography.labelSmall,
+            color = TetherTheme.colors.faint,
+        )
+        val rot by animateFloatAsState(if (open) 0f else -90f, label = "runChev")
+        Icon(Icons.Rounded.ExpandMore, contentDescription = null, tint = TetherTheme.colors.faint, modifier = Modifier.size(16.dp).rotate(rot))
+    }
+    if (open) {
+        // Phases in the order they started (the run's agents arrive grouped by phase); running agents first within one.
+        val phases = agents.mapNotNull { it.phase }.distinct()
+        val sorted = agents.sortedWith(
+            compareBy<SubagentInfo>({ s -> s.phase?.let { phases.indexOf(it) } ?: Int.MAX_VALUE }, { s -> s.status != SubagentStatus.RUNNING }),
+        )
+        Column(Modifier.padding(start = 12.dp)) { for (s in sorted) SubagentRow(s, onOpen) }
+    }
+}
+
+@Composable
+private fun SubagentRow(s: SubagentInfo, onOpen: (SubagentInfo) -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 44.dp)
+            .clickable(role = Role.Button, onClickLabel = "Open transcript") { onOpen(s) }
+            .padding(horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (s.status == SubagentStatus.RUNNING) ClaudeSpinner(fontSize = 12f)
+        else StatusDot(TetherTheme.colors.success, size = 6.dp)
+        Spacer(Modifier.width(8.dp))
+        Column(Modifier.weight(1f)) {
+            Text(subagentLabel(s), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            val meta = listOfNotNull(
+                if (s.workflowRunId != null) s.phase?.takeIf { it.isNotBlank() } else s.agentType?.takeIf { it.isNotBlank() },
+                s.model?.takeIf { it.isNotBlank() }?.let { modelLabel(it, emptyList()) },
+                "background".takeIf { s.background },
+            ).joinToString(" · ")
+            if (meta.isNotEmpty()) Text(meta, style = MaterialTheme.typography.labelSmall, color = TetherTheme.colors.faint, maxLines = 1)
+        }
+        Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = null, tint = TetherTheme.colors.faint, modifier = Modifier.size(16.dp))
     }
 }
 

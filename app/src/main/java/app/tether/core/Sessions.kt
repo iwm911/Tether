@@ -250,6 +250,7 @@ enum class SessionTaskKind {
     @SerialName("shell") SHELL,
     @SerialName("monitor") MONITOR,
     @SerialName("agent") AGENT,
+    @SerialName("workflow") WORKFLOW,
     @SerialName("other") OTHER,
 }
 
@@ -283,6 +284,9 @@ data class SubagentInfo(
     val model: String? = null,
     val background: Boolean = false,
     val status: SubagentStatus = SubagentStatus.RUNNING,
+    /** A workflow agent: its run (`wf_…`, = [SessionTask.runId]) and the phase it runs in. */
+    val workflowRunId: String? = null,
+    val phase: String? = null,
 )
 
 @Serializable
@@ -293,6 +297,9 @@ data class SessionTask(
     val status: SessionTaskStatus = SessionTaskStatus.RUNNING,
     val summary: String? = null,
     val outputFile: String? = null,
+    /** A workflow: its script's name and run id (`wf_…`). */
+    val name: String? = null,
+    val runId: String? = null,
 )
 
 @Serializable

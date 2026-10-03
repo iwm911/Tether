@@ -57,7 +57,11 @@ import androidx.compose.ui.text.withLink
 import androidx.compose.ui.unit.dp
 import app.tether.core.ChatItem
 import app.tether.core.ToolStatus
+import app.tether.core.WORKFLOW_TOOL
+import app.tether.core.WorkflowMeta
+import app.tether.ui.components.ClaudeSpinner
 import app.tether.ui.components.ShimmerText
+import app.tether.ui.components.StatusDot
 import app.tether.ui.components.rememberHaptics
 import app.tether.ui.theme.Motion
 import app.tether.ui.theme.TetherTheme
@@ -119,6 +123,7 @@ internal fun ToolDetail(item: ChatItem.ToolCall, parsed: ToolParsed, showThinkin
         name == "WebSearch" -> WebDetail(item, parsed, isSearch = true)
         name == "Task" || name == "Agent" -> TaskDetail(item, parsed, showThinking, depth)
         name == "ExitPlanMode" -> PlanDetail(item, parsed)
+        name == WORKFLOW_TOOL -> WorkflowDetail(item, parsed)
         name.startsWith("mcp__") -> McpDetail(item, parsed)
         else -> GenericDetail(item, parsed)
     }
@@ -614,6 +619,85 @@ private fun PlanDetail(item: ChatItem.ToolCall, p: ToolParsed) {
         }
     }
     ResultState(item)
+}
+
+// ───────────────────────────── Workflow ─────────────────────────────
+
+/** A multi-agent workflow: what it does, its phases, its agents (live, each opens its transcript), the script. */
+@Composable
+private fun WorkflowDetail(item: ChatItem.ToolCall, p: ToolParsed) {
+    val c = TetherTheme.colors
+    val meta = remember(item.inputJson) { WorkflowMeta.of(p.input) }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        meta.name?.let {
+            Badge(it.replace('-', ' '), c.clay)
+            Spacer(Modifier.width(8.dp))
+        }
+        meta.description?.let {
+            Text(it, style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium), maxLines = 3, overflow = TextOverflow.Ellipsis)
+        }
+    }
+    if (meta.phases.isNotEmpty()) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            meta.phases.forEachIndexed { i, ph -> InfoChip("${i + 1}. $ph", mono = false) }
+        }
+    }
+    val agents = item.toolUseId?.let { LocalWorkflowAgents.current[it] }.orEmpty()
+    if (agents.isNotEmpty()) WorkflowAgentList(agents)
+    meta.scriptPath?.let { InfoChip(ToolPresentation.displayPath(it, LocalChatCwd.current)) }
+    meta.resumeFrom?.let { Text("Resumes run $it", style = MaterialTheme.typography.bodySmall, color = c.faint) }
+    p.input?.get("args")?.let { args ->
+        OutputPanel(prettyJson(args), label = "Args", collapseAt = 10, stateKey = item.key + ":args")
+    }
+    val script = p.input?.str("script") ?: partialString(item.inputJson, "script")
+    if (!script.isNullOrBlank()) {
+        OutputPanel(script, label = "Script", collapseAt = 12, stateKey = item.key + ":script")
+    }
+    ResultState(item)
+    resultOrNull(item)?.let { ResultText(it, item.key) }
+}
+
+@Composable
+private fun WorkflowAgentList(agents: List<WorkflowAgentLink>) {
+    val c = TetherTheme.colors
+    val shape = RoundedCornerShape(12.dp)
+    val running = agents.count { it.running }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(MaterialTheme.colorScheme.surfaceContainerLow)
+            .border(1.dp, c.hairline, shape)
+            .padding(vertical = 6.dp),
+    ) {
+        Text(
+            (if (running > 0) "AGENTS · $running of ${agents.size} running" else "AGENTS · ${agents.size}"),
+            style = TetherTheme.type.eyebrow, color = c.faint,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+        )
+        val phases = agents.mapNotNull { it.phase }.distinct()
+        val sorted = agents.sortedWith(compareBy({ a -> a.phase?.let { phases.indexOf(it) } ?: Int.MAX_VALUE }, { a -> !a.running }))
+        for (a in sorted) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 40.dp)
+                    .clickable(role = Role.Button, onClickLabel = "Open transcript", onClick = a.open)
+                    .padding(horizontal = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (a.running) ClaudeSpinner(fontSize = 12f) else StatusDot(c.success, size = 6.dp)
+                Spacer(Modifier.width(8.dp))
+                Text(a.label, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                a.phase?.let {
+                    Spacer(Modifier.width(8.dp))
+                    Text(it, style = MaterialTheme.typography.labelSmall, color = c.faint, maxLines = 1)
+                }
+                Spacer(Modifier.width(6.dp))
+                Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = null, tint = c.faint, modifier = Modifier.size(14.dp))
+            }
+        }
+    }
 }
 
 // ───────────────────────────── MCP / generic ─────────────────────────────

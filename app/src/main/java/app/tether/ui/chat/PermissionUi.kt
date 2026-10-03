@@ -83,6 +83,8 @@ import androidx.compose.ui.unit.dp
 import app.tether.core.ChatItem
 import app.tether.core.PermissionDecision
 import app.tether.core.PermissionState
+import app.tether.core.WORKFLOW_TOOL
+import app.tether.core.WorkflowMeta
 import app.tether.ui.chat.render.CodeBlock
 import app.tether.ui.chat.render.ToolPresentation
 import app.tether.ui.components.CodeChip
@@ -223,6 +225,20 @@ internal fun summarizePermission(toolName: String, inputJson: String): Permissio
             action = "search your files", verb = verb, target = target, icon = icon,
             link = obj.str("pattern"), path = obj.str("path"),
         )
+        WORKFLOW_TOOL -> {
+            val meta = WorkflowMeta.of(obj)
+            PermissionSummary(
+                action = "run a multi-agent workflow", verb = verb, target = target, icon = icon,
+                note = meta.description ?: meta.name,
+                fields = listOfNotNull(
+                    meta.name?.takeIf { meta.description != null }?.let { "name" to it },
+                    meta.phases.takeIf { it.isNotEmpty() }?.let { "phases" to it.joinToString(" → ") },
+                    meta.scriptPath?.let { "script" to it },
+                    meta.resumeFrom?.let { "resumes" to it },
+                    obj["args"]?.let { "args" to it.compact(400) },
+                ),
+            )
+        }
         "Task", "Agent" -> PermissionSummary(
             action = "start a subagent", verb = verb, target = target, icon = icon,
             note = obj.str("description"), fields = listOfNotNull(obj.str("prompt")?.let { "prompt" to it.take(400) }),
