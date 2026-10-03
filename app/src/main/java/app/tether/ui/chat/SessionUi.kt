@@ -520,15 +520,18 @@ private fun ScreenBody(dialog: SessionPending.Dialog) {
         }
         return
     }
+    // A dialog the helper read has a title and prose for a body (wrap it); the raw-screen fallback has
+    // neither and keeps the terminal's columns (scroll it).
+    val prose = dialog.title.isNotBlank()
     Box(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .background(TetherTheme.colors.codeBg)
-            .horizontalScroll(rememberScrollState())
+            .then(if (prose) Modifier else Modifier.horizontalScroll(rememberScrollState()))
             .padding(horizontal = 12.dp, vertical = 8.dp),
     ) {
-        Text(dialog.body.trimEnd(), style = TetherTheme.type.monoSmall, color = TetherTheme.colors.codeText, softWrap = false)
+        Text(dialog.body.trimEnd(), style = TetherTheme.type.monoSmall, color = TetherTheme.colors.codeText, softWrap = prose)
     }
 }
 
