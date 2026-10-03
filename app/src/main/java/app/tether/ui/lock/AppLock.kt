@@ -154,6 +154,7 @@ object AppLock {
             }
 
             override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                android.util.Log.w("AppLock", "prompt error $errorCode: $errString")
                 authenticating = false
                 val outcome = when (errorCode) {
                     BiometricPrompt.ERROR_USER_CANCELED,
