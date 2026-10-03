@@ -95,6 +95,10 @@ data class SessionChatUiState(
             ?: conversation.title?.takeIf { it.isNotBlank() }
             ?: conversation.cwd?.let(::projectName)
             ?: ref.short
+    /** The project folder's name, for the header; null when unknown or already the title. */
+    val project: String?
+        get() = (session?.cwd?.takeIf { it.isNotBlank() } ?: conversation.cwd?.takeIf { it.isNotBlank() })
+            ?.let(::projectName)?.takeIf { it != title }
 }
 
 private data class LocalSessionState(
