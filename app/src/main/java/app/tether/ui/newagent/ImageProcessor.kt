@@ -30,8 +30,9 @@ object ImageProcessor {
 
     fun process(resolver: ContentResolver, uri: Uri): ProcessedImage {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
-            ?: throw IOException("Couldn't open the image")
+        // A bounds-only decode always returns null, so check the stream, not the result.
+        val stream = resolver.openInputStream(uri) ?: throw IOException("Couldn't open the image")
+        stream.use { BitmapFactory.decodeStream(it, null, bounds) }
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) throw IOException("That file isn't an image Tether can read")
 
         var sample = 1
