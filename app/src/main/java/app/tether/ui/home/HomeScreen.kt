@@ -186,7 +186,13 @@ fun HomeScreen(
                 contentPadding = PaddingValues(bottom = padding.calculateBottomPadding() + Space.lg),
             ) {
                 item(key = "header", contentType = "header") {
-                    HomeHeader(state, onOpenSettings, onOpenMachines = if (state.connections.isNotEmpty()) onOpenMachines else null)
+                    HomeHeader(
+                        state,
+                        onOpenSettings,
+                        onOpenMachines = if (state.connections.isNotEmpty()) onOpenMachines else null,
+                        onOpenMachine = onOpenMachine,
+                        onAddMachine = onAddMachine,
+                    )
                 }
                 item(key = "update", contentType = "update") {
                     app.tether.ui.update.UpdateBanner()
@@ -196,20 +202,6 @@ fun HomeScreen(
                 }
                 item(key = "keepalive", contentType = "keepalive") {
                     KeepAliveCard(hasMachines = state.connections.isNotEmpty())
-                }
-
-                if (state.connections.isNotEmpty()) {
-                    item(key = "machines", contentType = "machines") {
-                        MachineStrip(
-                            connections = state.connections,
-                            links = state.links,
-                            errors = state.machineErrors,
-                            liveCounts = state.liveCountByMachine,
-                            onOpen = onOpenMachine,
-                            onAdd = onAddMachine,
-                            onManage = onOpenMachines,
-                        )
-                    }
                 }
 
                 state.machineErrors.forEach { (id, message) ->
@@ -319,7 +311,13 @@ private fun greeting(hour: Int): String = when (hour) {
 }
 
 @Composable
-private fun HomeHeader(state: HomeUiState, onOpenSettings: () -> Unit, onOpenMachines: (() -> Unit)?) {
+private fun HomeHeader(
+    state: HomeUiState,
+    onOpenSettings: () -> Unit,
+    onOpenMachines: (() -> Unit)?,
+    onOpenMachine: (String) -> Unit,
+    onAddMachine: () -> Unit,
+) {
     val hour = remember { Calendar.getInstance().get(Calendar.HOUR_OF_DAY) }
     val subtitle = when {
         state.connections.isEmpty() -> "Claude Code, on your own machines"
@@ -336,7 +334,21 @@ private fun HomeHeader(state: HomeUiState, onOpenSettings: () -> Unit, onOpenMac
         }
     }
     Column(Modifier.fillMaxWidth()) {
-        Row(Modifier.fillMaxWidth().padding(top = Space.xs, end = Space.xs), horizontalArrangement = Arrangement.End) {
+        // Machine badges sit top-left, opposite the actions, so they read as status rather than as another filter.
+        Row(Modifier.fillMaxWidth().padding(top = Space.xs, end = Space.xs), verticalAlignment = Alignment.CenterVertically) {
+            if (state.connections.isNotEmpty()) {
+                MachineStrip(
+                    connections = state.connections,
+                    links = state.links,
+                    errors = state.machineErrors,
+                    liveCounts = state.liveCountByMachine,
+                    onOpen = onOpenMachine,
+                    onAdd = onAddMachine,
+                    modifier = Modifier.weight(1f),
+                )
+            } else {
+                Spacer(Modifier.weight(1f))
+            }
             if (onOpenMachines != null) {
                 IconButton(onClick = onOpenMachines) {
                     Icon(Icons.Outlined.Dns, contentDescription = "Machines", tint = TetherTheme.colors.faint)
@@ -376,25 +388,25 @@ private fun MachineStrip(
     liveCounts: Map<String, Int>,
     onOpen: (String) -> Unit,
     onAdd: () -> Unit,
-    onManage: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    Column(Modifier.fillMaxWidth().padding(bottom = Space.xs)) {
-        LazyRow(
-            contentPadding = PaddingValues(horizontal = Space.gutter),
-            horizontalArrangement = Arrangement.spacedBy(Space.sm),
-        ) {
-            items(connections, key = { it.id }) { c ->
-                MachineChip(
-                    connection = c,
-                    link = links[c.id],
-                    error = errors[c.id],
-                    live = liveCounts[c.id] ?: 0,
-                    onClick = { onOpen(c.id) },
-                    modifier = Modifier.animateItem(),
-                )
-            }
-            item(key = "add") { AddMachineChip(onAdd) }
+    LazyRow(
+        modifier = modifier,
+        contentPadding = PaddingValues(start = Space.gutter, end = Space.sm),
+        horizontalArrangement = Arrangement.spacedBy(Space.sm),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        items(connections, key = { it.id }) { c ->
+            MachineChip(
+                connection = c,
+                link = links[c.id],
+                error = errors[c.id],
+                live = liveCounts[c.id] ?: 0,
+                onClick = { onOpen(c.id) },
+                modifier = Modifier.animateItem(),
+            )
         }
+        item(key = "add") { AddMachineChip(onAdd) }
     }
 }
 
