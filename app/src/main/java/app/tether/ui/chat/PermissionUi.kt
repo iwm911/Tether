@@ -83,6 +83,9 @@ import androidx.compose.ui.unit.dp
 import app.tether.core.ChatItem
 import app.tether.core.PermissionDecision
 import app.tether.core.PermissionState
+import app.tether.core.SEND_MESSAGE
+import app.tether.core.SendMessageInput
+import app.tether.core.parseSendMessage
 import app.tether.ui.chat.render.CodeBlock
 import app.tether.ui.chat.render.ToolPresentation
 import app.tether.ui.components.CodeChip
@@ -121,6 +124,8 @@ internal data class PermissionSummary(
     val preview: List<PreviewLine> = emptyList(),
     val previewTruncated: Boolean = false,
     val fields: List<Pair<String, String>> = emptyList(),
+    /** A message to another session (`SendMessage`): the panel shows it as the message it is. */
+    val message: SendMessageInput? = null,
 )
 
 private val PermJson = Json { ignoreUnknownKeys = true; isLenient = true }
@@ -227,6 +232,13 @@ internal fun summarizePermission(toolName: String, inputJson: String): Permissio
             action = "start a subagent", verb = verb, target = target, icon = icon,
             note = obj.str("description"), fields = listOfNotNull(obj.str("prompt")?.let { "prompt" to it.take(400) }),
         )
+        SEND_MESSAGE -> {
+            val msg = parseSendMessage(inputJson)
+            PermissionSummary(
+                action = "message ${msg.recipient}", verb = verb, target = msg.recipient, icon = icon,
+                note = msg.text, message = msg,
+            )
+        }
         else -> {
             val action = if (toolName.startsWith("mcp__")) {
                 val parts = toolName.removePrefix("mcp__").split("__", limit = 2)
@@ -416,9 +428,10 @@ private fun BlockedPathLine(path: String, modifier: Modifier = Modifier) {
 
 @Composable
 private fun AnsweredRow(state: PermissionState, summary: PermissionSummary) {
+    val isMessage = summary.message != null
     val (label, color, icon) = when (state) {
-        PermissionState.ALLOWED -> Triple("Allowed", TetherTheme.colors.success, Icons.Rounded.Check)
-        PermissionState.DENIED -> Triple("Denied", TetherTheme.colors.danger, Icons.Rounded.Close)
+        PermissionState.ALLOWED -> Triple(if (isMessage) "Sent" else "Allowed", TetherTheme.colors.success, Icons.Rounded.Check)
+        PermissionState.DENIED -> Triple(if (isMessage) "Not sent" else "Denied", TetherTheme.colors.danger, Icons.Rounded.Close)
         else -> Triple("Cancelled", TetherTheme.colors.faint, Icons.Rounded.Block)
     }
     Row(
@@ -518,6 +531,7 @@ private fun DecisionBody(
     val warn = c.warning
     val haptics = rememberHaptics()
     val summary = remember(item.toolName, item.inputJson) { summarizePermission(item.toolName, item.inputJson) }
+    val message = summary.message
     var moreOpen by remember(item.requestId) { mutableStateOf(false) }
     var codeOpen by remember(item.requestId) { mutableStateOf(false) }
     var feedback by remember(item.requestId) { mutableStateOf("") }
@@ -542,7 +556,7 @@ private fun DecisionBody(
         // Only the summary scrolls; the decision buttons always stay visible at the panel's bottom.
         Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(summary.icon ?: Icons.Rounded.Gavel, contentDescription = null, tint = warn, modifier = Modifier.size(18.dp))
+                Icon(summary.icon ?: Icons.Rounded.Gavel, contentDescription = null, tint = if (message != null) c.info else warn, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(10.dp))
                 Text(
                     permissionTitle(summary),
@@ -556,7 +570,10 @@ private fun DecisionBody(
                     Text("$position of $total", style = MaterialTheme.typography.labelSmall, color = c.faint)
                 }
             }
-            val sub = listOfNotNull(
+            val sub = if (message != null) {
+                // The exact address too when the title shows a shortened one, so the user knows where it goes.
+                listOfNotNull("To another Claude session", message.to?.takeIf { it != message.recipient }).joinToString("  ·  ")
+            } else listOfNotNull(
                 summary.path?.let { prettyPath(it, maxLen = 44) },
                 summary.note?.takeIf { summary.command != null || summary.path != null },
             ).joinToString("  ·  ").ifBlank { null }
@@ -571,7 +588,11 @@ private fun DecisionBody(
                     modifier = Modifier.padding(start = 28.dp),
                 )
             }
-            PanelCode(summary, expanded = codeOpen, onToggle = { haptics.tick(); codeOpen = !codeOpen }, modifier = Modifier.padding(top = 12.dp))
+            if (message?.text != null) {
+                MessagePreview(message.text, expanded = codeOpen, onToggle = { haptics.tick(); codeOpen = !codeOpen }, modifier = Modifier.padding(top = 12.dp))
+            } else {
+                PanelCode(summary, expanded = codeOpen, onToggle = { haptics.tick(); codeOpen = !codeOpen }, modifier = Modifier.padding(top = 12.dp))
+            }
             item.blockedPath?.let { BlockedPathLine(it, Modifier.padding(top = Space.sm)) }
 
             AnimatedVisibility(
@@ -597,12 +618,12 @@ private fun DecisionBody(
                         value = feedback,
                         onValueChange = { feedback = it },
                         label = "Tell Claude what to do instead",
-                        placeholder = "e.g. Use the staging database, not prod",
+                        placeholder = if (message != null) "e.g. Wait until the tests pass, then send it" else "e.g. Use the staging database, not prod",
                         singleLine = false,
                         minLines = 2,
                     )
                     SecondaryButton(
-                        "Deny with feedback",
+                        if (message != null) "Don't send, tell Claude" else "Deny with feedback",
                         onClick = {
                             haptics.confirm()
                             pressed = "feedback"
@@ -620,13 +641,13 @@ private fun DecisionBody(
         Spacer(Modifier.height(14.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(Space.sm), verticalAlignment = Alignment.CenterVertically) {
             SecondaryButton(
-                "Deny",
+                if (message != null) "Don't send" else "Deny",
                 onClick = { haptics.confirm(); pressed = "deny"; onRespond(item.requestId, PermissionDecision.Deny()) },
                 enabled = !responding,
                 modifier = Modifier.weight(1f),
             )
             PrimaryButton(
-                "Allow once",
+                if (message != null) "Send" else "Allow once",
                 onClick = { haptics.confirm(); pressed = "allow"; onRespond(item.requestId, PermissionDecision.Allow()) },
                 enabled = !responding,
                 loading = responding && pressed == "allow",
@@ -648,6 +669,46 @@ private fun DecisionBody(
             Text(if (moreOpen) "Fewer options" else "More options", style = MaterialTheme.typography.labelMedium, color = c.faint)
             Spacer(Modifier.width(2.dp))
             Icon(Icons.Rounded.ExpandMore, contentDescription = null, tint = c.faint, modifier = Modifier.size(16.dp).rotate(rot))
+        }
+    }
+}
+
+/**
+ * The message a session wants to send another, drawn like the outgoing message row it becomes once
+ * sent (prose, not code): 6 lines, tap to see it all.
+ */
+@Composable
+private fun MessagePreview(text: String, expanded: Boolean, onToggle: () -> Unit, modifier: Modifier = Modifier) {
+    val c = TetherTheme.colors
+    val tint = c.info
+    val shape = RoundedCornerShape(16.dp)
+    val collapsedMax = 6
+    var overflows by remember(text) { mutableStateOf(false) }
+    val canExpand = overflows || expanded
+    Column(
+        modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(tint.copy(alpha = 0.07f))
+            .border(1.dp, tint.copy(alpha = 0.22f), shape)
+            .then(if (canExpand) Modifier.clickable(role = Role.Button, onClickLabel = if (expanded) "Collapse" else "Show all", onClick = onToggle) else Modifier)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+    ) {
+        Text(
+            text,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = if (expanded) Int.MAX_VALUE else collapsedMax,
+            overflow = TextOverflow.Ellipsis,
+            onTextLayout = { if (!expanded) overflows = it.hasVisualOverflow },
+        )
+        if (canExpand) {
+            Text(
+                if (expanded) "Show less" else "Show all",
+                style = MaterialTheme.typography.labelSmall,
+                color = c.faint,
+                modifier = Modifier.padding(top = 6.dp),
+            )
         }
     }
 }

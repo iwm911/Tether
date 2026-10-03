@@ -27,13 +27,12 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.tether.core.ChatItem
+import app.tether.core.peerDisplayName
 import app.tether.ui.theme.TetherTheme
 
 /** Who a peer message is from / to, for the row's caption: name, else a readable address. */
 internal fun peerLabel(item: ChatItem.Peer): String {
-    val name = item.peerName?.trim()?.takeIf { it.isNotEmpty() }
-        ?: item.peer?.trim()?.removePrefix("uds:")?.substringAfterLast('/')?.takeIf { it.isNotEmpty() }
-        ?: "another session"
+    val name = peerDisplayName(item.peerName, item.peer) ?: "another session"
     return if (item.incoming) "From $name" else "To $name"
 }
 

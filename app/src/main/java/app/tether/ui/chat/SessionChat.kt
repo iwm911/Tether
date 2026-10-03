@@ -12,9 +12,8 @@ import app.tether.core.PermissionMode
 import app.tether.core.PermissionSuggestion
 import app.tether.core.SessionDecision
 import app.tether.core.SessionKey
-import app.tether.remote.RemoteJson
-import app.tether.remote.SessionReducer
-import kotlinx.serialization.json.JsonPrimitive
+import app.tether.core.SEND_MESSAGE
+import app.tether.core.parseSendMessage
 
 /*
  * ════════════════════════════ Session screen: pure presentation logic ════════════════════════════
@@ -108,15 +107,14 @@ internal fun sessionChatItems(conv: ConversationState, showThinking: Boolean): L
 
 /** A top-level `SendMessage` call becomes an outgoing peer row; anything else is unchanged. */
 internal fun outgoingPeerOrSelf(item: ChatItem): ChatItem {
-    if (item !is ChatItem.ToolCall || item.name != SessionReducer.SEND_MESSAGE) return item
-    val input = RemoteJson.parseObject(item.inputJson) ?: return item
-    fun str(k: String) = (input[k] as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() }
-    val text = str("message") ?: str("content") ?: str("text") ?: str("summary") ?: return item
+    if (item !is ChatItem.ToolCall || item.name != SEND_MESSAGE) return item
+    val input = parseSendMessage(item.inputJson)
+    val text = input.text ?: return item
     return ChatItem.Peer(
         key = "peer:out:${item.toolUseId}",
         incoming = false,
-        peerName = str("toName") ?: str("name"),
-        peer = str("to") ?: str("recipient"),
+        peerName = input.toName,
+        peer = input.to,
         text = text,
         at = item.startedAt,
     )
