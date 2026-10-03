@@ -35,7 +35,9 @@ import androidx.compose.material.icons.rounded.Fingerprint
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.biometric.BiometricPrompt
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -96,6 +98,7 @@ fun AppLockGate(content: @Composable () -> Unit) {
     var error by remember { mutableStateOf<String?>(null) }
     var unavailable by remember { mutableStateOf(false) }
     var prompting by remember { mutableStateOf(false) }
+    var activePrompt by remember { mutableStateOf<BiometricPrompt?>(null) }
 
     fun prompt() {
         val act = activity ?: return
@@ -107,8 +110,9 @@ fun AppLockGate(content: @Composable () -> Unit) {
         }
         prompting = true
         error = null
-        AppLock.authenticate(act, title = "Unlock Tether", subtitle = "Confirm it's you to see your agents") { outcome ->
+        activePrompt = AppLock.authenticate(act, title = "Unlock Tether", subtitle = "Confirm it's you to see your agents") { outcome ->
             prompting = false
+            activePrompt = null
             when (outcome) {
                 AuthOutcome.Success -> { error = null; unavailable = false; AppLock.markUnlocked() }
                 AuthOutcome.Cancelled -> Unit
@@ -118,12 +122,16 @@ fun AppLockGate(content: @Composable () -> Unit) {
     }
 
     // Auto-prompt once per lock event, as soon as the activity is resumed (prompt needs a live FragmentManager).
+    // If the activity stops again during the delay (screen off, keyguard), wait for the next resume.
     LaunchedEffect(locked, generation) {
         if (!locked) return@LaunchedEffect
         val act = activity ?: return@LaunchedEffect
-        act.lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.RESUMED) }
-        delay(280)
-        if (AppLock.unlocked.value) return@LaunchedEffect
+        while (true) {
+            act.lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.RESUMED) }
+            delay(280)
+            if (AppLock.unlocked.value) return@LaunchedEffect
+            if (act.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) break
+        }
         prompt()
     }
 
@@ -170,6 +178,17 @@ fun AppLockGate(content: @Composable () -> Unit) {
                         awaitingFocus = true
                         raise++
                     }
+                }
+                // The prompt takes focus from this window while it's up. If we're still "prompting" but
+                // focused and resumed, no prompt is showing (biometric 1.1.0 can drop a request or its
+                // result without a callback): give up on it so the Unlock button works again.
+                val resumed = activity?.lifecycle?.currentStateFlow?.collectAsState()?.value?.isAtLeast(Lifecycle.State.RESUMED) == true
+                LaunchedEffect(focused, prompting, resumed) {
+                    if (!focused || !prompting || !resumed) return@LaunchedEffect
+                    delay(2_000)
+                    AppLock.abandon(activePrompt)
+                    activePrompt = null
+                    prompting = false
                 }
                 AnimatedVisibility(visibleState = visibility, enter = fadeIn(tween(200)), exit = fadeOut(tween(320))) {
                     LockScreen(
