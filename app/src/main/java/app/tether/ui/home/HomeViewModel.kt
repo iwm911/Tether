@@ -70,6 +70,7 @@ private data class ListBits(
     val pages: Map<PageKey, Page>,
     val decisions: Map<String, Boolean>,
     val showTerminal: Boolean,
+    val projectOrder: List<String>,
 )
 
 /** Home: one list of every session on every machine (one-session model). */
@@ -97,7 +98,7 @@ class HomeViewModel(
 
     val list = SessionListController(viewModelScope, hub, onError = { messages.trySend(HomeMessage.Error(it)) })
 
-    private val listBits = combine(list.filter, list.pages, list.decisions, settings.map { it.showTerminalSessions }) { f, p, d, t -> ListBits(f, p, d, t) }
+    private val listBits = combine(list.filter, list.pages, list.decisions, settings.map { it.showTerminalSessions }, list.projectOrder) { f, p, d, t, o -> ListBits(f, p, d, t, o) }
 
     val state: StateFlow<HomeUiState> = combine(connections, links, hub.sessions, hub.machineErrors, combine(local, listBits) { l, b -> l to b }) { conns, lk, sessions, errors, (l, b) ->
         reduce(conns, lk, sessions, errors, l, b)
@@ -105,12 +106,13 @@ class HomeViewModel(
         viewModelScope,
         SharingStarted.WhileSubscribed(5_000),
         // Seed from current values so the first frame is already the right state (no empty-state flash).
-        reduce(connections.value, links.value, hub.sessions.value, hub.machineErrors.value, local.value, ListBits(list.filter.value, list.pages.value, list.decisions.value, settings.value.showTerminalSessions)),
+        reduce(connections.value, links.value, hub.sessions.value, hub.machineErrors.value, local.value, ListBits(list.filter.value, list.pages.value, list.decisions.value, settings.value.showTerminalSessions, list.projectOrder.value)),
     )
 
     init {
         viewModelScope.launch {
             attempt { hub.refresh() }
+            list.resortProjects()
             local.update { it.copy(firstRefreshDone = true) }
         }
         if (loadTimers) viewModelScope.launch {
@@ -159,7 +161,7 @@ class HomeViewModel(
             workingCount = watched.count { it.state == app.tether.core.SessionState.WORKING && !it.offline },
             filter = filter,
             machineChips = if (machineChips.size > 1 || filter.machine != null) machineChips else emptyList(),
-            projectChips = projectChips(everything, filter.machine, filter.project),
+            projectChips = projectChips(everything, filter.machine, filter.project, order = b.projectOrder),
             decisions = b.decisions,
             liveCountByMachine = watched.liveCountByMachine(),
             canLoadOlder = everything.isNotEmpty() && SessionPaging.canLoadMore(filter, pageMachines, b.pages),
@@ -176,6 +178,8 @@ class HomeViewModel(
     fun selectMachine(id: String?) = list.setMachine(id)
 
     fun selectProject(cwd: String?) = list.setProject(cwd)
+
+    fun resortProjects() = list.resortProjects()
 
     fun loadOlder() {
         val s = state.value
@@ -195,6 +199,7 @@ class HomeViewModel(
             val t0 = System.currentTimeMillis()
             val r = attempt { hub.refresh() }
             list.resetPages()
+            list.resortProjects()
             val spent = System.currentTimeMillis() - t0
             if (spent < 650) delay(650 - spent)
             local.update { it.copy(refreshing = false, firstRefreshDone = true) }

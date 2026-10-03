@@ -38,6 +38,18 @@ class SessionListController(
     private val _decisions = MutableStateFlow<Map<String, Boolean>>(emptyMap())
     val decisions: StateFlow<Map<String, Boolean>> = _decisions.asStateFlow()
 
+    private val _projectOrder = MutableStateFlow<List<String>>(emptyList())
+    /** The project chips' order, a [projectOrder] snapshot taken by [resortProjects]. */
+    val projectOrder: StateFlow<List<String>> = _projectOrder.asStateFlow()
+
+    /**
+     * Re-sorts the project chips by recent activity. Called when the list is (re)entered or
+     * refreshed, not on every update, so the chips don't jump around while sessions run.
+     */
+    fun resortProjects() {
+        _projectOrder.value = projectOrder(hub.sessions.value + _pages.value.values.flatMap { it.sessions })
+    }
+
     fun setMachine(machine: String?) = _filter.update { f ->
         // A project belongs to a machine: changing machines clears it unless it is still in scope.
         if (f.machine == machine) f else f.copy(machine = machine, project = null)

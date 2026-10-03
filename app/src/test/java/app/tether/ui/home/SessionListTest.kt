@@ -108,6 +108,25 @@ class SessionListTest {
     }
 
     @Test
+    fun projectChipsKeepTheirSnapshotOrderUntilResorted() {
+        val before = listOf(
+            s("a1", cwd = "/p/one", updated = 9),
+            s("a2", cwd = "/p/two", updated = 5),
+        )
+        val order = projectOrder(before)
+        assertEquals(listOf("/p/one", "/p/two"), order)
+        // /p/two gets a new message and a new project starts: known chips hold still, the new one goes last.
+        val after = listOf(
+            s("a1", cwd = "/p/one", updated = 9),
+            s("a2", cwd = "/p/two/", updated = 50),
+            s("a3", cwd = "/p/three", updated = 60),
+        )
+        assertEquals(listOf("/p/one", "/p/two", "/p/three"), projectChips(after, null, order = order).map { it.cwd })
+        // A fresh snapshot re-sorts by activity.
+        assertEquals(listOf("/p/three", "/p/two", "/p/one"), projectChips(after, null, order = projectOrder(after)).map { it.cwd })
+    }
+
+    @Test
     fun aWorktreeSessionBelongsToItsProject() {
         val all = listOf(
             s("m", cwd = "/home/me/Tether", updated = 1),
