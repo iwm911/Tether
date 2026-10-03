@@ -46,6 +46,7 @@ Older helpers kept Tether's own runs in ~/.tether/runs/; this one ignores that f
 conversations are ordinary Claude Code sessions and show up through their transcripts.
 """
 
+import codecs
 import errno
 import glob
 import io
@@ -1349,14 +1350,16 @@ def _norm(s):
     return re.sub(r"\s+", "", s or "")
 
 
-CHECKBOX_RE = re.compile("\\[(|\u2714|x|X)\\]")
+CHECKBOX_RE = re.compile("\\d\\.\\[(|\u2714|x|X)\\]")  # an option row's box, e.g. "1.[ ]Label" with spaces removed
 
 
 def current_question(text, qs):
     """(index, is_multi) of the question on screen, or (None, None) (e.g. the Submit tab).
-    The TUI repaints only characters that changed, so match fuzzily: whole option labels that
-    appear, plus the longest run of the question text that survived the diff."""
+    text is the rendered screen (DaemonTui.screen_text()). Match fuzzily anyway, as the question may not fit the
+    screen: whole option labels that appear, plus the longest run of the question text on screen."""
     import difflib
+    if "Readytosubmityouranswers?" in text or "Reviewyouranswers" in text:
+        return None, None  # the Submit review lists the questions and their answers
     best, best_score = None, 0.0
     for i, q in enumerate(qs):
         labels = [_norm(o.get("label")) for o in (q.get("options") or []) if isinstance(o, dict) and o.get("label")]
@@ -1374,18 +1377,18 @@ def current_question(text, qs):
 
 def goto_question(tui, qs, target, seen=None):
     """Moves the tab cursor to question target with ←/→, re-reading the screen after every press.
-    Position is tracked on the Tui (tui.qcur); multi-select flags are recorded only from a fresh
-    repaint of that one question, never from older frames still in the buffer."""
+    Position is tracked on the Tui (tui.qcur). The screen is replayed in full, not read from the output
+    since the press: switching between two similar questions repaints only the characters that differ,
+    which leaves too little of either to recognise."""
     if not hasattr(tui, "qcur"):
-        tui.qcur, multi = current_question(tui.text(0), qs)
+        tui.qcur, multi = current_question(tui.screen_text(), qs)
         if seen is not None and tui.qcur is not None:
             seen[tui.qcur] = multi
     for _ in range(2 * len(qs) + 2):
         if tui.qcur == target:
             return True
-        m = tui.mark()
         tui.send(b"\x1b[D" if (tui.qcur is None or tui.qcur > target) else b"\x1b[C", 0.9)
-        c2, multi = current_question(tui.text(m), qs)
+        c2, multi = current_question(tui.screen_text(), qs)
         tui.qcur = c2  # None = the Submit tab (or unreadable): keep stepping left
         if seen is not None and c2 is not None:
             seen[c2] = multi
@@ -4294,6 +4297,8 @@ class DaemonTui(object):
 
     def __init__(self, short, cols=KEY_COLS, rows=KEY_ROWS):
         self.buf = bytearray()
+        self.screen, self.screen_fed = Screen(rows, cols), 0
+        self.screen_dec = codecs.getincrementaldecoder("utf-8")("replace")
         self.att = DaemonAttach(short, cols=cols, rows=rows)
         if not self.pump(10.0, until=u"❯".encode("utf-8")):
             self.close()
@@ -4324,6 +4329,12 @@ class DaemonTui(object):
         words with cursor moves, so spaces are unreliable)."""
         t = ANSI_RE.sub("", bytes(self.buf[since:]).decode("utf-8", "replace"))
         return re.sub(r"\s+", "", t)
+
+    def screen_text(self):
+        """The screen as it stands now (replayed from all output so far), whitespace removed like text()."""
+        self.screen.feed(self.screen_dec.decode(bytes(self.buf[self.screen_fed:])))
+        self.screen_fed = len(self.buf)
+        return re.sub(r"\s+", "", "\n".join(self.screen.lines()))
 
     def close(self):
         self.att.close()
