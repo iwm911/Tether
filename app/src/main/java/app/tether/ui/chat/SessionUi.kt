@@ -507,10 +507,19 @@ private fun TrustBody(dialog: SessionPending.Dialog) {
     )
 }
 
-/** Unknown dialog: what the terminal shows, as-is. */
+/** Unknown dialog: what the terminal shows, as-is (or, when nothing could be read, how to answer it). */
 @Composable
 private fun ScreenBody(dialog: SessionPending.Dialog) {
-    if (dialog.body.isBlank()) return
+    if (dialog.body.isBlank()) {
+        if (dialog.options.isEmpty()) {
+            Text(
+                "Couldn't read this prompt from the machine's screen. Answer it with the keys below, or at the terminal.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        return
+    }
     Box(
         Modifier
             .fillMaxWidth()
