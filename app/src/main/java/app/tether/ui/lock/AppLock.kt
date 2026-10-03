@@ -124,13 +124,28 @@ object AppLock {
         else -> "Set up a screen lock on this device to use app lock."
     }
 
-    /** Shows the system prompt. [onResult] is delivered on the main thread. */
+    /** Gives up on a prompt that never showed or whose result was lost, so a new one can start. */
+    fun abandon(prompt: BiometricPrompt?) {
+        authenticating = false
+        prompt?.cancelAuthentication()
+    }
+
+    /**
+     * Shows the system prompt. [onResult] is delivered on the main thread. Returns the prompt so the
+     * caller can cancel it, or null when it couldn't be shown (already reported through [onResult]).
+     */
     fun authenticate(
         activity: FragmentActivity,
         title: String,
         subtitle: String? = null,
         onResult: (AuthOutcome) -> Unit,
-    ) {
+    ): BiometricPrompt? {
+        // biometric 1.1.0 silently drops a request made after onSaveInstanceState (no prompt, no
+        // callback), which would leave the caller waiting forever. Report it as a cancel instead.
+        if (!activity.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) || activity.supportFragmentManager.isStateSaved) {
+            onResult(AuthOutcome.Cancelled)
+            return null
+        }
         val executor = ContextCompat.getMainExecutor(activity)
         val prompt = BiometricPrompt(activity, executor, object : BiometricPrompt.AuthenticationCallback() {
             override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
@@ -139,6 +154,7 @@ object AppLock {
             }
 
             override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                android.util.Log.w("AppLock", "prompt error $errorCode: $errString")
                 authenticating = false
                 val outcome = when (errorCode) {
                     BiometricPrompt.ERROR_USER_CANCELED,
@@ -165,11 +181,13 @@ object AppLock {
             .setConfirmationRequired(false)
             .build()
         authenticating = true
-        try {
+        return try {
             prompt.authenticate(info)
+            prompt
         } catch (e: Exception) {
             authenticating = false
             onResult(AuthOutcome.Error(e.message ?: "Couldn't show the unlock prompt."))
+            null
         }
     }
 }
