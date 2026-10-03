@@ -2876,8 +2876,11 @@ def session_dialog(short, st, reg, screen=None):
     if d:
         return d
     # The screen-text fallback needs a registered worker that says it waits (before registering, a worker's
-    # state.json says blocked between dispatch and its first prompt too).
-    blocked = (reg or {}).get("waitingFor") in DIALOG_WAITING or (bool(reg) and (st or {}).get("tempo") == "blocked")
+    # state.json says blocked between dispatch and its first prompt too). Any wait counts, not only "dialog open":
+    # a goal proposal, a sandbox network request or a prompt the transcript can't name is still on screen.
+    reg = reg or {}
+    blocked = bool(reg) and (reg.get("waitingFor") in DIALOG_WAITING or reg.get("status") == "waiting" or
+                             (st or {}).get("tempo") == "blocked")
     if blocked and lines and not prompt_box_shown(lines):
         return {"kind": "dialog", "dialog": "other", "title": "", "body": screen_fallback(lines), "options": [],
                 "keys": list(DIALOG_KEYS_CHECKLIST)}

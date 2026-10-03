@@ -376,6 +376,17 @@ class SessionChatViewModelTest {
     }
 
     @Test
+    fun anUnreadWaitIsNamedInTheKeyPad() = runTest(dispatcher) {
+        // Regression: a goal proposal the helper couldn't read showed "Claude Code is asking something" with nothing in it.
+        val hub = FakeHub(stateWith(session(state = SessionState.NEEDS_YOU).copy(waitingFor = "goal proposal")))
+        val vm = vm(hub)
+        advanceUntilIdle()
+        assertEquals("Claude proposed a session goal", vm.state.value.dialog?.title)
+        assertEquals("", waitTitle("dialog open"))
+        assertEquals("Waiting for plan review", waitTitle("plan review"))
+    }
+
+    @Test
     fun aSubagentViewIsReadOnly() = runTest(dispatcher) {
         val hub = FakeHub(stateWith(session()))
         val vm = vm(hub, agentId = "a1b2c3", commands = listOf(SlashCommand("compact", "")))

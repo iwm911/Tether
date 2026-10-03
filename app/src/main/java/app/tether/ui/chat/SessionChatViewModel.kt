@@ -88,13 +88,24 @@ data class SessionChatUiState(
             (live?.pending as? SessionPending.Dialog)?.let { return it }
             val s = session ?: return null
             // A hand-off has nothing on screen to answer: the composer is the answer, no empty key pad.
-            return if (!readOnly && s.needsYou && !s.handoff && !s.heldByTerminal && live?.pending == null) SessionPending.Dialog() else null
+            return if (!readOnly && s.needsYou && !s.handoff && !s.heldByTerminal && live?.pending == null) {
+                SessionPending.Dialog(title = waitTitle(s.waitingFor))
+            } else null
         }
     val title: String
         get() = session?.title?.takeIf { it.isNotBlank() }
             ?: conversation.title?.takeIf { it.isNotBlank() }
             ?: conversation.cwd?.let(::projectName)
             ?: ref.short
+}
+
+/** A title for an unread wait from Claude Code's own name for it ("goal proposal", "sandbox request"…), or "". */
+internal fun waitTitle(waitingFor: String?): String = when (val w = waitingFor?.trim().orEmpty()) {
+    "", "dialog open", "input needed" -> ""
+    "permission prompt" -> "Claude Code needs your permission"
+    "goal proposal" -> "Claude proposed a session goal"
+    "sandbox request" -> "A sandboxed command needs network access"
+    else -> "Waiting for $w"
 }
 
 private data class LocalSessionState(

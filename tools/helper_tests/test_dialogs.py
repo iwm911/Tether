@@ -174,6 +174,19 @@ class DialogSessionTest(unittest.TestCase):
         self.assertIn("Something new happened", p["body"])
         self.assertIn("enter", p["keys"])
 
+    def test_any_wait_falls_back_to_the_screen_text(self):
+        # Claude Code also waits for "goal proposal" and "sandbox request": the phone showed an empty "Claude Code is
+        # asking something" key pad with nothing in it.
+        self.home.job(SHORT, sessionId=SID, cwd=self.proj, state="done", tempo="idle")
+        self.home.registry(os.getpid(), kind="bg", status="waiting", waitingFor="goal proposal", sessionId=SID, jobId=SHORT)
+        self.model.add(SHORT, SID, cwd=self.proj, tempo="idle", state="done")
+        self.model.subscribe_events = [{"type": "snapshot", "record": {}, "streamTail": [
+            u"\x1b[2J\x1b[H  Claude proposed a session goal\r\n  Ship the fix\r\n"]}]
+        s = self.session()
+        self.assertEqual((s["state"], s["waitingFor"]), ("needs_you", "goal proposal"))
+        self.assertEqual((s["pending"]["kind"], s["pending"]["dialog"]), ("dialog", "other"))
+        self.assertIn("Ship the fix", s["pending"]["body"])
+
     def test_no_fallback_while_the_prompt_box_is_still_up(self):
         # The registry says "dialog open" a moment before the dialog replaces the prompt box.
         self.home.job(SHORT, sessionId=SID, cwd=self.proj, state="done", tempo="idle")
