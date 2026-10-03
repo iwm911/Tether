@@ -118,6 +118,7 @@ p code, li code, dd code { background: var(--code); padding: .1em .35em; border-
   font: 400 clamp(2.75rem, 5.4vw, 4.5rem)/1.04 var(--serif); letter-spacing: -.025em; margin: 0 0 .35em;
   text-wrap: balance;
 }
+.hero h1 code { font: 400 .8em/1 var(--mono); letter-spacing: -.04em; }
 .hero .lede { font: 400 clamp(1.125rem, 1.6vw, 1.3125rem)/1.55 var(--serif); color: var(--muted); max-width: 30rem; margin: 0 0 2rem; }
 .hero .actions { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 1.25rem; }
 .hero .fine { color: var(--faint); font-size: .875rem; margin: 0; }

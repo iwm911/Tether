@@ -65,6 +65,22 @@ class SessionAlertsTest {
     }
 
     @Test
+    fun aMessageToAnotherSessionReadsAsAMessage() {
+        val send = SessionPending.Permission("toolu_3", "SendMessage", "builder", "{\"to\":\"builder\",\"message\":\"tests are green\"}")
+        assertEquals("X wants to message builder", SessionAlerts.needsYouTitle("X", send))
+        assertEquals("tests are green", SessionAlerts.needsYouText(send, null))
+        assertEquals("Send" to "Don't send", SessionAlerts.answerLabels(send))
+        assertEquals("Allow" to "Deny", SessionAlerts.answerLabels(perm))
+        assertTrue(SessionAlerts.answerableInline(send))
+        // A uds address shows its last part; no input at all still reads sensibly.
+        val uds = SessionPending.Permission("t", "SendMessage", "", "{\"to\":\"uds:/tmp/claude/ab12.sock\",\"message\":\"hi\"}")
+        assertEquals("X wants to message ab12.sock", SessionAlerts.needsYouTitle("X", uds))
+        val bare = SessionPending.Permission("t", "SendMessage")
+        assertEquals("X wants to message another session", SessionAlerts.needsYouTitle("X", bare))
+        assertEquals("A message to another session", SessionAlerts.needsYouText(bare, null))
+    }
+
+    @Test
     fun onlyToolPermissionsAreAnswerableInline() {
         assertTrue(SessionAlerts.answerableInline(perm))
         assertFalse(SessionAlerts.answerableInline(ask))

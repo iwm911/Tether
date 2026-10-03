@@ -20,6 +20,7 @@ import app.tether.R
 import app.tether.TetherApp
 import app.tether.core.Session
 import app.tether.core.SessionEvent
+import app.tether.core.SEND_MESSAGE
 import app.tether.core.SessionPending
 import app.tether.core.SessionRef
 
@@ -194,6 +195,8 @@ object Notifications {
     /** Identity of the prompt a session notification was posted for (see [SessionAlerts.identityOf]). */
     const val EXTRA_PENDING_ID = "pendingIdentity"
     const val EXTRA_TOOL_USE_ID = "toolUseId"
+    /** A SendMessage prompt's tool input, so a re-posted notification still shows the message. */
+    const val EXTRA_INPUT = "toolInput"
 
     /**
      * A session started waiting for the user: a tool permission (Allow / Deny / Tell Claude inline),
@@ -218,6 +221,7 @@ object Notifications {
                 putExtra(EXTRA_TITLE, event.title)
                 putExtra(EXTRA_TOOL, permission?.toolName ?: "")
                 putExtra(EXTRA_SUMMARY, permission?.summary ?: "")
+                if (permission?.toolName == SEND_MESSAGE) putExtra(EXTRA_INPUT, permission.inputJson)
             }
             val mutability = if (action == ACTION_REPLY && Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else PendingIntent.FLAG_IMMUTABLE
             return PendingIntent.getBroadcast(context, id + code, intent, mutability or PendingIntent.FLAG_UPDATE_CURRENT)
@@ -249,8 +253,9 @@ object Notifications {
                 .addRemoteInput(RemoteInput.Builder(KEY_REPLY_TEXT).setLabel("What should Claude do instead?").build())
                 .setAllowGeneratedReplies(false)
                 .build()
-            builder.addAction(button("Allow", action(ACTION_ALLOW, 1)).build())
-                .addAction(button("Deny", action(ACTION_DENY, 2)).build())
+            val (allow, deny) = SessionAlerts.answerLabels(event.pending)
+            builder.addAction(button(allow, action(ACTION_ALLOW, 1)).build())
+                .addAction(button(deny, action(ACTION_DENY, 2)).build())
                 .addAction(reply)
         } else {
             builder.addAction(0, if (event.pending is SessionPending.Permission) "Review" else "Answer", open)

@@ -56,6 +56,7 @@ class NotificationActionReceiver : BroadcastReceiver() {
                 toolUseId = intent.getStringExtra(Notifications.EXTRA_TOOL_USE_ID).orEmpty(),
                 toolName = intent.getStringExtra(Notifications.EXTRA_TOOL) ?: "Tool",
                 summary = intent.getStringExtra(Notifications.EXTRA_SUMMARY).orEmpty(),
+                inputJson = intent.getStringExtra(Notifications.EXTRA_INPUT) ?: "{}",
             ),
             waitingFor = null,
         )

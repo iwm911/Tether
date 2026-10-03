@@ -447,7 +447,7 @@ class SessionReducer(
     }
 
     companion object {
-        const val SEND_MESSAGE = "SendMessage"
+        const val SEND_MESSAGE = app.tether.core.SEND_MESSAGE
         const val CROSS_SESSION_TAG = "<cross-session-message"
 
         /** Letters and digits only, lower-cased: screen text and markdown compare equal. */

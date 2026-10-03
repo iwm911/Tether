@@ -1,11 +1,13 @@
 package app.tether.service
 
 import app.tether.core.ASK_USER_QUESTION
+import app.tether.core.SEND_MESSAGE
 import app.tether.core.Session
 import app.tether.core.SessionPending
 import app.tether.core.SessionRef
 import app.tether.core.SessionState
 import app.tether.core.identity
+import app.tether.core.parseSendMessage
 
 /**
  * Pure decisions behind session notifications and the background-watch summary (no Android here,
@@ -33,19 +35,31 @@ object SessionAlerts {
     /** Notification title for a needs-you prompt. */
     fun needsYouTitle(title: String, pending: SessionPending?): String = when (pending) {
         is SessionPending.Question -> "$title has a question"
-        is SessionPending.Permission -> if (pending.toolName == ASK_USER_QUESTION) "$title has a question" else "$title needs approval"
+        is SessionPending.Permission -> when (pending.toolName) {
+            ASK_USER_QUESTION -> "$title has a question"
+            SEND_MESSAGE -> "$title wants to message ${parseSendMessage(pending.inputJson).recipient}"
+            else -> "$title needs approval"
+        }
         is SessionPending.Dialog -> "$title is waiting"
         null -> "$title needs you"
     }
 
     /** One-line body of a needs-you notification. */
     fun needsYouText(pending: SessionPending?, waitingFor: String?): String = when (pending) {
-        is SessionPending.Permission -> if (pending.summary.isBlank()) pending.toolName else "${pending.toolName}: ${pending.summary}"
+        is SessionPending.Permission -> when {
+            pending.toolName == SEND_MESSAGE -> parseSendMessage(pending.inputJson).text ?: "A message to another session"
+            pending.summary.isBlank() -> pending.toolName
+            else -> "${pending.toolName}: ${pending.summary}"
+        }
         is SessionPending.Question -> pending.summary.ifBlank { "Claude asked a question" }
         is SessionPending.Dialog -> listOf(pending.title, pending.body.lineSequence().firstOrNull { it.isNotBlank() }?.trim())
             .filter { !it.isNullOrBlank() }.joinToString(" · ").ifEmpty { "A dialog is open" }
         null -> waitingFor?.takeIf { it.isNotBlank() } ?: "Waiting for you"
     }
+
+    /** The inline Allow / Deny buttons' labels: Send / Don't send for a message to another session. */
+    fun answerLabels(pending: SessionPending?): Pair<String, String> =
+        if ((pending as? SessionPending.Permission)?.toolName == SEND_MESSAGE) "Send" to "Don't send" else "Allow" to "Deny"
 
     /** Allow / Deny can be answered from the notification only for a tool permission prompt. */
     fun answerableInline(pending: SessionPending?): Boolean =

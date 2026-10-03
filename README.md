@@ -4,15 +4,33 @@
 
 # Tether
 
-### Claude Code in your pocket.
+### `claude agents`, on your Android phone.
 
-Start Claude Code sessions on your own computers, watch them work, and approve what they do, from your Android phone.
+Every Claude Code session on your computers, in your pocket: start new ones, watch them work, and approve
+what they do. Unofficial and open source.
 
 [![Latest release](https://img.shields.io/github/v/release/iwm911/Tether?sort=semver&label=download&color=D97757)](https://github.com/iwm911/Tether/releases/latest)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Android 8.0+](https://img.shields.io/badge/Android-8.0%2B-3DDC84?logo=android&logoColor=white)](#-get-started)
 
 **[⬇️ Download the APK](https://github.com/iwm911/Tether/releases/latest)** &nbsp;·&nbsp; [🌐 Website](https://iwm911.github.io/Tether/) &nbsp;·&nbsp; [🔒 Privacy](PRIVACY.md)
+
+<br>
+
+<table>
+<tr>
+<td align="center" width="25%"><img src="docs/assets/screens/1-start.png" width="200" alt="New session screen: type what Claude should work on and pick a machine and folder"></td>
+<td align="center" width="25%"><img src="docs/assets/screens/2-watch.png" width="200" alt="A session streaming Claude's reply on the phone"></td>
+<td align="center" width="25%"><img src="docs/assets/screens/3-approve.png" width="200" alt="Claude asks to run a command; Deny and Allow once buttons"></td>
+<td align="center" width="25%"><img src="docs/assets/screens/4-home.png" width="200" alt="Home screen with every session, one waiting for approval with Allow and Deny"></td>
+</tr>
+<tr>
+<td align="center"><b>1. Start</b><br>Type a task, pick a folder</td>
+<td align="center"><b>2. Watch</b><br>Replies stream in live</td>
+<td align="center"><b>3. Approve</b><br>Allow or deny in one tap</td>
+<td align="center"><b>4. Juggle</b><br>All sessions, one screen</td>
+</tr>
+</table>
 
 </div>
 
@@ -25,8 +43,9 @@ You give Claude Code a big task and walk away. Ten minutes later it stops and wa
 
 **Tether sends that question to your phone.** Tap **Allow**, read the diff, or send a new instruction,
 from the couch, the train, or the queue at the coffee shop. The session keeps running on your computer,
-with your files, your tools and your setup. It's the same session `claude agents` shows there: Tether
-is a mobile `claude attach`.
+with your files, your tools and your setup. Tether shows the same sessions `claude agents` lists there,
+and opening one works like `claude attach`. Think of it as `claude agents` for Android. It's a community
+project, not an official Anthropic app.
 
 <table>
 <tr>

@@ -1,6 +1,7 @@
 package app.tether.ui.chat.render
 
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.CallMade
 import androidx.compose.material.icons.automirrored.rounded.NoteAdd
 import androidx.compose.material.icons.rounded.AccountTree
 import androidx.compose.material.icons.rounded.AutoAwesome
@@ -18,8 +19,10 @@ import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.material.icons.rounded.TravelExplore
 import androidx.compose.ui.graphics.vector.ImageVector
+import app.tether.core.SEND_MESSAGE
 import app.tether.core.WORKFLOW_TOOL
 import app.tether.core.WorkflowMeta
+import app.tether.core.peerDisplayName
 import app.tether.ui.components.prettyPath
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -96,6 +99,7 @@ object ToolPresentation {
             "ToolSearch" -> ToolLabel("Load tools", f("query")?.removePrefix("select:") ?: "", Icons.Rounded.Build)
             "Skill" -> ToolLabel("Skill", f("skill") ?: f("command") ?: "", Icons.Rounded.AutoAwesome)
             "SlashCommand" -> ToolLabel("Command", f("command") ?: "", Icons.Rounded.AutoAwesome)
+            SEND_MESSAGE -> ToolLabel("Message", peerDisplayName(f("toName") ?: f("name"), f("to") ?: f("recipient")) ?: "", Icons.AutoMirrored.Rounded.CallMade)
             "AskUserQuestion" -> ToolLabel("Ask", firstQuestion(obj) ?: "", Icons.Rounded.QuestionAnswer)
             WORKFLOW_TOOL -> ToolLabel("Workflow", WorkflowMeta.of(obj).title?.let { clip(it, 80) } ?: "", Icons.Rounded.Hub)
             else -> if (name.startsWith("mcp__")) {
