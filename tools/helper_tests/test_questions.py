@@ -112,5 +112,53 @@ class GotoQuestionTest(unittest.TestCase):
         self.assertEqual(multi, [False, False, False])
 
 
+class ToolInputTest(unittest.TestCase):
+    """The daemon's block drops header and multiSelect (2.1.289): they come from the pending tool_use."""
+    BLOCK = {"questions": [
+        {"question": "Which pets do you like?", "options": [{"label": "Cats", "description": ""}, {"label": "Dogs", "description": ""}]},
+        {"question": "Which color?", "options": [{"label": "Red", "description": ""}, {"label": "Blue", "description": ""}]}]}
+    INPUT = {"questions": [
+        {"question": "Which pets do you like?", "header": "Pets", "multiSelect": True,
+         "options": [{"label": "Cats", "description": ""}, {"label": "Dogs", "description": ""}]},
+        {"question": "Which color?", "header": "Color",
+         "options": [{"label": "Red", "description": ""}, {"label": "Blue", "description": ""}]}]}
+
+    def transcript(self, inp, answered=False):
+        import json
+        path = os.path.join(tempfile.mkdtemp(dir=HOME), "t.jsonl")
+        lines = [{"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "toolu_ASK", "name": "AskUserQuestion", "input": inp}]}}]
+        if answered:
+            lines.append({"type": "user", "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "toolu_ASK", "content": "ok"}]}})
+        with open(path, "w") as f:
+            f.write("".join(json.dumps(l) + "\n" for l in lines))
+        return path
+
+    def test_pending_question_takes_multi_select_and_header_from_the_transcript(self):
+        import json
+        st = {"needs": "answer: Which pets do you like?", "block": self.BLOCK}
+        p = h.question_pending("nosuchagent", st, self.transcript(self.INPUT))
+        inp = json.loads(p["inputJson"])
+        self.assertTrue(inp["multiSelectKnown"])
+        self.assertEqual([(q["header"], q["multiSelect"]) for q in inp["questions"]], [("Pets", True), ("Color", False)])
+        # the request id stays the one the block alone gives, before the transcript has the tool_use
+        self.assertEqual(p["toolUseId"], h.question_pending("nosuchagent", st)["toolUseId"])
+
+    def test_unknown_without_a_matching_pending_tool_use(self):
+        import json
+        st = {"needs": "q", "block": self.BLOCK}
+        other = {"questions": [dict(self.INPUT["questions"][0], question="Something else?")]}
+        for tpath in (None, self.transcript(self.INPUT, answered=True), self.transcript(other)):
+            inp = json.loads(h.question_pending("nosuchagent", st, tpath)["inputJson"])
+            self.assertFalse(inp["multiSelectKnown"])
+
+    def test_ensure_multi_reads_the_transcript_before_the_screen(self):
+        def no_tui():
+            raise AssertionError("pressed keys")
+        qs, multi = h.ensure_multi("nosuchagent", {"needs": "q", "block": self.BLOCK}, no_tui, self.transcript(self.INPUT))
+        self.assertEqual(multi, [True, False])
+
+
 if __name__ == "__main__":
     unittest.main()
