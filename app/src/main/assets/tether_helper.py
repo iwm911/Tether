@@ -26,6 +26,8 @@ Sessions
                                  (ESTALE when the open prompt is not toolUseId's)
     ask <sid>                    stdin {answers: [{choices: [i...], other}]} -> Session
     interrupt <sid>              Esc -> Session
+    btw <sid>                    stdin {question} -> {answer} (Markdown): Claude Code's /btw side question, typed into
+                                 the session's terminal and read back; nothing is added to the conversation
     stop <sid> | rm <sid>        {"ok": true}
     daemon-status                {running, proto, version, auth: ok|needs_login|unknown, pid?, error?, code?}
   Errors carry "code": ENODAEMON EAUTH EPROTO EHELD ENOSESSION EUNTRUSTED ETIMEOUT EDAEMON, ESTALE (the prompt
@@ -1447,6 +1449,7 @@ COMMANDS_TTL = 10 * 60 * 1000
 # from disk the way the CLI finds it: user / project commands and skills, enabled plugins.
 BUILTIN_COMMANDS = (
     ("clear", "Start a new session with empty context; previous session stays on disk", "[name]"),
+    ("btw", "Ask a quick side question without interrupting the main conversation", "<question>"),
     ("compact", "Free up context by summarizing the conversation so far", "<optional custom summarization instructions>"),
     ("context", "Show current context usage", ""),
     ("model", "Set the AI model for Claude Code", "<model>"),
@@ -2954,6 +2957,36 @@ def session_dialog(short, st, reg, screen=None):
     return None
 
 
+def btw_panel_open(short, screen=None):
+    """The /btw panel is up on the live worker's screen (see ask_btw), or the helper's own side question has
+    just closed it: Claude Code's registry keeps saying "dialog open" a moment after the panel went."""
+    lines = screen() if screen else fetch_screen(short)
+    if not lines:
+        return False
+    return btw_panel(lines) is not None or (btw_marked(short) and prompt_box_shown(lines))
+
+
+BTW_MARK_DIR = os.path.join(TETHER_DIR, "btw")
+
+
+def btw_mark(short, seconds):
+    """Notes that a side question holds short's screen for the next seconds (read by other helper processes)."""
+    try:
+        ensure_dir(BTW_MARK_DIR)
+        write_json_atomic(os.path.join(BTW_MARK_DIR, short), {"until": now_ms() + int(seconds * 1000)})
+        for name in os.listdir(BTW_MARK_DIR):  # other sessions' long-expired marks
+            path = os.path.join(BTW_MARK_DIR, name)
+            if os.path.getmtime(path) < time.time() - 86400:
+                os.remove(path)
+    except OSError:
+        pass
+
+
+def btw_marked(short):
+    m = read_json(os.path.join(BTW_MARK_DIR, short)) if short and SHORT_RE.match(short) else None
+    return isinstance(m, dict) and isinstance(m.get("until"), (int, float)) and m["until"] > now_ms()
+
+
 def session_pending(short, st, reg, tpath, cwd, live_short=None, screen=None):
     """What a needs_you session is waiting for: a question, a tool permission, or a dialog (read from the live
     worker live_short's screen)."""
@@ -2999,6 +3032,11 @@ def make_session(slot, facts=None, tfile=None, screen=None):
     state = session_state(held, live, st, rec, term, bg, tail.get("lastEntry"))
     reg = term or bg or {}
     pending = None
+    if state == "needs_you" and live and not term and reg.get("waitingFor") in DIALOG_WAITING and \
+            btw_panel_open(rec["short"], screen):
+        # The /btw side-question panel (the phone's own, or one opened in a terminal) registers as "dialog open"
+        # while Claude idles: nothing waits for an answer.
+        state = "idle"
     if state == "needs_you":
         pending = session_pending(short, st, reg, path, cwd_hint(info, st, rec, reg, path),
                                   rec["short"] if live and not term else None, screen)
@@ -4335,17 +4373,19 @@ def press_keys(short, chunks, gap=0.15):
 class DaemonTui(object):
     """The session's screen over the daemon's attach, driven step by step and read back (pump/send/mark/text/close)."""
 
-    def __init__(self, short, cols=KEY_COLS, rows=KEY_ROWS):
+    def __init__(self, short, cols=KEY_COLS, rows=KEY_ROWS, ready=None):
+        """ready(tui): the screen is up (default: a ❯ was drawn)."""
         self.buf = bytearray()
         self.screen, self.screen_fed = Screen(rows, cols), 0
         self.screen_dec = codecs.getincrementaldecoder("utf-8")("replace")
         self.att = DaemonAttach(short, cols=cols, rows=rows)
-        if not self.pump(10.0, until=u"❯".encode("utf-8")):
+        if not self.pump(10.0, until=ready or u"❯".encode("utf-8")):
             self.close()
             raise HelperError("Couldn't open the session's terminal.")
         self.pump(1.0)
 
     def pump(self, seconds, until=None):
+        """Reads for up to seconds; until: bytes to wait for, or a callable on this tui."""
         end = time.time() + seconds
         while time.time() < end:
             d = self.att.read(0.05)
@@ -4353,7 +4393,7 @@ class DaemonTui(object):
                 return False
             if d:
                 self.buf.extend(d)
-                if until is not None and until in self.buf:
+                if until is not None and (until(self) if callable(until) else until in self.buf):
                     return True
         return until is None
 
@@ -4370,11 +4410,15 @@ class DaemonTui(object):
         t = ANSI_RE.sub("", bytes(self.buf[since:]).decode("utf-8", "replace"))
         return re.sub(r"\s+", "", t)
 
-    def screen_text(self):
-        """The screen as it stands now (replayed from all output so far), whitespace removed like text()."""
+    def lines(self):
+        """The screen as it stands now (replayed from all output so far), as rendered lines."""
         self.screen.feed(self.screen_dec.decode(bytes(self.buf[self.screen_fed:])))
         self.screen_fed = len(self.buf)
-        return re.sub(r"\s+", "", "\n".join(self.screen.lines()))
+        return self.screen.lines()
+
+    def screen_text(self):
+        """The screen as it stands now, whitespace removed like text()."""
+        return re.sub(r"\s+", "", "\n".join(self.lines()))
 
     def close(self):
         self.att.close()
@@ -4901,6 +4945,180 @@ def cmd_key(opts, arg):
     emit({"ok": True})
 
 
+# ── /btw: a side question, asked the way a terminal asks it ──
+# Claude Code (2.1.289) answers `/btw <question>` in a panel over the prompt box, from the session's context, with
+# no tools and nothing added to the transcript. The panel only opens while a terminal is attached: a /btw sent
+# with nobody watching is answered into the worker's memory and shown on the next attach (and while that panel is
+# open, messages sent to the session wait in its queue). So the helper attaches like `claude attach`, types the
+# question, waits for the answer, takes it in Markdown with the panel's "c to copy" (an OSC 52 clipboard write to
+# the attached terminal) and closes the panel with Esc. The panel:
+#
+#   ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+#       (+1 earlier /btw)
+#       /btw an earlier question
+#       /btw the question
+#         ✶ Answering…                        <- then the answer, indented
+#       ⇧←/→ to browse · c to copy · f to fork · x to clear history · Esc to close
+#
+# (With one question in its history the hint reads "↑/↓ to scroll · c to copy · f to fork · Esc to close".)
+
+BTW_HINT_RE = re.compile(u"\\bEsc to close\\b")
+BTW_RULE_CHARS = frozenset(u"▔ ")
+BTW_ANSWERING_RE = re.compile(u"^\\S\\s+Answering…?$")
+BTW_OPEN_SECONDS = 15
+BTW_ANSWER_SECONDS = 180
+OSC52_RE = re.compile(b"\x1b\\]52;[a-z0-9]*;([A-Za-z0-9+/=]*)(?:\x07|\x1b\\\\)")
+
+
+def btw_panel(lines):
+    """The /btw panel at the bottom of a rendered screen, or None when it isn't open:
+    {question, state: answering|answered|failed, text} for its newest question (text = the answer or error as
+    drawn, soft wraps joined)."""
+    rows = [l.rstrip() for l in lines or []]
+    while rows and not rows[-1].strip():
+        rows.pop()
+    hint = next((i for i in range(len(rows) - 1, max(-1, len(rows) - 4), -1) if BTW_HINT_RE.search(rows[i])), None)
+    if hint is None:
+        return None
+    top = next((i for i in range(hint - 1, -1, -1)
+                if len(rows[i].strip()) > 20 and set(rows[i].strip()) <= BTW_RULE_CHARS), None)
+    if top is None:
+        return None
+    body = rows[top + 1:hint]
+    qi = next((i for i in range(len(body) - 1, -1, -1) if body[i].lstrip().startswith("/btw")), None)
+    if qi is None:
+        return None
+    question = body[qi].strip()[4:].strip()
+    rest = [l for l in body[qi + 1:]]
+    width = len(rows[top])
+    indent = min([len(l) - len(l.lstrip()) for l in rest if l.strip()] or [0])
+    out, prev = [], ""
+    for raw in rest:
+        text = raw[indent:].rstrip() if raw.strip() else ""
+        if out and text and out[-1] and soft_wrapped(prev, text, width - indent):
+            out[-1] = out[-1] + " " + text.strip()
+        elif text or (out and out[-1]):
+            out.append(text)
+        prev = raw
+    text = "\n".join(out).strip("\n")
+    hint_text = rows[hint]
+    if "c to copy" in hint_text or "Copied to clipboard" in hint_text:
+        state = "answered"
+    elif not text or BTW_ANSWERING_RE.match(text.strip()):
+        state = "answering"
+    else:
+        state = "failed"
+    return {"question": question, "state": state, "text": text}
+
+
+def btw_same_question(drawn, asked):
+    """The panel's (possibly cut, "…"-ended) question line is the one asked."""
+    d = " ".join(drawn.split()).rstrip(u"…").rstrip()
+    return bool(d) and " ".join(asked.split()).startswith(d)
+
+
+def prompt_box_text(lines):
+    """The text typed in the prompt box ("❯ <text>"), or None when the prompt box isn't on screen."""
+    rows = [l.rstrip() for l in lines or []]
+    for i in range(len(rows) - 1, -1, -1):
+        if prompt_box_at(rows, i):
+            return rows[i].lstrip()[1:].strip()
+    return None
+
+
+def osc52_text(data):
+    """The text of the last OSC 52 clipboard write in raw terminal output, or None."""
+    import base64
+    found = None
+    for m in OSC52_RE.finditer(bytes(data)):
+        found = m
+    if not found:
+        return None
+    try:
+        return base64.b64decode(found.group(1)).decode("utf-8", "replace")
+    except (ValueError, TypeError):
+        return None
+
+
+def close_btw_panel(tui):
+    """Esc, only while the panel is up (Esc at the prompt would interrupt Claude)."""
+    for _ in range(2):
+        if btw_panel(tui.lines()) is None:
+            return True
+        tui.send(KEY_BYTES["esc"], 1.0)
+    return btw_panel(tui.lines()) is None
+
+
+def ask_btw(short, question):
+    """Types `/btw <question>` into the live session's terminal and returns Claude's answer (Markdown)."""
+    btw_mark(short, BTW_OPEN_SECONDS + BTW_ANSWER_SECONDS + 30)
+    # Attaching shows a side question answered while nobody watched (its panel, no prompt box): put it away first.
+    try:
+        tui = DaemonTui(short, ready=lambda t: u"❯".encode("utf-8") in t.buf or "Esctoclose" in t.text())
+    except BaseException:
+        btw_mark(short, 0)
+        raise
+    try:
+        if not close_btw_panel(tui):
+            raise HelperError("Couldn't close the side-question panel in this session.")
+        typed = prompt_box_text(tui.lines())
+        if typed is None:
+            raise coded_error("Claude Code is waiting on a prompt in this session. Answer it first.", "EINVAL")
+        if typed:
+            raise coded_error("This session's prompt has unsent text in it. Send or clear it first.", "EINVAL")
+        # A worker that was just woken draws its prompt box before it takes keys: type again until the text shows.
+        typed_in = lambda t: (prompt_box_text(t.lines()) or "").startswith("/btw")  # noqa: E731
+        for _ in range(4):
+            tui.send(("/btw " + question).encode("utf-8"), 0.2)
+            if typed_in(tui) or tui.pump(2.5, until=typed_in):
+                break
+            left = prompt_box_text(tui.lines())
+            if left:
+                tui.send(KEY_BYTES["backspace"] * (len(left) + 8), 0.3)  # don't leave half a question behind
+                raise HelperError("Couldn't type the side question into the session.")
+        else:
+            raise HelperError("Couldn't type the side question into the session.")
+        tui.send(KEY_BYTES["enter"], 0.3)
+        panel = None
+        opened = time.time() + BTW_OPEN_SECONDS
+        deadline = time.time() + BTW_ANSWER_SECONDS
+        while True:
+            p = btw_panel(tui.lines())
+            if p and btw_same_question(p["question"], question):
+                panel = p
+                if p["state"] != "answering":
+                    break
+            if time.time() > (deadline if panel else opened):
+                if panel:
+                    raise coded_error("Claude took too long to answer.", "ETIMEOUT")
+                raise HelperError("Claude Code didn't open a side question (/btw needs Claude Code 2.1.289 or newer).")
+            tui.pump(0.3)
+        if panel["state"] == "failed":
+            raise HelperError(panel["text"] or "Claude couldn't answer.")
+        m = tui.mark()
+        tui.send(b"c", 0.2)
+        tui.pump(1.5, until=b"\x07")
+        answer = osc52_text(tui.buf[m:])
+        return answer if answer and answer.strip() else panel["text"]
+    finally:
+        try:
+            close_btw_panel(tui)
+        finally:
+            tui.close()
+            btw_mark(short, 4)
+
+
+def cmd_btw(opts, arg):
+    req = read_request()
+    question = " ".join(req.get("question").split()) if isinstance(req.get("question"), str) else ""
+    if not question:
+        raise coded_error("Ask something after /btw.", "EINVAL")
+    ref = SessionRef(arg)
+    require_not_held(ref)
+    short = ref.short if ref.live() else wake(opts, ref)[0]
+    emit({"answer": ask_btw(short, question)})
+
+
 def cmd_answer(opts, arg):
     req = read_request()
     decision = req.get("decision")
@@ -5205,6 +5423,8 @@ def main(argv):
         cmd_send_v2(opts, need())
     elif cmd == "key":
         cmd_key(opts, need())
+    elif cmd == "btw":
+        cmd_btw(opts, need())
     elif cmd == "answer":
         cmd_answer(opts, need())
     elif cmd == "ask":

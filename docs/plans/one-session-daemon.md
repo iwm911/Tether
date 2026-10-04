@@ -107,6 +107,7 @@ screen is not the one the app answered). Errors may also carry `daemonCode`.
 | `answer <sid>` | `{decision:"allow|allow_always|deny", message?, toolUseId?}` — `ESTALE` if the open prompt isn't `toolUseId`; `allow_always` picks the matching "Yes, …" row from the screen | Session |
 | `ask <sid>` | `{answers:[{choices:[i…],other:str|null}]}` (current format) | Session |
 | `interrupt <sid>` | — | Session (Esc) |
+| `btw <sid>` | `{question}` | `{"answer":"…"}` (Markdown). Claude Code's `/btw`, typed the way a terminal types it: the panel opens only while a terminal is attached, so the helper attaches, puts away a panel left from an unwatched `/btw`, types `/btw <question>` (again if a just-woken worker dropped it), waits ≤3 min for the answer, takes it with the panel's "c to copy" (OSC 52) and closes the panel with Esc. Nothing is added to the transcript. A retired session is woken first; `EINVAL` while a prompt/dialog is open or the prompt box holds text. The open panel registers as "dialog open": `sessions`/`watch` report the session idle, not needs_you |
 | `stop <sid>` / `rm <sid>` | — | `{"ok":true}` (`rm` = kill evict + delete job dir) |
 
 **Follow events** (one JSON object per line, field `e`):

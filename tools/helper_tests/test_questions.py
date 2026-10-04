@@ -81,6 +81,7 @@ class DiffTui(object):
         return len(self.buf)
 
     text = h.DaemonTui.text
+    lines = h.DaemonTui.lines
     screen_text = h.DaemonTui.screen_text
 
     def close(self):
