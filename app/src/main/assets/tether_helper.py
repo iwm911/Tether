@@ -1047,6 +1047,21 @@ def setting_arg(v, pattern, what):
 
 def pending_tool_use(tpath, cwd):
     """The newest tool_use in the transcript that has no tool_result yet (what a prompt is about)."""
+    b = pending_tool_block(tpath)
+    if b is None:
+        return None
+    inp = b.get("input") if isinstance(b.get("input"), dict) else {}
+    name = b.get("name") or "Tool"
+    return {
+        "toolUseId": b["id"],
+        "toolName": name,
+        "summary": permission_summary(name, inp, cwd),
+        "inputJson": json.dumps(inp, ensure_ascii=False)[:20000],
+    }
+
+
+def pending_tool_block(tpath):
+    """The newest tool_use block in the transcript that has no tool_result yet, or None."""
     data = read_tail(tpath, 512 * 1024)
     uses = {}
     order = []
@@ -1069,15 +1084,7 @@ def pending_tool_use(tpath, cwd):
                 done.add(b["tool_use_id"])
     for tid in reversed(order):
         if tid not in done:
-            b = uses[tid]
-            inp = b.get("input") if isinstance(b.get("input"), dict) else {}
-            name = b.get("name") or "Tool"
-            return {
-                "toolUseId": tid,
-                "toolName": name,
-                "summary": permission_summary(name, inp, cwd),
-                "inputJson": json.dumps(inp, ensure_ascii=False)[:20000],
-            }
+            return uses[tid]
     return None
 
 
@@ -1105,6 +1112,22 @@ def question_block(st):
     return [q for q in qs if isinstance(q, dict) and q.get("question")]
 
 
+def with_tool_input(qs, tpath):
+    """qs with each question's header and multiSelect. The daemon's block keeps only the question and its options
+    (2.1.289), so they are read from the pending AskUserQuestion tool_use in the transcript when it asks the same
+    questions. A question whose input leaves multiSelect out is single-choice (the tool's default)."""
+    if not qs or not tpath or all(isinstance(q.get("multiSelect"), bool) for q in qs):
+        return qs
+    b = pending_tool_block(tpath)
+    inp = b.get("input") if b and b.get("name") == "AskUserQuestion" and isinstance(b.get("input"), dict) else {}
+    full = [q for q in (inp.get("questions") or []) if isinstance(q, dict)]
+    if [q.get("question") for q in full] != [q.get("question") for q in qs]:
+        return qs
+    return [dict(q, header=q.get("header") or f.get("header") or "",
+                 multiSelect=q["multiSelect"] if isinstance(q.get("multiSelect"), bool) else f.get("multiSelect") is True)
+            for q, f in zip(qs, full)]
+
+
 def question_key(st, qs):
     raw = json.dumps([st.get("needs"), qs], sort_keys=True, ensure_ascii=False)
     import hashlib
@@ -1120,7 +1143,7 @@ def cached_multi(agent_id, key):
     return c.get("multi") if c.get("key") == key and isinstance(c.get("multi"), list) else None
 
 
-def question_pending(agent_id, st):
+def question_pending(agent_id, st, tpath=None):
     qs = question_block(st)
     if not qs:
         c = read_json(qcache_path(agent_id), {}) or {}
@@ -1128,7 +1151,8 @@ def question_pending(agent_id, st):
             qs = c["questions"]
     if not qs:
         return None
-    key = question_key(st, qs)
+    key = question_key(st, qs)  # of the block as the daemon wrote it: the same before and after the transcript lands
+    qs = with_tool_input(qs, tpath)
     multi = cached_multi(agent_id, key)
     questions = []
     for i, q in enumerate(qs):
@@ -1397,7 +1421,7 @@ def goto_question(tui, qs, target, seen=None):
     return tui.qcur == target
 
 
-def ensure_multi(agent_id, st, tui_factory):
+def ensure_multi(agent_id, st, tui_factory, tpath=None):
     qs = question_block(st)
     if not qs:
         c = read_json(qcache_path(agent_id), {}) or {}
@@ -1414,6 +1438,7 @@ def ensure_multi(agent_id, st, tui_factory):
             pass
         return qs, [bool(q.get("multiSelect")) for q in qs]
     key = question_key(st, qs)
+    qs = with_tool_input(qs, tpath)
     if all(isinstance(q.get("multiSelect"), bool) for q in qs):
         return qs, [bool(q["multiSelect"]) for q in qs]
     multi = cached_multi(agent_id, key)
@@ -2991,7 +3016,7 @@ def session_pending(short, st, reg, tpath, cwd, live_short=None, screen=None):
     """What a needs_you session is waiting for: a question, a tool permission, or a dialog (read from the live
     worker live_short's screen)."""
     wf = (reg or {}).get("waitingFor")
-    q = question_pending(short, st) if short else None
+    q = question_pending(short, st, tpath) if short else None
     if q:
         return dict(q, kind="question")
     if wf in (None, "permission prompt") and tpath:
@@ -5260,7 +5285,7 @@ def cmd_ask(opts, arg):
     short = ref.short
     st = job_state(short)
     factory = lambda: DaemonTui(short)  # noqa: E731
-    qs, multi = ensure_multi(short, st, factory)
+    qs, multi = ensure_multi(short, st, factory, ref.tpath)
     if not qs:
         raise HelperError("The pending prompt isn't a question.")
     questions = [dict(q, multiSelect=bool(multi[i]) if multi and i < len(multi) else bool(q.get("multiSelect")))
