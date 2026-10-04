@@ -11,3 +11,8 @@ render() { # name width height
 }
 render hero 1440 960
 render how-it-works 1200 300
+# The link-preview card is served by the site, so it renders at 1x straight into site/.
+"$CHROME" --headless=new --no-sandbox --disable-gpu --hide-scrollbars --force-device-scale-factor=1 \
+  --allow-file-access-from-files --window-size=1280,640 --virtual-time-budget=3000 \
+  --screenshot="$PWD/site/social.png" "file://$PWD/docs/assets/social.html" 2>/dev/null
+echo "site/social.png"

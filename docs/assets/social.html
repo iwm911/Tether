@@ -1,0 +1,41 @@
+<!doctype html>
+<!-- Link-preview card (Open Graph / GitHub social preview). Rendered by tools/render_mockups.sh → social.png -->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  @font-face { font-family: "Inter"; src: url("../../site/fonts/inter_regular.ttf"); font-weight: 400; }
+  @font-face { font-family: "Inter"; src: url("../../site/fonts/inter_medium.ttf"); font-weight: 500; }
+  @font-face { font-family: "Source Serif"; src: url("../../site/fonts/source_serif_regular.ttf"); font-weight: 400; }
+  @font-face { font-family: "Source Serif"; src: url("../../site/fonts/source_serif_semibold.ttf"); font-weight: 600; }
+  @font-face { font-family: "JetBrains Mono"; src: url("../../site/fonts/jetbrains_mono_regular.ttf"); font-weight: 400; }
+  html, body { margin: 0; width: 1280px; height: 640px; overflow: hidden; background: #262624; }
+  .card { position: relative; width: 1280px; height: 640px; display: flex; align-items: center; }
+  .text { padding: 0 0 0 76px; width: 600px; color: #FAF9F5; }
+  .brand { display: flex; align-items: center; gap: 14px; font: 500 30px/1 "Inter", sans-serif; margin-bottom: 44px; }
+  .brand img { width: 44px; height: 44px; }
+  h1 { font: 400 60px/1.08 "Source Serif", serif; letter-spacing: -.02em; margin: 0 0 28px; }
+  h1 code { font: 400 .8em/1 "JetBrains Mono", monospace; letter-spacing: -.04em; }
+  p { font: 400 24px/1.45 "Inter", sans-serif; color: #C2C0B6; margin: 0 0 36px; }
+  .fine { font: 500 19px/1 "Inter", sans-serif; color: #D97757; letter-spacing: .01em; }
+  .phones { position: absolute; right: 56px; top: 64px; height: 512px; width: 470px; }
+  .phones img { position: absolute; height: 512px; border-radius: 26px; box-shadow: 0 24px 60px -18px rgba(0,0,0,.6); }
+  .phones .back { left: 0; top: 0; transform: rotate(-4deg); opacity: .92; }
+  .phones .front { right: 0; top: 0; transform: rotate(3deg); }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="text">
+    <div class="brand"><img src="../../site/mark.svg" alt="">Tether</div>
+    <h1><code>claude agents</code>,<br>on your Android phone.</h1>
+    <p>Start, steer and approve Claude Code agents<br>on your own machines, over SSH.</p>
+    <div class="fine">Open source · No account · Unofficial</div>
+  </div>
+  <div class="phones">
+    <img class="back" src="screens/1-start.png" alt="">
+    <img class="front" src="screens/4-home.png" alt="">
+  </div>
+</div>
+</body>
+</html>

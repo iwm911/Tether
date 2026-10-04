@@ -135,8 +135,8 @@ over SSH.
 ## 🚀 Get started
 
 **You need:** an Android phone (8.0+), and a Mac or Linux computer you can SSH into with
-[Claude Code](https://code.claude.com/docs/en/quickstart) 2.1.286 or later and `python3` installed. Tailscale or
-WireGuard works well for reaching it from outside your home network.
+[Claude Code](https://code.claude.com/docs/en/quickstart) 2.1.286 or later and `python3` installed. To reach it from outside your home network,
+[set up Tailscale in five minutes](docs/tailscale.md) (WireGuard works too).
 
 1. **Install.** Download the APK from [Releases](https://github.com/iwm911/Tether/releases/latest)
    and open it. Allow "Install unknown apps" when asked.
