@@ -6,6 +6,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -31,10 +32,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.tether.BuildConfig
 import app.tether.LocalAppContainer
 import app.tether.update.UpdateState
 import app.tether.ui.components.ClaudeSpinner
@@ -42,6 +45,9 @@ import app.tether.ui.components.PrimaryButton
 import app.tether.ui.theme.Space
 import app.tether.ui.theme.TetherTheme
 import java.util.Locale
+
+/** Project website (GitHub Pages of the repo the updater follows): download page and what's new. */
+val WebsiteUrl = BuildConfig.UPDATE_REPO.split('/').let { (owner, repo) -> "https://$owner.github.io/$repo/" }
 
 private fun mb(bytes: Long) = String.format(Locale.US, "%.1f MB", bytes / 1_048_576.0)
 
@@ -133,6 +139,13 @@ fun UpdateSettingsRow(currentVersion: String) {
                     UpdateState.Idle -> "Version $currentVersion · updates from GitHub Releases"
                 }
                 Text(status, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                val uri = LocalUriHandler.current
+                Text(
+                    WebsiteUrl.removePrefix("https://").removeSuffix("/") + " ↗",
+                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
+                    color = TetherTheme.colors.clay,
+                    modifier = Modifier.padding(top = 2.dp).clip(RoundedCornerShape(4.dp)).clickable { uri.openUri(WebsiteUrl) },
+                )
             }
             when (state) {
                 is UpdateState.Checking -> ClaudeSpinner(fontSize = 15f)
