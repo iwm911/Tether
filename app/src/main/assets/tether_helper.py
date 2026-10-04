@@ -2759,6 +2759,7 @@ DIALOG_RULE_CHARS = frozenset(u"─━▔▁═ ")
 DIALOG_INNER_RULE_CHARS = frozenset(u"╌┄┈╍┅┉ ")
 DIALOG_OPT_NUM_RE = re.compile(u"^\\s*(❯\\s*)?(\\d)\\.\\s+(\\S.*?)\\s*$")
 DIALOG_OPT_BOX_RE = re.compile(u"^\\s*(❯\\s*)?\\[([^\\]]?)\\]\\s+(\\S.*?)\\s*$")
+DIALOG_CURSOR_RE = re.compile(u"^(\\s*)(❯\\s+)\\S")
 DIALOG_HINT_RE = re.compile(u"(?:^|·)\\s*(?:Enter|Esc|Space|Tab|Shift\\+Tab|↑/↓|↑↓|←/→|Ctrl\\+\\w)\\s+to\\s+\\w")
 DIALOG_CHECKED = u"✔✓√xX■◼●"
 DIALOG_KEYS_LIST = ["up", "down", "enter", "esc"]
@@ -2812,6 +2813,29 @@ def dialog_kind(title, body):
     return "other"
 
 
+def cursor_list(block):
+    """Rows of an unnumbered select (the held peer message: "❯ Deny — drop it…" / "  Deliver this message to
+    Claude", no key hint): the ❯ row and the rows next to it whose text starts in the same column, up to a blank
+    row or a different indent (the todo list drawn under the dialog). Two rows at least, else []."""
+    for c, l in enumerate(block):
+        m = DIALOG_CURSOR_RE.match(l)
+        if not m:
+            continue
+        col = len(m.group(1)) + len(m.group(2))
+
+        def row(i):
+            t = block[i]
+            return (i != c and len(t) > col and not t[:col].strip() and t[col] not in u" ⎿"
+                    and not DIALOG_CURSOR_RE.match(t))  # ⎿: a tool result under an echoed "❯ prompt", not an option
+        lo, hi = c, c
+        while lo > 0 and row(lo - 1):
+            lo -= 1
+        while hi + 1 < len(block) and row(hi + 1):
+            hi += 1
+        return list(range(lo, hi + 1)) if hi > lo else []
+    return []
+
+
 def cut_dialog(lines):
     """{kind:"dialog", dialog, title, body, options, keys} for the dialog drawn at the bottom of a rendered
     screen (it replaces the prompt box: a rule, a title, text, a numbered list or a checklist, a key hint), or
@@ -2827,8 +2851,11 @@ def cut_dialog(lines):
         block = lines[r + 1:]
         opts = [i for i, l in enumerate(block) if DIALOG_OPT_NUM_RE.match(l) or DIALOG_OPT_BOX_RE.match(l)]
         hints = [i for i, l in enumerate(block) if DIALOG_HINT_RE.search(l)]
-        if not opts and not hints:
+        plain = [] if opts or hints else cursor_list(block)
+        if not opts and not hints and not plain:
             continue
+        if plain:
+            opts = plain
         width = len(lines[r])
         texts = [i for i, l in enumerate(block) if l.strip()]
         ti = texts[0] if texts and texts[0] not in opts and texts[0] not in hints else None
@@ -2848,6 +2875,9 @@ def cut_dialog(lines):
         body = "\n".join(out).strip("\n")
         options, checklist = [], False
         for i in opts:
+            if plain:
+                options.append({"label": block[i].strip().lstrip(u"❯").strip()})
+                continue
             m = DIALOG_OPT_NUM_RE.match(block[i])
             if m:
                 options.append({"label": m.group(3), "key": m.group(2)})
@@ -2855,7 +2885,9 @@ def cut_dialog(lines):
             m = DIALOG_OPT_BOX_RE.match(block[i])
             checklist = True
             options.append({"label": m.group(3), "checked": bool(m.group(2)) and m.group(2) in DIALOG_CHECKED})
-        keys = DIALOG_KEYS_CHECKLIST if checklist or not options else DIALOG_KEYS_LIST
+        if plain and not block[plain[0]].lstrip().startswith(u"❯"):
+            options = []  # the cursor moved off the first row: the phone's ↓×i Enter would pick the wrong one
+        keys = DIALOG_KEYS_CHECKLIST if checklist or not (options or plain) else DIALOG_KEYS_LIST
         return {"kind": "dialog", "dialog": dialog_kind(title, body), "title": title, "body": body,
                 "options": options, "keys": list(keys)}
     return None

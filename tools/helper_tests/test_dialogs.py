@@ -97,6 +97,40 @@ class CutDialogTest(unittest.TestCase):
         self.assertEqual([o["key"] for o in d["options"]], ["1", "2"])
         self.assertNotIn("Enter to confirm", d["body"])
 
+    HELD = [u"● Held peer message — from uds:/run/user/1000/cc-socks/699377.sock (peer claims name: 3550 hold",
+            u"  lifecycle)", u"", u"─" * 80, u" Held message from another session", u"",
+            u" Another Claude session sent a message: from uds:/run/user/1000/cc-socks/699377.sock (peer claims",
+            u" name: 3550 hold lifecycle)", u" The sending session's permission mode class doesn't match this",
+            u" session's, so it wasn't delivered automatically.", u" Message body (this is what will be delivered):",
+            u"  │ #3550 bundle hold lifecycle is taking the shared stack", u"",
+            u" ❯ Deny — drop it and tell the sender it was declined", u"   Deliver this message to Claude", u"",
+            u"  1 tasks (0 done, 1 open)", u"  ◻ Track epic #3495 to completion"]
+
+    def test_held_peer_message_reads_its_unnumbered_options(self):
+        # Seen live (2.1.288): the held-message select has no numbers and no "Enter to …" hint, so the phone fell
+        # back to the raw screen under "Claude Code is asking something".
+        d = h.cut_dialog(self.HELD)
+        self.assertEqual((d["dialog"], d["title"]), ("other", "Held message from another session"))
+        self.assertIn("so it wasn't delivered automatically.", d["body"])
+        self.assertIn(u"│ #3550 bundle hold lifecycle", d["body"])
+        self.assertNotIn("Deny", d["body"])
+        self.assertNotIn("tasks", d["body"])
+        self.assertEqual(d["options"], [{"label": u"Deny — drop it and tell the sender it was declined"},
+                                        {"label": "Deliver this message to Claude"}])
+        self.assertEqual(d["keys"], ["up", "down", "enter", "esc"])
+
+    def test_held_peer_message_with_the_cursor_moved_gives_only_the_key_pad(self):
+        lines = list(self.HELD)
+        i = lines.index(u" ❯ Deny — drop it and tell the sender it was declined")
+        lines[i], lines[i + 1] = u"   Deny — drop it and tell the sender it was declined", u" ❯ Deliver this message to Claude"
+        d = h.cut_dialog(lines)
+        self.assertEqual((d["title"], d["options"]), ("Held message from another session", []))
+        self.assertEqual(d["keys"], ["up", "down", "enter", "esc"])
+
+    def test_echoed_prompt_and_its_result_are_not_a_list(self):
+        lines = [u"─" * 80, u"❯ /model sonnet", u"  ⎿  Kept model", u"  ⎿  Something else"]
+        self.assertIsNone(h.cut_dialog(lines))
+
     def test_prompt_box_hides_older_dialogs_above(self):
         lines = [u"─" * 80, u" Switch model?", u" ❯ 1. Yes", u"   2. No", u"", u"❯ /model sonnet", u"  ⎿  Kept model",
                  u"─" * 60 + u" name ─", u"❯ ", u"─" * 80, u"  ⏸ manual mode on"]
