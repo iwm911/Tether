@@ -1046,6 +1046,24 @@ class WritesTest(unittest.TestCase):
         rc, out, err = self.hm.run("send", SID_A, stdin=json.dumps({"text": "x", "images": ["/no/such.png"]}))
         self.assertEqual(rc, 1)
 
+    def test_rm_deletes_the_images_the_session_was_sent(self):
+        up = self.hm.path(".tether", "uploads")
+        os.makedirs(up)
+        mine, queued, other = ("%s-1111-4111-8111-111111111111.%s" % (p, e) for p, e in
+                               (("11111111", "jpg"), ("22222222", "png"), ("33333333", "jpg")))
+        for n in (mine, queued, other):
+            open(os.path.join(up, n), "wb").close()
+        self.hm.transcript(self.w.other, SID_D, [
+            user_line("look " + os.path.join(up, mine), cwd=self.w.other),
+            {"type": "attachment", "isSidechain": False, "attachment": {
+                "type": "queued_command", "commandMode": "prompt", "prompt": "and " + os.path.join(up, queued)}},
+            assistant_line([{"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": "ls " + up}}]),
+            user_line([{"type": "tool_result", "tool_use_id": "toolu_1", "content": os.path.join(up, other)}],
+                      cwd=self.w.other)])
+        rc, out, err = self.hm.run("rm", SID_D)
+        self.assertEqual((rc, out), (0, {"ok": True}), err)
+        self.assertEqual(os.listdir(up), [other])
+
     def test_terminal_held_session_is_eheld(self):
         self.w.terminal()
         for cmd, body in (("send", {"text": "x"}), ("key", {"keys": ["esc"]}), ("stop", None), ("rm", None),
