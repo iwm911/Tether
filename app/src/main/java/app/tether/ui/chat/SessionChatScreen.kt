@@ -61,6 +61,7 @@ import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.tether.LocalAppContainer
@@ -71,6 +72,7 @@ import app.tether.core.RunStatus
 import app.tether.core.SessionRef
 import app.tether.core.SessionState
 import app.tether.core.SubagentStatus
+import app.tether.service.Notifications
 import app.tether.ui.chat.render.LocalChatCwd
 import app.tether.ui.chat.render.LocalSubagentLinks
 import app.tether.ui.chat.render.LocalWorkflowAgents
@@ -153,6 +155,11 @@ fun SessionChatScreen(
     val plan = conv.planName ?: machines.firstOrNull { it.id == ref.connectionId }?.lastPlan
 
     KeepScreenOnIfEnabled()
+    // Looking at the session is acting on its notification: whatever it said is on screen now.
+    LifecycleResumeEffect(ref) {
+        Notifications.clearSession(container.app, ref)
+        onPauseOrDispose {}
+    }
 
     val snackbar = remember { SnackbarHostState() }
     LaunchedEffect(vm) { vm.messages.collect { snackbar.showSnackbar(it) } }

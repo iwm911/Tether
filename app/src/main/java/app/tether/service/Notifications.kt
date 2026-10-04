@@ -10,6 +10,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Bundle
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -198,6 +199,38 @@ object Notifications {
     /** A SendMessage prompt's tool input, so a re-posted notification still shows the message. */
     const val EXTRA_INPUT = "toolInput"
 
+    // What a session notification is about, kept on the notification itself so it can be dismissed
+    // once it no longer needs the user, even after the process was restarted.
+    private const val EXTRA_SHOWN_CONNECTION = "app.tether.shown.connectionId"
+    private const val EXTRA_SHOWN_SESSION = "app.tether.shown.sessionId"
+    private const val EXTRA_SHOWN_KIND = "app.tether.shown.kind"
+    private const val EXTRA_SHOWN_IDENTITY = "app.tether.shown.identity"
+
+    private fun NotificationCompat.Builder.shown(shown: SessionAlerts.Shown): NotificationCompat.Builder = addExtras(
+        Bundle().apply {
+            putString(EXTRA_SHOWN_CONNECTION, shown.ref.connectionId)
+            putString(EXTRA_SHOWN_SESSION, shown.ref.sessionId)
+            putString(EXTRA_SHOWN_KIND, shown.kind.name)
+            putString(EXTRA_SHOWN_IDENTITY, shown.identity)
+        },
+    )
+
+    /** The session notifications Tether has on screen right now. */
+    fun shownSessions(context: Context): List<SessionAlerts.Shown> {
+        val nm = context.getSystemService(NotificationManager::class.java) ?: return emptyList()
+        val active = try { nm.activeNotifications } catch (e: Exception) { return emptyList() }
+        return active.mapNotNull { sbn ->
+            val x = sbn.notification.extras ?: return@mapNotNull null
+            val connectionId = x.getString(EXTRA_SHOWN_CONNECTION) ?: return@mapNotNull null
+            val sessionId = x.getString(EXTRA_SHOWN_SESSION) ?: return@mapNotNull null
+            val kind = x.getString(EXTRA_SHOWN_KIND)?.let { k -> SessionAlerts.Kind.entries.firstOrNull { it.name == k } } ?: return@mapNotNull null
+            SessionAlerts.Shown(SessionRef(connectionId, sessionId), kind, x.getString(EXTRA_SHOWN_IDENTITY).orEmpty())
+        }
+    }
+
+    /** Dismisses whatever is shown for session [ref]. */
+    fun clearSession(context: Context, ref: SessionRef) = cancel(context, SessionAlerts.notificationId(ref))
+
     /**
      * A session started waiting for the user: a tool permission (Allow / Deny / Tell Claude inline),
      * a question or a dialog (both open the session, where the picker / dialog panel answers it).
@@ -206,7 +239,8 @@ object Notifications {
     fun showSessionNeedsYou(context: Context, event: SessionEvent.NeedsYou, machineName: String?, reason: String? = null) {
         if (!canPost(context)) return
         val identity = SessionAlerts.identityOf(event.pending, event.waitingFor)
-        val id = SessionAlerts.needsYouId(event.ref, identity)
+        val id = SessionAlerts.notificationId(event.ref)
+        val shown = SessionAlerts.Shown(event.ref, SessionAlerts.Kind.NEEDS_YOU, identity)
         val text = SessionAlerts.needsYouText(event.pending, event.waitingFor)
         val permission = event.pending as? SessionPending.Permission
         fun action(action: String, code: Int): PendingIntent {
@@ -240,7 +274,10 @@ object Notifications {
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_REMINDER)
             .setAutoCancel(true)
+            // The same prompt again (re-posted with a reason, or announced again after a blip) doesn't buzz twice.
+            .setOnlyAlertOnce(shown in shownSessions(context))
             .setGroup(GROUP_APPROVALS)
+            .shown(shown)
             .setContentIntent(open)
             .guard(context, CHANNEL_APPROVALS, "A session needs you", always = true)
         // An answer can make Claude run commands on the user's machine, so it always needs the phone
@@ -266,7 +303,7 @@ object Notifications {
     @SuppressLint("MissingPermission")
     fun showSessionTurnDone(context: Context, event: SessionEvent.TurnDone, machineName: String?) {
         if (!canPost(context)) return
-        val id = SessionAlerts.updateId(event.ref)
+        val id = SessionAlerts.notificationId(event.ref)
         val text = event.snippet?.trim()?.takeIf { it.isNotEmpty() } ?: "Finished — your turn"
         val notification = NotificationCompat.Builder(context, CHANNEL_UPDATES)
             .setSmallIcon(R.drawable.ic_notification)
@@ -279,6 +316,7 @@ object Notifications {
             .setCategory(NotificationCompat.CATEGORY_STATUS)
             .setAutoCancel(true)
             .setGroup(GROUP_UPDATES)
+            .shown(SessionAlerts.Shown(event.ref, SessionAlerts.Kind.TURN_DONE))
             .setContentIntent(openSession(context, event.ref, id))
             .guard(context, CHANNEL_UPDATES, "A session finished")
             .build()
@@ -288,7 +326,7 @@ object Notifications {
     @SuppressLint("MissingPermission")
     fun showSessionFailed(context: Context, event: SessionEvent.Failed, machineName: String?) {
         if (!canPost(context)) return
-        val id = SessionAlerts.updateId(event.ref)
+        val id = SessionAlerts.notificationId(event.ref)
         val text = event.detail?.trim()?.takeIf { it.isNotEmpty() } ?: "The session stopped with an error"
         val notification = NotificationCompat.Builder(context, CHANNEL_UPDATES)
             .setSmallIcon(R.drawable.ic_notification)
@@ -300,6 +338,7 @@ object Notifications {
             .setCategory(NotificationCompat.CATEGORY_ERROR)
             .setAutoCancel(true)
             .setGroup(GROUP_UPDATES)
+            .shown(SessionAlerts.Shown(event.ref, SessionAlerts.Kind.FAILED))
             .setContentIntent(openSession(context, event.ref, id))
             .guard(context, CHANNEL_UPDATES, "A session hit an error")
             .build()

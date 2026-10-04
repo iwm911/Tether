@@ -92,12 +92,11 @@ class SessionAlertsTest {
     // ───────────── ids and dismissal ─────────────
 
     @Test
-    fun idsAreStablePerSessionAndPrompt() {
+    fun oneNotificationSlotPerSession() {
         val r1 = SessionRef("c", "a")
-        assertEquals(SessionAlerts.needsYouId(r1, "perm:1"), SessionAlerts.needsYouId(SessionRef("c", "a"), "perm:1"))
-        assertNotEquals(SessionAlerts.needsYouId(r1, "perm:1"), SessionAlerts.needsYouId(r1, "perm:2"))
-        assertNotEquals(SessionAlerts.needsYouId(r1, "perm:1"), SessionAlerts.needsYouId(SessionRef("c2", "a"), "perm:1"))
-        assertNotEquals(SessionAlerts.updateId(r1), SessionAlerts.needsYouId(r1, "perm:1"))
+        assertEquals(SessionAlerts.notificationId(r1), SessionAlerts.notificationId(SessionRef("c", "a")))
+        assertNotEquals(SessionAlerts.notificationId(r1), SessionAlerts.notificationId(SessionRef("c2", "a")))
+        assertNotEquals(SessionAlerts.notificationId(r1), SessionAlerts.notificationId(SessionRef("c", "b")))
         assertEquals("perm:toolu_1", SessionAlerts.identityOf(perm, "permission"))
         assertEquals("ask:toolu_2", SessionAlerts.identityOf(ask, null))
         assertEquals("dialog:MCP_SERVERS:2 new MCP servers found", SessionAlerts.identityOf(dialog, null))
@@ -114,6 +113,33 @@ class SessionAlertsTest {
         // the session is not known (no watch yet): the default decides
         assertTrue(SessionAlerts.stillWaiting(emptyList(), ref, id))
         assertFalse(SessionAlerts.stillWaiting(emptyList(), ref, id, unknownDefault = false))
+    }
+
+    @Test
+    fun aNotificationGoesOnceTheUserActedOnIt() {
+        val ref = SessionRef("c", "a")
+        val prompt = SessionAlerts.Shown(ref, SessionAlerts.Kind.NEEDS_YOU, SessionAlerts.identityOf(perm, null))
+        assertTrue(SessionAlerts.stillRelevant(prompt, s("a", SessionState.NEEDS_YOU, perm)))
+        // answered (anywhere), or a newer prompt took its place
+        assertFalse(SessionAlerts.stillRelevant(prompt, s("a", SessionState.WORKING)))
+        assertFalse(SessionAlerts.stillRelevant(prompt, s("a", SessionState.NEEDS_YOU, SessionPending.Permission("toolu_9", "Bash"))))
+
+        val done = SessionAlerts.Shown(ref, SessionAlerts.Kind.TURN_DONE)
+        assertTrue(SessionAlerts.stillRelevant(done, s("a", SessionState.IDLE)))
+        assertTrue(SessionAlerts.stillRelevant(done, s("a", SessionState.DONE)))
+        // the user replied: a new turn is running, or a prompt is up (it gets its own notification)
+        assertFalse(SessionAlerts.stillRelevant(done, s("a", SessionState.WORKING)))
+        assertFalse(SessionAlerts.stillRelevant(done, s("a", SessionState.NEEDS_YOU, perm)))
+
+        val failed = SessionAlerts.Shown(ref, SessionAlerts.Kind.FAILED)
+        assertTrue(SessionAlerts.stillRelevant(failed, s("a", SessionState.FAILED)))
+        assertFalse(SessionAlerts.stillRelevant(failed, s("a", SessionState.WORKING)))
+
+        // someone took the session over at the terminal: nothing left for the phone
+        assertFalse(SessionAlerts.stillRelevant(prompt, s("a", SessionState.NEEDS_YOU, perm, held = true)))
+        assertFalse(SessionAlerts.stillRelevant(done, s("a", SessionState.IDLE, held = true)))
+        // not known (yet): keep it
+        assertTrue(SessionAlerts.stillRelevant(done, null))
     }
 
     // ───────────── transitions (hub → events) ─────────────
