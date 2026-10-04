@@ -48,7 +48,7 @@ class NotificationActionReceiver : BroadcastReceiver() {
         val app = context.applicationContext as? TetherApp ?: return
         val container = app.container
         val identity = intent.getStringExtra(Notifications.EXTRA_PENDING_ID).orEmpty()
-        val notificationId = intent.getIntExtra(Notifications.EXTRA_NOTIFICATION_ID, SessionAlerts.needsYouId(ref, identity))
+        val notificationId = intent.getIntExtra(Notifications.EXTRA_NOTIFICATION_ID, SessionAlerts.notificationId(ref))
         val event = SessionEvent.NeedsYou(
             ref = ref,
             title = intent.getStringExtra(Notifications.EXTRA_TITLE) ?: "Session",
@@ -67,7 +67,6 @@ class NotificationActionReceiver : BroadcastReceiver() {
             return
         }
         Notifications.cancel(context, notificationId)
-        ServiceController.forgetSessionNotification(notificationId)
         // Never let a stale notification answer a newer prompt. With the prompt's toolUseId the helper checks it
         // on the machine (ESTALE when another prompt is open); without one, only a session this process knows to
         // still be waiting on that prompt is answered (after a cold start the list is empty: not answered).
@@ -89,7 +88,6 @@ class NotificationActionReceiver : BroadcastReceiver() {
                         context.applicationContext, event, machine,
                         reason = "Couldn't reach the machine to send your answer — try again or open Tether.",
                     )
-                    ServiceController.rememberSessionNotification(notificationId, ref, identity)
                 } else {
                     Log.i(TAG, "Session ${ref.short} moved on to another prompt; not answering")
                 }
@@ -99,7 +97,6 @@ class NotificationActionReceiver : BroadcastReceiver() {
                     context.applicationContext, event, machine,
                     reason = "Couldn't reach the machine to send your answer — try again or open Tether.",
                 )
-                ServiceController.rememberSessionNotification(notificationId, ref, identity)
             }
         }
         container.scope.launch {

@@ -133,7 +133,8 @@ class DataStoreSettingsRepository(context: Context, scope: CoroutineScope) : Set
         val defaultPermissionMode = stringPreferencesKey("default_permission_mode")
         val showThinking = booleanPreferencesKey("show_thinking")
         val notifyPermissions = booleanPreferencesKey("notify_permissions")
-        val notifyCompletion = booleanPreferencesKey("notify_completion")
+        // Not "notify_completion": that one was saved as on (the old default) for everyone, and the default is now off.
+        val notifyCompletion = booleanPreferencesKey("notify_turn_done")
         val notifyAppUpdates = booleanPreferencesKey("notify_app_updates")
         val betaUpdates = booleanPreferencesKey("beta_updates")
         val backgroundWatch = booleanPreferencesKey("background_watch")

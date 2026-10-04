@@ -12,6 +12,8 @@ import app.tether.core.SessionRef
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -26,7 +28,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  *    forbids starting a foreground service from the background, so it is started while the app
  *    is still in the foreground and kept until no live sessions remain;
  *  - turns [app.tether.core.SessionHub.events] into notifications while the app isn't visible;
- *  - clears needs-you notifications once the prompt has been answered elsewhere.
+ *  - clears a session's notification once it no longer needs the user (prompt answered anywhere,
+ *    a new turn started, the session taken over at the terminal or removed).
  */
 object ServiceController {
     private const val TAG = "TetherService"
@@ -78,13 +81,21 @@ object ServiceController {
                     if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return@collect
                     val settings = container.settings.settings.value
                     val machine = container.connections.get(event.ref.connectionId)?.name
+                    turnDone.remove(event.ref)?.cancel()
                     when (event) {
-                        is SessionEvent.NeedsYou -> if (settings.notifyPermissions) {
-                            Notifications.showSessionNeedsYou(app, event, machine)
-                            val identity = SessionAlerts.identityOf(event.pending, event.waitingFor)
-                            rememberSessionNotification(SessionAlerts.needsYouId(event.ref, identity), event.ref, identity)
+                        is SessionEvent.NeedsYou -> if (settings.notifyPermissions) Notifications.showSessionNeedsYou(app, event, machine)
+                        // A turn that ends only to go on a moment later (between tool calls) is no news: wait until it settles.
+                        is SessionEvent.TurnDone -> if (settings.notifyCompletion) {
+                            turnDone[event.ref] = container.scope.launch {
+                                delay(TURN_DONE_SETTLE_MS)
+                                turnDone.remove(event.ref)
+                                if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) return@launch
+                                val now = container.sessions.sessions.value.firstOrNull { it.ref == event.ref } ?: return@launch
+                                if (SessionAlerts.stillRelevant(SessionAlerts.Shown(event.ref, SessionAlerts.Kind.TURN_DONE), now)) {
+                                    Notifications.showSessionTurnDone(app, event, machine)
+                                }
+                            }
                         }
-                        is SessionEvent.TurnDone -> if (settings.notifyCompletion) Notifications.showSessionTurnDone(app, event, machine)
                         is SessionEvent.Failed -> Notifications.showSessionFailed(app, event, machine)
                     }
                 } catch (e: CancellationException) {
@@ -95,17 +106,19 @@ object ServiceController {
             }
         }
 
-        // 3 ── Dismiss session needs-you notifications once that prompt is answered (anywhere) or the session is gone.
+        // 3 ── Dismiss a session's notification once it no longer needs the user, or the session is gone.
         container.scope.launch {
-            container.sessions.sessions.collect { list ->
-                if (postedSessions.isEmpty()) return@collect
-                val now = System.currentTimeMillis()
-                for ((id, p) in postedSessions.entries.toList()) {
-                    if (now - p.at < 5_000) continue
-                    if (!SessionAlerts.stillWaiting(list, p.ref, p.identity, unknownDefault = false)) {
-                        Notifications.cancel(app, id)
-                        postedSessions.remove(id)
-                    }
+            val seen = HashSet<SessionRef>()
+            // Only on changes that can decide relevance: streaming text doesn't need a look at the shade.
+            fun relevance(list: List<app.tether.core.Session>) =
+                list.map { listOf(it.ref, it.state, it.heldByTerminal, SessionAlerts.identityOf(it.pending, it.waitingFor)) }
+            container.sessions.sessions.distinctUntilChanged { a, b -> relevance(a) == relevance(b) }.collect { list ->
+                val byRef = list.associateBy { it.ref }
+                seen += byRef.keys
+                for (shown in Notifications.shownSessions(app)) {
+                    val session = byRef[shown.ref]
+                    val gone = session == null && shown.ref in seen
+                    if (gone || !SessionAlerts.stillRelevant(shown, session)) Notifications.clearSession(app, shown.ref)
                 }
             }
         }
@@ -128,18 +141,10 @@ object ServiceController {
         }
     }
 
-    private class PostedSession(val ref: SessionRef, val identity: String, val at: Long)
+    private const val TURN_DONE_SETTLE_MS = 4_000L
 
-    /** Session needs-you notifications currently shown, by notification id. */
-    private val postedSessions = ConcurrentHashMap<Int, PostedSession>()
-
-    internal fun rememberSessionNotification(notificationId: Int, ref: SessionRef, identity: String) {
-        postedSessions[notificationId] = PostedSession(ref, identity, System.currentTimeMillis())
-    }
-
-    internal fun forgetSessionNotification(notificationId: Int) {
-        postedSessions.remove(notificationId)
-    }
+    /** Turn-done notifications waiting for their turn to settle, by session. */
+    private val turnDone = ConcurrentHashMap<SessionRef, Job>()
 
     private fun start(app: Application) {
         try {

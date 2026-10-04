@@ -24,11 +24,32 @@ object SessionAlerts {
 
     fun needsYouCount(sessions: List<Session>): Int = live(sessions).count { it.state == SessionState.NEEDS_YOU }
 
-    /** Notification id of one needs-you prompt (stable per session + prompt). */
-    fun needsYouId(ref: SessionRef, identity: String): Int = "sess-need:${ref.connectionId}/${ref.sessionId}/$identity".hashCode()
+    /** What a session notification is about. */
+    enum class Kind { NEEDS_YOU, TURN_DONE, FAILED }
 
-    /** Notification id for turn-done / failed of a session (one slot per session). */
-    fun updateId(ref: SessionRef): Int = "sess-upd:${ref.connectionId}/${ref.sessionId}".hashCode()
+    /** A session notification on screen: [identity] is the prompt's (see [identityOf]), empty for turn done / failed. */
+    data class Shown(val ref: SessionRef, val kind: Kind, val identity: String = "")
+
+    /**
+     * Notification id of a session: one slot per session, so a newer prompt, a finished turn or an
+     * error replaces what was shown for it instead of piling up.
+     */
+    fun notificationId(ref: SessionRef): Int = "sess:${ref.connectionId}/${ref.sessionId}".hashCode()
+
+    /**
+     * True while a shown notification still asks something of the user: the same prompt is open, the
+     * turn is still waiting for a reply, the error still stands. A session someone took over at the
+     * terminal needs nothing from the phone. When the session is unknown ([session] null) it is kept.
+     */
+    fun stillRelevant(shown: Shown, session: Session?): Boolean {
+        if (session == null) return true
+        if (session.heldByTerminal) return false
+        return when (shown.kind) {
+            Kind.NEEDS_YOU -> session.state == SessionState.NEEDS_YOU && identityOf(session.pending, session.waitingFor) == shown.identity
+            Kind.TURN_DONE -> session.state == SessionState.IDLE || session.state == SessionState.DONE
+            Kind.FAILED -> session.state == SessionState.FAILED
+        }
+    }
 
     fun identityOf(pending: SessionPending?, waitingFor: String?): String = pending?.identity ?: waitingFor ?: "needs-you"
 

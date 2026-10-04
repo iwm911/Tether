@@ -367,7 +367,8 @@ data class AppSettings(
     val defaultPermissionMode: String = PermissionMode.DEFAULT.cli,
     val showThinking: Boolean = true,
     val notifyPermissions: Boolean = true,
-    val notifyCompletion: Boolean = true,
+    /** "Turn complete" notifications: off by default, notifications are for what needs the user. */
+    val notifyCompletion: Boolean = false,
     /** Look for new Tether releases in the background and notify about them. */
     val notifyAppUpdates: Boolean = true,
     /** Also offer beta releases (GitHub pre-releases); beta builds start with it on. */
