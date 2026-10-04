@@ -2314,6 +2314,8 @@ import unicodedata
 
 TASKS_DIR = os.path.join(HOME, ".claude", "tasks")
 REMOVED_PATH = os.path.join(TETHER_DIR, "removed_sessions.json")
+UPLOADS_DIR = os.path.join(TETHER_DIR, "uploads")  # images the phone attaches (the app's UPLOADS_REL)
+UPLOAD_NAME_RE = re.compile(r"\.tether/uploads/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.[a-z0-9]{1,5})")
 SESSIONS_LIMIT = 60
 WATCH_LIMIT = 200
 FOLLOW_TAIL_CHUNKS = 100000  # the daemon keeps <= 256 KB of pty output per job; ask for all of it
@@ -5073,6 +5075,7 @@ def cmd_rm_v2(opts, arg):
     if launch_flags_of(ref.sid):
         remember_launch_flags(ref.sid, None)
     if ref.tpath:
+        remove_uploads_of(ref.tpath)
         removed = read_removed()
         removed[ref.sid] = file_size(ref.tpath)
         try:
@@ -5081,6 +5084,41 @@ def cmd_rm_v2(opts, arg):
         except (OSError, IOError):
             pass
     emit({"ok": True})
+
+
+def uploads_of(tpath):
+    """Names of the phone's uploaded images that the session's own messages paste in by path. Only what the user
+    sent counts (user lines and queued mid-turn messages), so a tool result that merely lists ~/.tether/uploads
+    never claims another session's images."""
+    names = set()
+    try:
+        with open(tpath, "rb") as f:
+            data = f.read()
+    except (OSError, IOError):
+        return names
+    for raw in iter_lines_bytes(data):
+        if b".tether/uploads/" not in raw:
+            continue
+        o = parse_line(raw)
+        if not o or o.get("isSidechain"):
+            continue
+        if o.get("type") == "user":
+            content = (o.get("message") or {}).get("content")
+        elif queued_prompt_line(o):
+            content = o["attachment"].get("prompt")
+        else:
+            continue
+        if isinstance(content, list):  # text blocks only: a tool_result is Claude's, not something the user sent
+            content = " ".join(b.get("text") or "" for b in content if isinstance(b, dict) and b.get("type") == "text")
+        if isinstance(content, str):
+            names.update(UPLOAD_NAME_RE.findall(content))
+    return names
+
+
+def remove_uploads_of(tpath):
+    """Deletes the images the phone uploaded for a session, once the session itself is removed."""
+    for name in uploads_of(tpath):
+        remove_quietly(os.path.join(UPLOADS_DIR, name))
 
 
 # ───────────────────────────────────────── main ─────────────────────────────────────────
