@@ -157,6 +157,8 @@ fun SessionChatScreen(
     val snackbar = remember { SnackbarHostState() }
     LaunchedEffect(vm) { vm.messages.collect { snackbar.showSnackbar(it) } }
     LaunchedEffect(vm) { vm.closed.collect { onBack() } }
+    val btw by vm.btw.collectAsStateWithLifecycle()
+    btw?.let { BtwSheet(it, onDismiss = vm::dismissBtw) }
 
     val scope = rememberCoroutineScope()
     val clipboard = LocalClipboardManager.current

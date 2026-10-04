@@ -506,6 +506,9 @@ class DefaultSessionHub(
         mergeSession(remote.interrupt(ref.connectionId, ref.sessionId).ofMachine(ref))
     }
 
+    override suspend fun btw(ref: SessionRef, question: String): String =
+        remote.btw(ref.connectionId, ref.sessionId, question)
+
     override suspend fun stop(ref: SessionRef) {
         remote.stop(ref.connectionId, ref.sessionId)
     }

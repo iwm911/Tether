@@ -199,6 +199,27 @@ class DialogSessionTest(unittest.TestCase):
         self.assertEqual(s["state"], "needs_you")
         self.assertIsNone(s["pending"])
 
+    def btw_idle(self, screen):
+        self.home.job(SHORT, sessionId=SID, cwd=self.proj, state="done", tempo="idle")
+        self.home.registry(os.getpid(), kind="bg", status="waiting", waitingFor="dialog open", sessionId=SID, jobId=SHORT)
+        self.model.add(SHORT, SID, cwd=self.proj, tempo="idle", state="done")
+        self.model.subscribe_events = [{"type": "snapshot", "record": {}, "streamTail": [screen]}]
+        return self.session()
+
+    def test_the_btw_panel_is_not_a_prompt(self):
+        # Claude Code registers its /btw side-question panel as "dialog open": the session is idle, not needs_you
+        # (the phone showed "Claude Code is asking something" and notified).
+        with open(fixture_path("btw_multi_answered.bin"), "rb") as f:
+            s = self.btw_idle(f.read().decode("utf-8", "replace"))
+        self.assertEqual((s["state"], s["pending"]), ("idle", None))
+
+    def test_the_registry_lags_the_closed_btw_panel(self):
+        prompt = u"\x1b[2J\x1b[H● PONG.\r\n\r\n" + u"─" * 60 + u"\r\n❯ \r\n" + u"─" * 60 + u"\r\n  ⏸ manual mode on\r\n"
+        self.assertEqual(self.btw_idle(prompt)["state"], "needs_you")  # anything else that said "dialog open"
+        self.hh._dialog_screens.clear()
+        self.hh.btw_mark(SHORT, 4)  # the helper's own /btw just closed its panel
+        self.assertEqual(self.btw_idle(prompt)["state"], "idle")
+
     def blocked_new_session(self):
         # A new session blocked on the project MCP-servers dialog: its first prompt is still in the launch args.
         self.home.job(SHORT, sessionId=SID, cwd=self.proj, state="running", tempo="blocked", needs="send a prompt to start",
