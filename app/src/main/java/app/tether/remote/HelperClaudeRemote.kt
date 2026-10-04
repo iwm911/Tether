@@ -347,6 +347,12 @@ class HelperClaudeRemote internal constructor(
         return sessionOf(out, "session").copy(connectionId = connectionId)
     }
 
+    override suspend fun btw(connectionId: String, sessionId: String, question: String): String {
+        // The helper waits up to 3 minutes for the answer, after waking a retired session.
+        val out = sessionHelper(connectionId, listOf("btw", sessionId), SessionProtocol.btwBody(question), timeoutMs = 240_000)
+        return decode(out, "answer") { RemoteJson.parseObject(it)?.str("answer") ?: throw IOException("no answer") }
+    }
+
     override suspend fun stop(connectionId: String, sessionId: String) {
         sessionHelper(connectionId, listOf("stop", sessionId))
     }

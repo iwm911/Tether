@@ -92,6 +92,11 @@ class SessionChatViewModelTest {
         override suspend fun answer(ref: SessionRef, decision: SessionDecision, message: String?, toolUseId: String?) = record("answer ${decision.wire} ${message ?: "-"}${toolUseId?.let { " $it" } ?: ""}")
         override suspend fun ask(ref: SessionRef, answers: List<AskAnswer>) = record("ask ${answers.map { it.choices }}")
         override suspend fun interrupt(ref: SessionRef) = record("interrupt")
+        var btwGate: CompletableDeferred<String>? = null
+        override suspend fun btw(ref: SessionRef, question: String): String {
+            record("btw $question")
+            return btwGate?.await() ?: "**answer**"
+        }
         override suspend fun stop(ref: SessionRef) = record("stop")
         override suspend fun remove(ref: SessionRef) = record("rm")
         override fun setBackgroundWatch(enabled: Boolean) {}
@@ -180,6 +185,52 @@ class SessionChatViewModelTest {
         assertFalse(vm.state.value.waking)
         assertFalse(vm.state.value.sending)
         assertEquals(listOf("send hello again images=0"), hub.calls)
+    }
+
+    @Test
+    fun aBtwDraftIsASideQuestionNotAMessage() = runTest(dispatcher) {
+        val hub = FakeHub(stateWith(session()))
+        val vm = vm(hub)
+        advanceUntilIdle()
+        hub.btwGate = CompletableDeferred()
+        vm.composer.appendText("/btw  which file was that?")
+        vm.send()
+        advanceUntilIdle()
+        assertTrue("draft taken", vm.composer.value.text.isEmpty())
+        assertEquals(BtwState("which file was that?"), vm.btw.value)
+        assertTrue(vm.btw.value!!.loading)
+        hub.btwGate!!.complete("It was `Main.kt`.")
+        advanceUntilIdle()
+        assertEquals("It was `Main.kt`.", vm.btw.value?.answer)
+        assertEquals(listOf("btw which file was that?"), hub.calls)
+        vm.dismissBtw()
+        assertNull(vm.btw.value)
+    }
+
+    @Test
+    fun aFailedSideQuestionShowsWhyInTheSheet() = runTest(dispatcher) {
+        val hub = FakeHub(stateWith(session()))
+        hub.failWith = RemoteException("This session is open in a terminal", code = SessionErrorCodes.EHELD)
+        val vm = vm(hub)
+        advanceUntilIdle()
+        vm.composer.appendText("/btw hi")
+        vm.send()
+        advanceUntilIdle()
+        assertTrue(vm.btw.value!!.error!!.contains("type /bg there"))
+        assertTrue(hub.calls.none { it.startsWith("send") })
+    }
+
+    @Test
+    fun anEmptyBtwStaysInTheComposer() = runTest(dispatcher) {
+        val hub = FakeHub(stateWith(session()))
+        val vm = vm(hub)
+        advanceUntilIdle()
+        vm.composer.appendText("/btw")
+        vm.send()
+        advanceUntilIdle()
+        assertEquals("/btw", vm.composer.value.text)
+        assertNull(vm.btw.value)
+        assertTrue(hub.calls.isEmpty())
     }
 
     @Test

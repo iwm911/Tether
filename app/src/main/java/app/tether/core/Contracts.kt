@@ -166,6 +166,9 @@ interface SessionRemote {
     suspend fun answer(connectionId: String, sessionId: String, decision: SessionDecision, message: String? = null, toolUseId: String? = null): Session
     suspend fun ask(connectionId: String, sessionId: String, answers: List<AskAnswer>): Session
     suspend fun interrupt(connectionId: String, sessionId: String): Session
+    /** `/btw`: Claude answers [question] (Markdown) from the session's context; nothing is added to the conversation. */
+    suspend fun btw(connectionId: String, sessionId: String, question: String): String =
+        throw UnsupportedOperationException("btw")
     suspend fun stop(connectionId: String, sessionId: String)
     suspend fun rm(connectionId: String, sessionId: String)
     /** Copies an image to the machine (like a file dropped on the terminal); returns its absolute path there. */
@@ -211,6 +214,8 @@ interface SessionHub {
     suspend fun ask(ref: SessionRef, answers: List<AskAnswer>)
     /** Esc: interrupts the current turn, keeps the session. */
     suspend fun interrupt(ref: SessionRef)
+    /** `/btw` side question (wakes a retired session); returns Claude's answer in Markdown. See [SessionRemote.btw]. */
+    suspend fun btw(ref: SessionRef, question: String): String = throw UnsupportedOperationException("btw")
     /** Retires the worker; the next message wakes it with the same id. */
     suspend fun stop(ref: SessionRef)
     /** Kills, evicts and deletes the job (the transcript stays). */

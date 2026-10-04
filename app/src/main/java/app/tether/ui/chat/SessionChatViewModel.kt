@@ -1,5 +1,6 @@
 package app.tether.ui.chat
 
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.tether.core.ASK_USER_QUESTION
@@ -264,6 +265,7 @@ class SessionChatViewModel(
     /** Sends the composer's draft (text, slash command or images). A retired session wakes first. */
     fun send() {
         if (agentId != null || local.value.sending) return
+        if (askAside()) return
         val (text, attachments) = composer.take() ?: return
         val wake = state.value.retired
         local.update { it.copy(sending = true, waking = wake) }
@@ -279,6 +281,46 @@ class SessionChatViewModel(
                 local.update { it.copy(sending = false, waking = false) }
             }
         }
+    }
+
+    // ── /btw ──
+
+    private val _btw = MutableStateFlow<BtwState?>(null)
+    /** The open /btw side question, if any. */
+    val btw: StateFlow<BtwState?> = _btw.asStateFlow()
+    private var btwJob: Job? = null
+
+    /**
+     * A `/btw …` draft is a side question: answered in a sheet, never added to the conversation. Staged
+     * images stay in the composer (side questions are text only). False when the draft isn't one.
+     */
+    private fun askAside(): Boolean {
+        val question = btwQuestion(composer.value.text) ?: return false
+        if (question.isEmpty()) {
+            say("Type a question after /btw")
+            return true
+        }
+        composer.value = TextFieldValue("")
+        btwJob?.cancel()
+        _btw.value = BtwState(question)
+        btwJob = viewModelScope.launch {
+            val next = try {
+                BtwState(question, answer = hub.btw(ref, question).ifBlank { "(No answer)" })
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                BtwState(question, error = describe(t))
+            }
+            _btw.update { if (it?.question == question) next else it }
+        }
+        return true
+    }
+
+    /** Closes the sheet. A question still being answered is dropped (the machine puts its panel away). */
+    fun dismissBtw() {
+        btwJob?.cancel()
+        btwJob = null
+        _btw.value = null
     }
 
     // ── keys ──

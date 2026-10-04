@@ -306,6 +306,14 @@ class DaemonE2ETest {
             assertEquals("claude agents lists it once: $agents", 1, agents.size)
             note("wake → same id ${started.short}; claude agents: ${agents.map { it.s("id") to it.s("status") }}")
 
+            // ── /btw: a side question answered from the context, nothing added to the conversation ──
+            val aside = hub.btw(ref, "Which marker did my first message ask you to end with? Reply with just the marker.")
+            note("btw → $aside")
+            assertTrue("btw answer: $aside", aside.contains("END-ONE"))
+            delay(2_000)
+            assertEquals("btw adds no message", done2.items.count { it is ChatItem.User }, latest.value.items.count { it is ChatItem.User })
+            assertEquals("btw adds no reply", finalTexts(done2), finalTexts(latest.value))
+
             // ── shift-tab changes the permission mode ──
             val modeBefore = hub.session(ref)?.permissionMode ?: done2.permissionMode
             note("mode before: $modeBefore")
