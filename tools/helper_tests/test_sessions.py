@@ -199,6 +199,20 @@ class SessionsTest(unittest.TestCase):
         self.assertEqual(b["waitingFor"], "rebuild app and test on the phone")
         self.assertEqual(b["suggestedReply"], "! ./gradlew installDebug")
 
+    def test_handoff_with_a_background_task_running(self):
+        # Same hand-off while a Monitor still runs: the worker registers as "shell", not "idle" (2.1.289).
+        # Regression: the phone showed "Waiting for say "merge it"…" with an empty key pad.
+        hm = self.w.home
+        hm.transcript(self.w.proj, SID_B, [user_line("ship it", cwd=self.w.proj),
+                                           assistant_line('PR is ready. Say "merge it" when you want it merged.')])
+        hm.job("bbbb2222", sessionId=SID_B, cwd=self.w.proj, state="blocked", tempo="blocked",
+               needs='say "merge it" when you want it merged', block=None, suggestedReply="merge it",
+               inFlight={"tasks": 1, "queued": 0, "kinds": ["monitor"]})
+        hm.registry(os.getpid(), kind="bg", status="shell", sessionId=SID_B, jobId="bbbb2222")
+        b = self.by_sid()[SID_B]
+        self.assertEqual((b["state"], b["handoff"], b["pending"]), ("needs_you", True, None))
+        self.assertEqual(b["suggestedReply"], "merge it")
+
     def test_real_waits_are_not_handoffs(self):
         self.assertFalse(self.by_sid()[SID_B]["handoff"])  # an AskUserQuestion block
         self.assertIsNone(self.by_sid()[SID_B]["suggestedReply"])

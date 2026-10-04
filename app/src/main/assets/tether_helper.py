@@ -2749,6 +2749,8 @@ def session_state(held, live, st, rec, term, bg, last_entry=None):
 # ── blocking dialogs (decision 5): cut from the session's screen ──
 
 DIALOG_WAITING = ("dialog open", "input needed")
+# A background worker's registry status while it sits at its prompt (nothing on screen waits for a key).
+BG_AT_PROMPT = ("idle", "shell")
 DIALOG_RULE_CHARS = frozenset(u"─━▔▁═ ")
 # A permission prompt fences the command / diff in dashed rules ("Bash command" / ╌╌╌ / touch x / ╌╌╌ / Do you
 # want to proceed?): inside the body, not the dialog's top edge.
@@ -2980,9 +2982,10 @@ def make_session(slot, facts=None, tfile=None, screen=None):
             state, pending = "needs_you", d
     # Claude ended its turn handing work back ("blocked" with a needs note, e.g. "rebuild and test on the phone"):
     # the worker is idle at its prompt, nothing on screen waits for a key. Still the user's move (claude agents
-    # lists it as blocked), but answered by a normal message, not a key pad.
+    # lists it as blocked), but answered by a normal message, not a key pad. Idle at its prompt is "idle", or
+    # "shell" while a background task (a Monitor, a background command) still runs (seen on 2.1.289).
     handoff = state == "needs_you" and pending is None and live and not term and \
-        (bg or {}).get("status") == "idle" and not st.get("block")
+        (bg or {}).get("status") in BG_AT_PROMPT and not st.get("block")
     cwd = cwd_hint(info, st, rec, reg, path)
     waiting = reg.get("waitingFor") if isinstance(reg.get("waitingFor"), str) else None
     if state == "needs_you" and not waiting:
