@@ -6,8 +6,8 @@
 
 ### `claude agents`, on your Android phone.
 
-Every Claude Code session on your computers, in your pocket: start new ones, watch them work, and approve
-what they do. Unofficial and open source.
+Run your Claude Code agents from your phone: start them on any machine and project, steer them, and
+approve what they do. Every session on every computer, in one app. Unofficial and open source.
 
 [![Latest release](https://img.shields.io/github/v/release/iwm911/Tether?sort=semver&label=download&color=D97757)](https://github.com/iwm911/Tether/releases/latest)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
@@ -38,58 +38,58 @@ what they do. Unofficial and open source.
 
 ## 💡 The idea
 
-You give Claude Code a big task and walk away. Ten minutes later it stops and waits:
-*"Can I run `npm test`?"* It sits there until you're back at the keyboard.
+`claude agents` is how you run Claude Code in the background on your computer. **Tether puts the whole
+thing on your phone.** Start a new agent on any machine, in any project. Pick up any session, including
+the ones you started at your desk. Switch models, run slash commands, answer Claude's questions and
+approve what it does, from the couch, the train, or the queue at the coffee shop.
 
-**Tether sends that question to your phone.** Tap **Allow**, read the diff, or send a new instruction,
-from the couch, the train, or the queue at the coffee shop. The session keeps running on your computer,
-with your files, your tools and your setup. Tether shows the same sessions `claude agents` lists there,
-and opening one works like `claude attach`. Think of it as `claude agents` for Android. It's a community
-project, not an official Anthropic app.
+The agents keep running on your computers, with your files, your tools and your setup. Tether is the
+remote control in your pocket. It's a community project, not an official Anthropic app.
 
 <table>
 <tr>
 <td width="33%" valign="top">
 
-### 📲 Approve from anywhere
-Permission requests show up as notifications with **Allow · Deny · Reply** buttons. No need to open
-the app. The command stays hidden on the lock screen, and answering needs your phone unlocked.
+### 🚀 Start agents from the phone
+Pick a machine, pick a project or browse to any folder, and type the task. Attach a screenshot if it
+helps. Nothing has to be running on the computer beforehand.
 
 </td>
 <td width="33%" valign="top">
 
-### 🖥️ Runs on your machine
-Claude works in your real repo with your tools, MCP servers and private network. Tether only
-connects to it over SSH.
+### 🗂️ Every machine, every project
+Laptop, desktop and servers on one home screen, filtered by project, worktrees included. Open
+**any** Claude Code session, running or from last week, and carry on.
 
 </td>
 <td width="33%" valign="top">
 
-### 🔁 Survives anything
-Sessions run in Claude Code's own background service on the computer. Phone asleep, signal lost, app
-closed: the work carries on, and Tether picks up where it left off.
+### 🎛️ Full control, not just a viewer
+Change the model and permission mode, run slash commands with autocomplete, answer Claude's
+questions, follow subagents, background tasks and workflows as they run.
 
 </td>
 </tr>
 <tr>
 <td valign="top">
 
-### 🚀 Start from the phone
-Pick a machine, browse to a folder, type a prompt. You don't need anything running on the computer
-beforehand.
+### 📲 Never stuck waiting on you
+When an agent needs you, you get a notification with **Allow · Deny · Reply**. The command stays
+hidden on the lock screen, and answering needs your phone unlocked.
 
 </td>
 <td valign="top">
 
-### 🗂️ All your machines, all your sessions
-Laptop, desktop and servers on one home screen. Open **any** Claude Code session, running or from
-last week, including ones you started at your desk, and just reply.
+### 🔁 Runs on your machines, survives anything
+Agents run in Claude Code's own background service, in your real repos with your MCP servers and
+private network. Phone asleep, signal lost, app closed: the work carries on.
 
 </td>
 <td valign="top">
 
 ### 🔓 No account, no server
-Open source. Your phone talks straight to your computers. There's no Tether cloud in between.
+Open source. Your phone talks straight to your computers over SSH. There's no Tether cloud in
+between, and any Claude Code login works: subscription, API key, Bedrock or Vertex.
 
 </td>
 </tr>
