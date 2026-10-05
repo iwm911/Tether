@@ -2567,6 +2567,8 @@ class Sources(object):
             if not (isinstance(sid, str) and UUID_RE.match(sid)):
                 continue
             if r.get("kind") == "interactive":
+                if r.get("parkedJobId") and sid not in by:
+                    continue  # /bg'd into another session (2.1.289 continues it under a new id): not a session itself
                 slot(sid)["term"] = r
             elif r.get("kind") == "bg" and sid in by:
                 by[sid]["bg"] = r

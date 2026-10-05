@@ -283,6 +283,16 @@ class SessionsTest(unittest.TestCase):
             f.write(json.dumps(user_line("resumed elsewhere")) + "\n")
         self.assertIn(SID_D, self.by_sid())
 
+    def test_removed_stays_hidden_while_its_terminal_lives_on_parked(self):
+        # 2.1.289 /bg continues a terminal session under a new id; the old terminal process keeps its registry entry.
+        os.remove(os.path.join(self.w.home.claude, "sessions", "%d.json" % os.getpid()))
+        self.w.home.registry(os.getpid(), kind="interactive", status="busy", sessionId=SID_D, parkedJobId="9999aaaa")
+        p = os.path.join(self.w.home.claude, "projects", self.h.project_dir_name(self.w.other), SID_D + ".jsonl")
+        os.makedirs(self.w.home.path(".tether"), exist_ok=True)
+        with open(self.h.REMOVED_PATH, "w") as fh:
+            json.dump({SID_D: os.path.getsize(p)}, fh)
+        self.assertNotIn(SID_D, self.by_sid())
+
     def test_resolve_by_short_and_errors(self):
         r = self.h.SessionRef("cccc3333")
         self.assertEqual((r.sid, r.job_short, r.short), (SID_C, "cccc3333", "cccc3333"))
