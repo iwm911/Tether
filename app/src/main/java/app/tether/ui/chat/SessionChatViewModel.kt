@@ -246,7 +246,8 @@ class SessionChatViewModel(
         SessionErrorCodes.ENODAEMON -> "Claude Code's background service isn't running on ${state.value.machineName ?: "the machine"}"
         // The helper says which: no such session, or a stopped one that needs a message to wake it.
         SessionErrorCodes.ENOSESSION -> t.message?.trim()?.takeIf { it.isNotEmpty() } ?: "This session no longer exists on the machine"
-        SessionErrorCodes.ESTALE -> "Claude moved on — that prompt isn't open any more"
+        // The helper says why: another prompt took its place, or the prompt isn't on the machine's screen.
+        SessionErrorCodes.ESTALE -> t.message?.trim()?.takeIf { it.isNotEmpty() } ?: "Claude moved on — that prompt isn't open any more"
         else -> t.message?.trim()?.takeIf { it.isNotEmpty() } ?: t::class.simpleName?.let { "Something went wrong ($it)" } ?: "Something went wrong"
     }
 

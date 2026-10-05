@@ -47,6 +47,17 @@ def fixture_jsonl(name):
         return [json.loads(l) for l in f if l.strip()]
 
 
+def attach_bytes(events):
+    """A recorded subscribe stream (snapshot ring tail + stream lines) as the raw repaint an attach sends."""
+    raw = ""
+    for ev in events:
+        if ev.get("type") == "snapshot":
+            raw = "".join(c for c in ev.get("streamTail") or [] if isinstance(c, str))
+        elif ev.get("type") == "stream":
+            raw += ev.get("line") or ""
+    return raw.encode("utf-8")
+
+
 def fixture_json(name):
     with open(fixture_path(name)) as f:
         return json.load(f)
