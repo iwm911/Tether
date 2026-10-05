@@ -10,7 +10,7 @@ import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(__file__))
-from helper_loader import fixture_jsonl, fixture_path, load_helper  # noqa
+from helper_loader import attach_bytes, fixture_jsonl, fixture_path, load_helper  # noqa
 from fake_home import FakeHome  # noqa
 
 h = load_helper()
@@ -451,9 +451,14 @@ class AnswerAndCodesTest(unittest.TestCase):
 
     def screen(self, text):
         rule = u"─" * 60
-        self.model.subscribe_events = [
+        self.screen_events([
             {"type": "snapshot", "record": {}, "streamTail": []},
-            {"type": "stream", "line": u"\x1b[2J\x1b[H" + rule + u"\r\n" + text.replace(u"\n", u"\r\n")}]
+            {"type": "stream", "line": u"\x1b[2J\x1b[H" + rule + u"\r\n" + text.replace(u"\n", u"\r\n")}])
+
+    def screen_events(self, events):
+        """The same screen for a subscribe (watch, sessions) and an attach (answer reads it where it types)."""
+        self.model.subscribe_events = events
+        self.model.attach_screen = attach_bytes(events)
 
     def unblock_on_keys(self):
         def unblock(keys):
@@ -466,7 +471,7 @@ class AnswerAndCodesTest(unittest.TestCase):
 
     def test_allow_always_presses_the_prompts_own_always_row(self):
         # Live 2.1.287 Write prompt: option 2 is "Yes, and switch to accept edits ... for this session".
-        self.model.subscribe_events = fixture_jsonl("subscribe_perm_write.jsonl")
+        self.screen_events(fixture_jsonl("subscribe_perm_write.jsonl"))
         self.unblock_on_keys()
         rc, out, err = self.home.run("answer", SID, stdin=json.dumps({"decision": "allow_always"}))
         self.assertEqual(rc, 0, (out, err))
@@ -500,6 +505,25 @@ class AnswerAndCodesTest(unittest.TestCase):
         rc, out, err = self.home.run("answer", SID, stdin=json.dumps({"decision": "allow"}))
         self.assertEqual(rc, 0, (out, err))
         self.assertEqual(bytes(self.model.keys), b"1")
+
+    def test_answer_types_nothing_while_the_message_box_is_up(self):
+        # The phone showed a permission prompt the machine's screen didn't: each tap typed its digit into
+        # Claude's message box ("11221") and the prompt was never answered.
+        rule = u"─" * 60
+        self.model.attach_screen = (u"\x1b[2J\x1b[H● Bash(make)\r\n" + rule + u"\r\n❯ \r\n" + rule +
+                                    u"\r\n  ⏸ manual mode on\r\n").encode("utf-8")
+        for decision in ("allow", "allow_always", "deny"):
+            rc, out, err = self.home.run("answer", SID, stdin=json.dumps({"decision": decision, "toolUseId": "toolu_new"}))
+            self.assertEqual((rc, out.get("code")), (1, "ESTALE"), (decision, out, err))
+            self.assertIn("isn't showing the prompt", out.get("error"))
+        self.assertEqual(bytes(self.model.keys), b"")
+
+    def test_an_option_digit_is_not_typed_into_the_message_box(self):
+        rule = u"─" * 60
+        self.model.attach_screen = (u"\x1b[2J\x1b[H" + rule + u"\r\n❯ \r\n" + rule + u"\r\n").encode("utf-8")
+        rc, out, err = self.home.run("key", SID, stdin=json.dumps({"keys": ["1"]}))
+        self.assertEqual((rc, out.get("code")), (1, "ESTALE"), (out, err))
+        self.assertEqual(bytes(self.model.keys), b"")
 
     def test_every_error_has_a_code(self):
         for args, stdin in ((("key", SID), {"keys": ["bogus"]}), (("key", SID), {"keys": []}),

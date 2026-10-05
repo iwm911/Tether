@@ -12,7 +12,7 @@ import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(__file__))
-from helper_loader import fixture_json, fixture_jsonl, fixture_path, load_helper  # noqa
+from helper_loader import attach_bytes, fixture_json, fixture_jsonl, fixture_path, load_helper  # noqa
 from fake_home import DEAD_PID, FakeHome  # noqa
 
 h = load_helper()
@@ -1117,6 +1117,7 @@ class WritesTest(unittest.TestCase):
     def test_answer_allow_always(self):
         # The prompt's own "always" row (here option 2 of a live-recorded Bash prompt), read off the screen.
         self.model.subscribe_events = fixture_jsonl("subscribe_perm_bash.jsonl")
+        self.model.attach_screen = attach_bytes(self.model.subscribe_events)
         self.model.on_keys = lambda k: self.model.records["bbbb2222"].update(tempo="active")
         rc, out, err = self.hm.run("answer", SID_B, stdin=json.dumps({"decision": "allow_always"}))
         self.assertEqual(rc, 0, err)

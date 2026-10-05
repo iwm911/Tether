@@ -4968,7 +4968,10 @@ def cmd_key(opts, arg):
         return
     chunks = key_chunks(req.get("keys"))
     ref = live_ref(arg)
-    press_keys(ref.short, chunks)
+    if any(c.isdigit() for c in chunks):
+        answer_on_screen(ref.short, lambda _lines: chunks)  # an option's digit: only into a dialog
+    else:
+        press_keys(ref.short, chunks)
     emit({"ok": True})
 
 
@@ -5162,7 +5165,7 @@ def cmd_answer(opts, arg):
         got = (s.get("pending") or {}).get("toolUseId")
         if got != want:
             raise coded_error("Claude is asking something else now. Open the session to see it.", "ESTALE")
-    press_keys(ref.short, [answer_key(ref.short, decision)])
+    answer_on_screen(ref.short, lambda lines: [answer_key(lines, decision)])
     msg = req.get("message")
     if decision == "deny" and isinstance(msg, str) and msg.strip():
         reply_retrying(ref.short, msg.strip())
@@ -5172,21 +5175,51 @@ def cmd_answer(opts, arg):
 ALWAYS_ALLOW_RE = re.compile(r"don.t ask again|always allow|allow all|accept edits|auto-approve|for this session", re.I)
 
 
-def permission_options(short):
-    """The numbered options of the prompt on the session's screen ([{label, key}]), or None when unreadable."""
-    lines = fetch_screen(short)
+def permission_options(lines):
+    """The numbered options of the prompt on the screen ([{label, key}]), or None when unreadable."""
     d = cut_dialog(lines) if lines else None
     opts = [o for o in (d or {}).get("options") or [] if o.get("key")]
     return opts or None
 
 
-def answer_key(short, decision):
+NOT_ON_SCREEN = "Claude Code isn't showing the prompt on the machine's screen. Open the session to see it."
+
+
+def answer_on_screen(short, pick, gap=0.15):
+    """Types an answer into the prompt on the session's screen, read on the same attach that types it:
+    pick(lines) -> the byte chunks to type. Refuses (types nothing) while the screen shows the ordinary
+    prompt box: the keys would land in Claude's message box, not the prompt (a phone tap typed "1" there and
+    the prompt stayed open). A digit that lands there anyway is erased again and the answer refused."""
+    tui = DaemonTui(short, cols=KEY_COLS, rows=KEY_ROWS)
+    try:
+        lines = tui.lines()
+        if prompt_box_text(lines) is not None:
+            tui.pump(1.5, until=lambda t: prompt_box_text(t.lines()) is None)  # the dialog can draw a moment late
+            lines = tui.lines()
+            if prompt_box_text(lines) is not None:
+                raise coded_error(NOT_ON_SCREEN, "ESTALE")
+        chunks = pick(lines)
+        for c in chunks:
+            tui.send(c, gap)
+        tui.pump(0.6)
+        digits = b"".join(c for c in chunks if c.isdigit()).decode()
+        typed = prompt_box_text(tui.lines())
+        if digits and typed and typed.endswith(digits):
+            for _ in digits:
+                tui.send(KEY_BYTES["backspace"], 0.05)
+            tui.pump(0.3)
+            raise coded_error(NOT_ON_SCREEN, "ESTALE")
+    finally:
+        tui.close()
+
+
+def answer_key(lines, decision):
     """The key for a permission decision, read off the prompt itself: option 2 is not always "don't ask again"
     (Bash: "always allow access to <dir>", Write: "switch to accept edits", ExitPlanMode: "manually approve
     edits", a plain Yes / No prompt: No). Esc always cancels; "1" is Yes on every permission prompt."""
     if decision == "deny":
         return b"\x1b"
-    opts = permission_options(short)
+    opts = permission_options(lines)
     yes = [o for o in opts or [] if re.match(r"(?i)yes\b", o.get("label") or "")]
     if decision == "allow":
         if opts is not None and not any(o["key"] == "1" for o in yes):
