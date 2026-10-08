@@ -102,7 +102,8 @@ internal fun QuestionBody(
 ) {
     val haptics = rememberHaptics()
     val scope = rememberCoroutineScope()
-    var inputJson by remember(item.requestId) { mutableStateOf(item.inputJson) }
+    // Re-read when the same request comes back with more known (e.g. multiSelect read off the screen later).
+    var inputJson by remember(item.requestId, item.inputJson) { mutableStateOf(item.inputJson) }
     val prompt: AskPrompt = remember(inputJson) { AskQuestions.parse(inputJson) }
     var loadError by remember(item.requestId) { mutableStateOf<String?>(null) }
     var loading by remember(item.requestId) { mutableStateOf(false) }

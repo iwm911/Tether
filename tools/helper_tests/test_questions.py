@@ -153,6 +153,44 @@ class ToolInputTest(unittest.TestCase):
             inp = json.loads(h.question_pending("nosuchagent", st, tpath)["inputJson"])
             self.assertFalse(inp["multiSelectKnown"])
 
+    def screen(self, tab):
+        """The live screen with question tab (0 or 1) of BLOCK showing, as 2.1.292 draws it."""
+        q = self.BLOCK["questions"][tab]
+        box = "[ ] " if tab == 0 else ""
+        return (["Earlier output: [x] done", "─" * 80, "←  ☐ Pets  ☐ Color  ✔ Submit  →", "│ " + q["question"]] +
+                ["%s%d. %s%s" % ("❯ " if n == 1 else "  ", n, box, o["label"]) for n, o in enumerate(q["options"], 1)] +
+                ["  3. %sType something" % box, "─" * 80, "  4. Chat about this", "Enter to select"])
+
+    def test_pending_question_reads_multi_select_off_the_screen(self):
+        # 2.1.292 writes the AskUserQuestion tool_use only once answered: the transcript can't tell.
+        import json
+        st = {"needs": "q-screen", "block": self.BLOCK}
+        reads = []
+
+        def screen(tab):
+            return lambda: reads.append(tab) or self.screen(tab)
+        inp = json.loads(h.question_pending("screenagent", st, None, screen(0))["inputJson"])
+        self.assertEqual([(q["header"], q.get("multiSelect")) for q in inp["questions"]], [("Pets", True), ("", None)])
+        self.assertFalse(inp["multiSelectKnown"])
+        # the terminal moves to the second tab: what the first read saw is kept
+        p = h.question_pending("screenagent", st, None, screen(1))
+        inp = json.loads(p["inputJson"])
+        self.assertTrue(inp["multiSelectKnown"])
+        self.assertEqual([(q["header"], q["multiSelect"]) for q in inp["questions"]], [("Pets", True), ("Color", False)])
+        # once every question is known, the screen is not read again; the request id never changes
+        p2 = h.question_pending("screenagent", st, None, screen(0))
+        self.assertEqual(reads, [0, 1])
+        self.assertEqual(p2["inputJson"], p["inputJson"])
+        self.assertEqual(p["toolUseId"], h.question_pending("screenagent", st)["toolUseId"])
+
+    def test_transcript_wins_over_the_screen(self):
+        def no_screen():
+            raise AssertionError("read the screen")
+        import json
+        st = {"needs": "q", "block": self.BLOCK}
+        inp = json.loads(h.question_pending("nosuchagent", st, self.transcript(self.INPUT), no_screen)["inputJson"])
+        self.assertTrue(inp["multiSelectKnown"])
+
     def test_ensure_multi_reads_the_transcript_before_the_screen(self):
         def no_tui():
             raise AssertionError("pressed keys")

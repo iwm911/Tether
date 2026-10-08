@@ -1143,7 +1143,34 @@ def cached_multi(agent_id, key):
     return c.get("multi") if c.get("key") == key and isinstance(c.get("multi"), list) else None
 
 
-def question_pending(agent_id, st, tpath=None):
+def screen_seen(agent_id, key, qs, screen):
+    """{index: {"multiSelect", "header"}} for the questions read so far off the live screen, without pressing a key:
+    the tab showing now is added to what earlier reads saw (cached per question block). 2.1.292 writes the
+    AskUserQuestion tool_use to the transcript only once it is answered, so this is how the flags are known before."""
+    path = os.path.join(TETHER_DIR, "qcache", agent_id + ".screen.json")
+    c = read_json(path, {}) or {}
+    seen = c.get("seen") if c.get("key") == key and isinstance(c.get("seen"), dict) else {}
+    if not screen or all(str(i) in seen for i in range(len(qs))):
+        return seen
+    lines = screen()
+    if not lines:
+        return seen
+    idx, multi = current_question(re.sub(r"\s+", "", "\n".join(lines)), qs)
+    if idx is None:
+        return seen
+    parsed = parse_question_screen(lines) or {}
+    tabs = parsed.get("tabs") or []
+    seen[str(idx)] = {"multiSelect": bool(multi), "header": tabs[idx] if len(tabs) == len(qs) else ""}
+    try:
+        ensure_dir(os.path.dirname(path))
+        write_json_atomic(path, {"key": key, "seen": seen})
+    except (OSError, IOError):
+        pass
+    return seen
+
+
+def question_pending(agent_id, st, tpath=None, screen=None):
+    """screen: a callable giving the live worker's screen lines, read when the transcript can't tell multiSelect."""
     qs = question_block(st)
     if not qs:
         c = read_json(qcache_path(agent_id), {}) or {}
@@ -1164,6 +1191,12 @@ def question_pending(agent_id, st, tpath=None):
         elif multi is not None and i < len(multi):
             e["multiSelect"] = bool(multi[i])
         questions.append(e)
+    if any("multiSelect" not in e for e in questions):
+        for i, f in screen_seen(agent_id, key, qs, screen).items():
+            e = questions[int(i)] if i.isdigit() and int(i) < len(questions) else None
+            if e is not None and "multiSelect" not in e:
+                e["multiSelect"] = f.get("multiSelect") is True
+                e["header"] = e["header"] or f.get("header") or ""
     return {
         "toolUseId": "q-" + key,
         "toolName": "AskUserQuestion",
@@ -3018,7 +3051,8 @@ def session_pending(short, st, reg, tpath, cwd, live_short=None, screen=None):
     """What a needs_you session is waiting for: a question, a tool permission, or a dialog (read from the live
     worker live_short's screen)."""
     wf = (reg or {}).get("waitingFor")
-    q = question_pending(short, st, tpath) if short else None
+    q = question_pending(short, st, tpath, (screen or (lambda: fetch_screen(live_short))) if live_short else None) \
+        if short else None
     if q:
         return dict(q, kind="question")
     if wf in (None, "permission prompt") and tpath:
