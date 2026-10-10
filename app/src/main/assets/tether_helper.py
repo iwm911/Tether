@@ -1143,12 +1143,32 @@ def cached_multi(agent_id, key):
     return c.get("multi") if c.get("key") == key and isinstance(c.get("multi"), list) else None
 
 
+def screen_cache_path(agent_id):
+    return os.path.join(TETHER_DIR, "qcache", agent_id + ".screen.json")
+
+
+def update_screen_cache(agent_id, key, change):
+    """Applies change(cache) to the question block's screen cache under a lock and returns what change returned.
+    A passive read and a tab walk (another process) both add to it; neither may drop what the other saw."""
+    import fcntl
+    path = screen_cache_path(agent_id)
+    ensure_dir(os.path.dirname(path))
+    with open(path + ".lock", "a") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        c = read_json(path, {}) or {}
+        if c.get("key") != key or not isinstance(c.get("seen"), dict):
+            c = {"key": key, "seen": {}}
+        r = change(c)
+        write_json_atomic(path, c)
+        return r
+
+
 def screen_seen(agent_id, key, qs, screen):
     """{index: {"multiSelect", "header"}} for the questions read so far off the live screen, without pressing a key:
-    the tab showing now is added to what earlier reads saw (cached per question block). 2.1.292 writes the
-    AskUserQuestion tool_use to the transcript only once it is answered, so this is how the flags are known before."""
-    path = os.path.join(TETHER_DIR, "qcache", agent_id + ".screen.json")
-    c = read_json(path, {}) or {}
+    the tab showing now is added to what earlier reads (and the tab walk) saw, cached per question block. 2.1.292
+    writes the AskUserQuestion tool_use to the transcript only once it is answered, so this is how the flags are
+    known before."""
+    c = read_json(screen_cache_path(agent_id), {}) or {}
     seen = c.get("seen") if c.get("key") == key and isinstance(c.get("seen"), dict) else {}
     if not screen or all(str(i) in seen for i in range(len(qs))):
         return seen
@@ -1160,17 +1180,88 @@ def screen_seen(agent_id, key, qs, screen):
         return seen
     parsed = parse_question_screen(lines) or {}
     tabs = parsed.get("tabs") or []
-    seen[str(idx)] = {"multiSelect": bool(multi), "header": tabs[idx] if len(tabs) == len(qs) else ""}
+    entry = {"multiSelect": bool(multi), "header": tabs[idx] if len(tabs) == len(qs) else ""}
+
+    def add(c):
+        c["seen"][str(idx)] = entry
+        return c["seen"]
     try:
-        ensure_dir(os.path.dirname(path))
-        write_json_atomic(path, {"key": key, "seen": seen})
+        return update_screen_cache(agent_id, key, add)
     except (OSError, IOError):
-        pass
-    return seen
+        return dict(seen, **{str(idx): entry})
 
 
-def question_pending(agent_id, st, tpath=None, screen=None):
-    """screen: a callable giving the live worker's screen lines, read when the transcript can't tell multiSelect."""
+def walk_question_tabs(agent_id, key, qs, tui_factory):
+    """Steps through every question tab with ←/→ (nothing is chosen) to read each one's multiSelect and header, then
+    goes back to the tab that was showing. A passive read sees only that tab, so without this the phone drew the
+    other questions as choose-one until the terminal happened to show them."""
+    seen = {}
+    tui = tui_factory()
+    try:
+        tui.qcur, multi = current_question(tui.screen_text(), qs)
+        start = tui.qcur
+        if start is not None:
+            seen[start] = multi
+        for i in range(len(qs)):
+            goto_question(tui, qs, i, seen)
+        tabs = (parse_question_screen(tui.lines()) or {}).get("tabs") or []
+        entries = dict((str(i), {"multiSelect": bool(m), "header": tabs[i] if len(tabs) == len(qs) else ""})
+                       for i, m in seen.items())
+        # Saved before stepping back, so the repaint that follows has a watcher re-read a complete question.
+        update_screen_cache(agent_id, key, lambda c: c["seen"].update(entries))
+        goto_question(tui, qs, start if start is not None else 0)
+    finally:
+        tui.close()
+    return entries
+
+
+def claim_tab_walk(agent_id, key):
+    """True the first time for a question block: it gets one tab walk, however many sessions lists ask."""
+    def claim(c):
+        if c.get("walked"):
+            return False
+        c["walked"] = True
+        return True
+    try:
+        return update_screen_cache(agent_id, key, claim)
+    except (OSError, IOError):
+        return False
+
+
+def start_tab_walk(agent_id, live_short, key, qs):
+    """walk_question_tabs on the live worker, in a detached process so the sessions list doesn't wait on the key
+    presses. The next read of the question picks up what it saw."""
+    if not hasattr(os, "fork") or not claim_tab_walk(agent_id, key):
+        return
+    try:
+        pid = os.fork()
+    except OSError:
+        return
+    if pid:
+        try:
+            os.waitpid(pid, 0)
+        except OSError:
+            pass
+        return
+    try:
+        os.setsid()
+        if os.fork() == 0:
+            # Let go of the caller's stdout (the phone's ssh channel waits for it to close) and sockets.
+            null = os.open(os.devnull, os.O_RDWR)
+            for fd in (0, 1, 2):
+                os.dup2(null, fd)
+            os.closerange(3, 1024)
+            try:
+                walk_question_tabs(agent_id, key, qs, lambda: DaemonTui(live_short))
+            except Exception:  # noqa: BLE001 - best effort: the passive read still fills tabs in as they show
+                pass
+    finally:
+        os._exit(0)
+
+
+def question_pending(agent_id, st, tpath=None, screen=None, walk=None):
+    """screen: a callable giving the live worker's screen lines, read when the transcript can't tell multiSelect.
+    walk(key, qs): starts a tab walk when the screen read still leaves a question unknown."""
     qs = question_block(st)
     if not qs:
         c = read_json(qcache_path(agent_id), {}) or {}
@@ -1197,6 +1288,8 @@ def question_pending(agent_id, st, tpath=None, screen=None):
             if e is not None and "multiSelect" not in e:
                 e["multiSelect"] = f.get("multiSelect") is True
                 e["header"] = e["header"] or f.get("header") or ""
+        if walk and any("multiSelect" not in e for e in questions):
+            walk(key, qs)
     return {
         "toolUseId": "q-" + key,
         "toolName": "AskUserQuestion",
@@ -1417,6 +1510,9 @@ def current_question(text, qs):
     text is the rendered screen (DaemonTui.screen_text()). Match fuzzily anyway, as the question may not fit the
     screen: whole option labels that appear, plus the longest run of the question text on screen."""
     import difflib
+    bar = text.rfind(u"Submit→")
+    if bar >= 0:
+        text = text[bar:]  # the question sits below the tab bar; what is above may quote every question
     if "Readytosubmityouranswers?" in text or "Reviewyouranswers" in text:
         return None, None  # the Submit review lists the questions and their answers
     best, best_score = None, 0.0
@@ -3051,7 +3147,8 @@ def session_pending(short, st, reg, tpath, cwd, live_short=None, screen=None):
     """What a needs_you session is waiting for: a question, a tool permission, or a dialog (read from the live
     worker live_short's screen)."""
     wf = (reg or {}).get("waitingFor")
-    q = question_pending(short, st, tpath, (screen or (lambda: fetch_screen(live_short))) if live_short else None) \
+    q = question_pending(short, st, tpath, (screen or (lambda: fetch_screen(live_short))) if live_short else None,
+                         (lambda key, qs: start_tab_walk(short, live_short, key, qs)) if live_short else None) \
         if short else None
     if q:
         return dict(q, kind="question")
