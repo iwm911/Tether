@@ -31,15 +31,17 @@ QS = [
 TABS = "←  ☐ Build plan  ☐ Unread zip  ☐ Clock reset  ✔ Submit  →"
 
 
-def tab_screen(i):
-    """The screen with question i (or the Submit review, i == len(QS)) showing, as ROWS lines of COLS cells."""
+def tab_screen(i, multi=()):
+    """The screen with question i (or the Submit review, i == len(QS)) showing, as ROWS lines of COLS cells.
+    Questions in multi draw a box on each option."""
     lines = ["Earlier output from Claude, e.g. a checklist: [x] done", "", TABS, ""]
     if i < len(QS):
         q = QS[i]
         import textwrap
         lines += textwrap.wrap(q["question"], 116) + [""]
+        box = "[ ] " if i in multi else ""
         for n, o in enumerate(q["options"], 1):
-            lines.append(("❯ " if n == 1 else "  ") + "%d. %s" % (n, o["label"]))
+            lines.append(("❯ " if n == 1 else "  ") + "%d. %s%s" % (n, box, o["label"]))
         lines += ["  %d. Type something." % (len(q["options"]) + 1), "─" * COLS,
                   "  %d. Chat about this" % (len(q["options"]) + 2)]
     else:
@@ -52,24 +54,26 @@ def tab_screen(i):
 class DiffTui(object):
     """A DaemonTui stand-in: ←/→ move between the tabs (no wrap), and each move writes only the changed cells."""
 
-    def __init__(self, at=0):
-        self.at = at
+    def __init__(self, at=0, multi=()):
+        self.at, self.multi = at, multi
+        self.sent = []
         self.buf = bytearray()
         self.screen, self.screen_fed = h.Screen(ROWS, COLS), 0
         import codecs
         self.screen_dec = codecs.getincrementaldecoder("utf-8")("replace")
-        self._write("\x1b[2J\x1b[H" + "\r\n".join(tab_screen(at)).rstrip())
+        self._write("\x1b[2J\x1b[H" + "\r\n".join(tab_screen(at, multi)).rstrip())
 
     def _write(self, s):
         self.buf.extend(s.encode("utf-8"))
 
     def send(self, data, wait=0.8):
-        before = tab_screen(self.at)
+        self.sent.append(data)
+        before = tab_screen(self.at, self.multi)
         if data == b"\x1b[C":
             self.at = min(self.at + 1, len(QS))
         elif data == b"\x1b[D":
             self.at = max(self.at - 1, 0)
-        after = tab_screen(self.at)
+        after = tab_screen(self.at, self.multi)
         out = []
         for r in range(ROWS):
             for c in range(COLS):
@@ -196,6 +200,49 @@ class ToolInputTest(unittest.TestCase):
             raise AssertionError("pressed keys")
         qs, multi = h.ensure_multi("nosuchagent", {"needs": "q", "block": self.BLOCK}, no_tui, self.transcript(self.INPUT))
         self.assertEqual(multi, [True, False])
+
+
+class TabWalkTest(unittest.TestCase):
+    """2.1.292 writes the tool_use only once answered and a passive read sees one tab: the rest come from a walk."""
+    ST = {"needs": "q-walk", "block": {"questions": [{"question": q["question"], "options": q["options"]} for q in QS]}}
+
+    def test_pending_question_walks_the_tabs_it_could_not_see(self):
+        import json
+        tui = DiffTui(0, multi=(0, 1, 2))
+        walks = []
+
+        def walk(key, qs):
+            walks.append(key)
+            h.walk_question_tabs("walkagent", key, qs, lambda: tui)
+        p = h.question_pending("walkagent", self.ST, None, tui.lines, walk)
+        self.assertFalse(json.loads(p["inputJson"])["multiSelectKnown"])  # this read saw only the first tab
+        self.assertEqual(tui.at, 0)  # back where it was
+        p2 = h.question_pending("walkagent", self.ST, None, tui.lines, walk)
+        inp = json.loads(p2["inputJson"])
+        self.assertTrue(inp["multiSelectKnown"])
+        self.assertEqual([(q["header"], q["multiSelect"]) for q in inp["questions"]],
+                         [("Build plan", True), ("Unread zip", True), ("Clock reset", True)])
+        self.assertEqual(len(walks), 1)
+        self.assertEqual(p2["toolUseId"], p["toolUseId"])
+
+    def test_walk_returns_to_the_tab_that_was_showing(self):
+        tui = DiffTui(1, multi=(2,))
+        seen = h.walk_question_tabs("walkagent2", "k", QS, lambda: tui)
+        self.assertEqual(tui.at, 1)
+        self.assertEqual(dict((i, f["multiSelect"]) for i, f in seen.items()), {"0": False, "1": False, "2": True})
+        self.assertNotIn(b"\r", tui.sent)  # nothing chosen
+
+    def test_only_what_is_below_the_tab_bar_counts(self):
+        # the prompt above may quote every question and option
+        above = [" ".join(q["question"] + " " + " ".join(o["label"] for o in q["options"]) for q in QS)]
+        for i in range(len(QS)):
+            text = "".join(above + tab_screen(i, multi=(2,))).replace(" ", "")
+            self.assertEqual(h.current_question(text, QS), (i, i == 2))
+
+    def test_one_walk_per_question_block(self):
+        self.assertTrue(h.claim_tab_walk("walkagent3", "k1"))
+        self.assertFalse(h.claim_tab_walk("walkagent3", "k1"))
+        self.assertTrue(h.claim_tab_walk("walkagent3", "k2"))
 
 
 if __name__ == "__main__":
