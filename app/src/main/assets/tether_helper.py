@@ -2747,8 +2747,10 @@ def local_command_line(o):
 
 
 def scan_tail_facts(data):
-    """lastText, model, permissionMode, PR links and the newest entry's time from the end of a transcript."""
-    f = {"lastText": None, "model": None, "permissionMode": None, "prs": [], "lastEntry": None, "lastAt": None}
+    """lastText, model, permissionMode, PR links, the newest entry's time and the session it was continued in
+    (continuedIn: "" once a later turn shows it went on here after all) from the end of a transcript."""
+    f = {"lastText": None, "model": None, "permissionMode": None, "prs": [], "lastEntry": None, "lastAt": None,
+         "continuedIn": None}
     for raw in iter_lines_bytes(data):
         if b'"timestamp":"' in raw:
             # Activity is the newest timestamped entry, not the file's mtime: Claude Code appends untimed
@@ -2761,6 +2763,7 @@ def scan_tail_facts(data):
             o = parse_line(raw)
             if o and o.get("type") == "user" and not o.get("isSidechain"):
                 f["lastEntry"] = "local" if local_command_line(o) else "user"
+                f["continuedIn"] = ""
         if b'"type":"user"' in raw and b'"permissionMode"' in raw:
             # Each prompt records the mode it ran in; it can differ from the last permission-mode line (a wake
             # without the flag starts in the settings defaultMode).
@@ -2777,12 +2780,18 @@ def scan_tail_facts(data):
                 pr = {"id": str(o.get("prNumber") or ""), "href": o["prUrl"], "kind": "pr"}
                 if pr not in f["prs"]:
                     f["prs"].append(pr)
+        elif b'"continued-in"' in raw:
+            # /bg of a terminal session: Claude Code goes on under a new id and ends this transcript with this line.
+            o = parse_line(raw)
+            if o and o.get("type") == "continued-in" and isinstance(o.get("continuedInSessionId"), str):
+                f["continuedIn"] = o["continuedInSessionId"]
         elif b'"assistant"' in raw and b'"isSidechain":true' not in raw:
             o = parse_line(raw)
             msg = o.get("message") if o and o.get("type") == "assistant" and isinstance(o.get("message"), dict) else None
             if not msg or o.get("isSidechain"):
                 continue
             f["lastEntry"] = "assistant"
+            f["continuedIn"] = ""
             if isinstance(msg.get("model"), str) and not msg["model"].startswith("<"):
                 f["model"] = msg["model"]
             parts = [b.get("text") for b in (msg.get("content") or []) if isinstance(b, dict)
@@ -2799,7 +2808,7 @@ class TranscriptFacts(object):
         self.index = SessionIndex("sessions_v2.json", count=False)
         self.path = os.path.join(CACHE_DIR, "session_tails.json")
         data = read_json(self.path, {}) or {}
-        self.tails = data.get("files") if isinstance(data.get("files"), dict) and data.get("v") == 2 else {}
+        self.tails = data.get("files") if isinstance(data.get("files"), dict) and data.get("v") == 3 else {}
         self.dirty = False
 
     def info(self, path, st):
@@ -2812,7 +2821,7 @@ class TranscriptFacts(object):
             return cur
         facts = scan_tail_facts(read_tail(path, TAIL_BYTES))
         if cur and cur.get("size", 0) <= size:
-            for k in ("lastText", "model", "permissionMode", "lastEntry", "lastAt"):
+            for k in ("lastText", "model", "permissionMode", "lastEntry", "lastAt", "continuedIn"):
                 if facts.get(k) is None:
                     facts[k] = cur.get(k)
             facts["prs"] = (cur.get("prs") or []) + [p for p in facts["prs"] if p not in (cur.get("prs") or [])]
@@ -2839,7 +2848,7 @@ class TranscriptFacts(object):
                 del self.tails[k]
         try:
             ensure_dir(CACHE_DIR)
-            write_json_atomic(self.path, {"v": 2, "files": self.tails})
+            write_json_atomic(self.path, {"v": 3, "files": self.tails})
             self.dirty = False
         except (OSError, IOError):
             pass
@@ -3338,6 +3347,10 @@ def build_sessions(src, facts, want_cwd=None, limit=SESSIONS_LIMIT, before=None)
             del out[limit:]
             if rough((slot, tf)) <= out[-1]["updatedAt"]:
                 break
+        if tf and not (slot["jobs"] or slot["rec"] or slot["term"]):
+            cont = facts.tail(tf[0], tf[1]).get("continuedIn")
+            if cont and (cont in slots or cont in by_file):
+                continue  # the half before a /bg: the session it continued in shows the whole conversation
         try:
             s = make_session(slot, facts, tf)
         except (OSError, IOError, ValueError, KeyError, TypeError):
