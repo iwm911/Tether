@@ -2747,13 +2747,23 @@ def local_command_line(o):
 
 
 def scan_tail_facts(data):
-    """lastText, model, permissionMode, PR links from the end of a transcript."""
-    f = {"lastText": None, "model": None, "permissionMode": None, "prs": [], "lastEntry": None}
+    """lastText, model, permissionMode, PR links, the newest entry's time and the session it was continued in
+    (continuedIn: "" once a later turn shows it went on here after all) from the end of a transcript."""
+    f = {"lastText": None, "model": None, "permissionMode": None, "prs": [], "lastEntry": None, "lastAt": None,
+         "continuedIn": None}
     for raw in iter_lines_bytes(data):
+        if b'"timestamp":"' in raw:
+            # Activity is the newest timestamped entry, not the file's mtime: Claude Code appends untimed
+            # bookkeeping (an artifact-autoreact-ledger line every few hours) to sessions idle for days.
+            o = parse_line(raw)
+            t = iso_to_ms(o.get("timestamp")) if isinstance(o, dict) else None
+            if t and t > (f["lastAt"] or 0):
+                f["lastAt"] = t
         if b'"type":"user"' in raw and b'"isSidechain":true' not in raw:
             o = parse_line(raw)
             if o and o.get("type") == "user" and not o.get("isSidechain"):
                 f["lastEntry"] = "local" if local_command_line(o) else "user"
+                f["continuedIn"] = ""
         if b'"type":"user"' in raw and b'"permissionMode"' in raw:
             # Each prompt records the mode it ran in; it can differ from the last permission-mode line (a wake
             # without the flag starts in the settings defaultMode).
@@ -2770,12 +2780,18 @@ def scan_tail_facts(data):
                 pr = {"id": str(o.get("prNumber") or ""), "href": o["prUrl"], "kind": "pr"}
                 if pr not in f["prs"]:
                     f["prs"].append(pr)
+        elif b'"continued-in"' in raw:
+            # /bg of a terminal session: Claude Code goes on under a new id and ends this transcript with this line.
+            o = parse_line(raw)
+            if o and o.get("type") == "continued-in" and isinstance(o.get("continuedInSessionId"), str):
+                f["continuedIn"] = o["continuedInSessionId"]
         elif b'"assistant"' in raw and b'"isSidechain":true' not in raw:
             o = parse_line(raw)
             msg = o.get("message") if o and o.get("type") == "assistant" and isinstance(o.get("message"), dict) else None
             if not msg or o.get("isSidechain"):
                 continue
             f["lastEntry"] = "assistant"
+            f["continuedIn"] = ""
             if isinstance(msg.get("model"), str) and not msg["model"].startswith("<"):
                 f["model"] = msg["model"]
             parts = [b.get("text") for b in (msg.get("content") or []) if isinstance(b, dict)
@@ -2792,7 +2808,7 @@ class TranscriptFacts(object):
         self.index = SessionIndex("sessions_v2.json", count=False)
         self.path = os.path.join(CACHE_DIR, "session_tails.json")
         data = read_json(self.path, {}) or {}
-        self.tails = data.get("files") if isinstance(data.get("files"), dict) and data.get("v") == 1 else {}
+        self.tails = data.get("files") if isinstance(data.get("files"), dict) and data.get("v") == 3 else {}
         self.dirty = False
 
     def info(self, path, st):
@@ -2805,7 +2821,7 @@ class TranscriptFacts(object):
             return cur
         facts = scan_tail_facts(read_tail(path, TAIL_BYTES))
         if cur and cur.get("size", 0) <= size:
-            for k in ("lastText", "model", "permissionMode", "lastEntry"):
+            for k in ("lastText", "model", "permissionMode", "lastEntry", "lastAt", "continuedIn"):
                 if facts.get(k) is None:
                     facts[k] = cur.get(k)
             facts["prs"] = (cur.get("prs") or []) + [p for p in facts["prs"] if p not in (cur.get("prs") or [])]
@@ -2813,6 +2829,15 @@ class TranscriptFacts(object):
         self.tails[path] = facts
         self.dirty = True
         return facts
+
+    def active_at(self, path, st):
+        """When the session last wrote its transcript: the newest entry's time once the tail is cached for this
+        size and mtime, else the mtime (which can only overstate it)."""
+        mt = int(st.st_mtime * 1000)
+        cur = self.tails.get(path)
+        if cur and cur.get("size") == st.st_size and cur.get("mtime") == mt and cur.get("lastAt"):
+            return min(mt, cur["lastAt"])
+        return mt
 
     def save(self):
         self.index.save()
@@ -2823,7 +2848,7 @@ class TranscriptFacts(object):
                 del self.tails[k]
         try:
             ensure_dir(CACHE_DIR)
-            write_json_atomic(self.path, {"v": 1, "files": self.tails})
+            write_json_atomic(self.path, {"v": 3, "files": self.tails})
             self.dirty = False
         except (OSError, IOError):
             pass
@@ -3229,7 +3254,8 @@ def make_session(slot, facts=None, tfile=None, screen=None):
     in_flight = st.get("inFlight") if isinstance(st.get("inFlight"), dict) else {}
     output = st.get("output") if isinstance(st.get("output"), dict) else {}
     jd = os.path.join(JOBS_DIR, short) if short and NATIVE_ID_RE.match(short) else None
-    updated = max([0, iso_to_ms(st.get("updatedAt")) or 0, mtime_ms(path) if path else 0,
+    wrote = (tail.get("lastAt") or mtime_ms(path)) if path else 0
+    updated = max([0, iso_to_ms(st.get("updatedAt")) or 0, wrote,
                    mtime_ms(os.path.join(jd, "state.json")) if jd else 0] +
                   [v for v in (reg.get("updatedAt"), reg.get("statusUpdatedAt")) if isinstance(v, (int, float))])
     # The session's own start: every wake makes a new daemon record (and may make a new job), so the live
@@ -3303,19 +3329,28 @@ def build_sessions(src, facts, want_cwd=None, limit=SESSIONS_LIMIT, before=None)
 
     def rough(c):
         slot, tf = c
-        t = int(tf[1].st_mtime * 1000) if tf else 0
+        t = facts.active_at(tf[0], tf[1]) if tf else 0
         for short, st in slot["jobs"]:
             t = max(t, iso_to_ms(st.get("updatedAt")) or 0)
-        return t
+            if NATIVE_ID_RE.match(short or ""):
+                t = max(t, mtime_ms(os.path.join(JOBS_DIR, short, "state.json")))
+        reg = slot.get("term") or slot.get("bg") or {}
+        return max([t] + [v for v in (reg.get("updatedAt"), reg.get("statusUpdatedAt")) if isinstance(v, (int, float))])
 
     cands.sort(key=rough, reverse=True)
+    # rough() can overstate (a transcript's mtime before its tail is read), so it orders the work and ends it,
+    # but never drops a session on its own.
     out = []
     for slot, tf in cands:
         if len(out) >= limit:
-            break
-        live = record_live(slot.get("rec")) or slot.get("term")
-        if before is not None and not live and rough((slot, tf)) >= before:
-            continue
+            out.sort(key=lambda s: s["updatedAt"], reverse=True)
+            del out[limit:]
+            if rough((slot, tf)) <= out[-1]["updatedAt"]:
+                break
+        if tf and not (slot["jobs"] or slot["rec"] or slot["term"]):
+            cont = facts.tail(tf[0], tf[1]).get("continuedIn")
+            if cont and (cont in slots or cont in by_file):
+                continue  # the half before a /bg: the session it continued in shows the whole conversation
         try:
             s = make_session(slot, facts, tf)
         except (OSError, IOError, ValueError, KeyError, TypeError):
