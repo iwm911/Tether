@@ -181,6 +181,21 @@ class SessionsTest(unittest.TestCase):
         self.assertTrue(all(order.index(SID_D) > order.index(sid) for sid in (SID_A, SID_B, SID_C, SID_E)), order)
         self.assertEqual([s["sessionId"] for s in self.sessions(limit=2)], [s["sessionId"] for s in all_[:2]])
 
+    def test_half_before_a_bg_is_not_its_own_session(self):
+        # /bg of a terminal session: Claude Code goes on under SID_D and ends the old transcript with continued-in.
+        old = "9999aaaa-1111-4111-8111-111111111111"
+        cont = {"type": "continued-in", "timestamp": "2026-10-01T10:00:02.000Z", "sessionId": old,
+                "continuedInSessionId": SID_D}
+        hm = self.w.home
+        hm.transcript(self.w.other, old, [user_line("plain old session", cwd=self.w.other), assistant_line("On it."), cont],
+                      mtime=time.time())
+        self.assertNotIn(old, self.by_sid())
+        # Resumed by its own id later: a session again.
+        hm.transcript(self.w.other, old, [user_line("plain old session", cwd=self.w.other), assistant_line("On it."), cont,
+                                          user_line("back here", ts="2026-10-01T11:00:00.000Z", cwd=self.w.other)],
+                      mtime=time.time())
+        self.assertIn(old, self.by_sid())
+
     def test_blocked_question_is_needs_you_with_pending_question(self):
         b = self.by_sid()[SID_B]
         self.assertEqual((b["state"], b["waitingFor"]), ("needs_you", "input needed"))
