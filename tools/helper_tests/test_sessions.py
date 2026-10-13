@@ -167,6 +167,20 @@ class SessionsTest(unittest.TestCase):
         self.assertEqual(last([assistant_line("yo"), user_line([{"type": "tool_result", "tool_use_id": "t", "content": "<local-command-stdout>"}], uuid="u-tool")]), "user")
         self.assertEqual(last([user_line("hi")]), "user")
 
+    def test_untimed_bookkeeping_is_not_activity(self):
+        # Claude Code appends an artifact-autoreact-ledger line every few hours to a session idle for days: the
+        # transcript's mtime moves, its last entry does not.
+        hm, t = self.w.home, time.time()
+        ledger = {"type": "artifact-autoreact-ledger", "v": 1, "sessionId": SID_D, "artifacts": {}}
+        hm.transcript(self.w.other, SID_D, [user_line("plain old session", ts="2026-09-01T10:00:00.000Z", cwd=self.w.other),
+                                            assistant_line("Hello.", ts="2026-09-01T10:00:05.000Z"), ledger, ledger], mtime=t)
+        all_ = self.sessions()
+        d = [s for s in all_ if s["sessionId"] == SID_D][0]
+        self.assertEqual(d["updatedAt"], self.h.iso_to_ms("2026-09-01T10:00:05.000Z"))
+        order = [s["sessionId"] for s in all_]
+        self.assertTrue(all(order.index(SID_D) > order.index(sid) for sid in (SID_A, SID_B, SID_C, SID_E)), order)
+        self.assertEqual([s["sessionId"] for s in self.sessions(limit=2)], [s["sessionId"] for s in all_[:2]])
+
     def test_blocked_question_is_needs_you_with_pending_question(self):
         b = self.by_sid()[SID_B]
         self.assertEqual((b["state"], b["waitingFor"]), ("needs_you", "input needed"))
