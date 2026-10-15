@@ -322,6 +322,35 @@ class SessionsTest(unittest.TestCase):
             json.dump({SID_D: os.path.getsize(p)}, fh)
         self.assertNotIn(SID_D, self.by_sid())
 
+    def job_with_transcript(self):
+        sid = "9999bbbb-1111-4111-8111-111111111111"
+        self.w.home.transcript(self.w.proj, sid, [user_line("bg job", cwd=self.w.proj), assistant_line("Done.")],
+                               mtime=time.time() - 30)
+        self.w.home.job(sid[:8], sessionId=sid, cwd=self.w.proj, state="done", tempo="idle", name="bg job")
+        return sid, os.path.join(self.w.home.claude, "jobs", sid[:8])
+
+    def test_deleted_in_claude_agents_hides_until_it_grows(self):
+        # claude agents' delete (claude rm) kills the worker and deletes the job dir, keeping the transcript.
+        sid, jd = self.job_with_transcript()
+        self.assertIn(sid, self.by_sid())
+        shutil.rmtree(jd)
+        self.assertNotIn(sid, self.by_sid())
+        self.assertNotIn(sid, self.by_sid())  # stays hidden once forgotten as a job
+        p = os.path.join(self.w.home.claude, "projects", self.h.project_dir_name(self.w.proj), sid + ".jsonl")
+        with open(p, "a") as f:
+            f.write(json.dumps(user_line("resumed elsewhere")) + "\n")
+        self.assertIn(sid, self.by_sid())
+
+    def test_unreadable_job_state_is_not_a_delete(self):
+        sid, jd = self.job_with_transcript()
+        self.assertIn(sid, self.by_sid())
+        with open(os.path.join(jd, "state.json"), "w") as f:
+            f.write("{")
+        self.by_sid()
+        os.remove(os.path.join(jd, "state.json"))
+        self.w.home.job(sid[:8], sessionId=sid, cwd=self.w.proj, state="done", tempo="idle", name="bg job")
+        self.assertIn(sid, self.by_sid())
+
     def test_resolve_by_short_and_errors(self):
         r = self.h.SessionRef("cccc3333")
         self.assertEqual((r.sid, r.job_short, r.short), (SID_C, "cccc3333", "cccc3333"))

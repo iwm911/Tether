@@ -2609,6 +2609,49 @@ def read_removed():
     return v if isinstance(v, dict) else {}
 
 
+JOB_SESSIONS_PATH = os.path.join(TETHER_DIR, "job_sessions.json")
+JOB_SESSIONS_KEEP = 2000
+
+
+def hide_deleted_jobs(src, slots):
+    """Hides sessions deleted in `claude agents` (or `claude rm`): that kills the worker and deletes the job dir
+    but keeps the transcript, which would otherwise show here again as a session with no job. Remembers every
+    session seen with a job dir; one whose job dir is gone and that nothing else knows (no live record, no
+    terminal) goes into removed_sessions.json like a Tether `rm`, so it shows again only if the transcript grows."""
+    known = read_json(JOB_SESSIONS_PATH, {}) or {}
+    if not isinstance(known, dict):
+        known = {}
+    dirty = False
+    for sid, slot in slots.items():
+        for short, _st in slot["jobs"]:
+            if known.get(sid) != short:
+                known[sid], dirty = short, True
+    gone = {}
+    for sid, short in list(known.items()):
+        if sid in slots:
+            continue
+        if isinstance(short, str) and NATIVE_ID_RE.match(short) and os.path.isdir(os.path.join(JOBS_DIR, short)):
+            continue  # the dir is there but state.json is unreadable right now: not a delete
+        del known[sid]
+        dirty = True
+        tpath = find_transcript(sid) if UUID_RE.match(sid) else None
+        if tpath:
+            gone[sid] = file_size(tpath)
+    if len(known) > JOB_SESSIONS_KEEP:
+        known = dict(list(known.items())[-JOB_SESSIONS_KEEP:])
+    try:
+        if dirty:
+            ensure_dir(TETHER_DIR)
+            write_json_atomic(JOB_SESSIONS_PATH, known)
+        if gone:
+            removed = read_removed()  # fresh: another helper may have just written an `rm`
+            removed.update(gone)
+            write_json_atomic(REMOVED_PATH, removed)
+    except (OSError, IOError):
+        pass
+    src.removed.update(gone)
+
+
 LAUNCH_FLAGS_PATH = os.path.join(TETHER_DIR, "launch_flags.json")
 LAUNCH_FLAGS_KEEP = 200
 
@@ -3308,6 +3351,7 @@ def build_sessions(src, facts, want_cwd=None, limit=SESSIONS_LIMIT, before=None)
     if want_cwd:
         want_cwd = os.path.normpath(os.path.abspath(os.path.expanduser(want_cwd)))
     slots = src.slots()
+    hide_deleted_jobs(src, slots)
     files = all_transcripts(want_cwd)
     by_file = {}
     for path, sid, st in files:
