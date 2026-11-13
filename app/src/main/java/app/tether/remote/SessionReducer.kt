@@ -187,6 +187,8 @@ class SessionReducer(
     fun beginFollow(): Long {
         onDisconnected()
         followFrom = offset
+        // Only the stream that saw /clear happen moves the screen: reopened later, the old conversation stays put.
+        if (movedTo != null) { movedTo = null; version++ }
         return offset
     }
 

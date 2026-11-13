@@ -441,13 +441,16 @@ class DefaultSessionHub(
                     }
                     if (changed) c.bump()
                 }
-                if (synchronized(c.lock) { c.reducer.movedTo } != null) return
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
-                // /clear moved the session on to a new conversation: the helper ended this follow on purpose and
-                // the screen opens the new one. Nothing to retry, no error to show.
-                if (synchronized(c.lock) { c.reducer.movedTo } != null) return
+                // /clear moved the session on to a new conversation: the helper ended this follow on purpose and the
+                // screen opens the new one. No error to show; a later follow shows the old conversation, retired.
+                if (synchronized(c.lock) { c.reducer.movedTo } != null) {
+                    synchronized(c.lock) { c.reducer.onDisconnected() }
+                    retryPause(ref.connectionId, epoch, 1_000L)
+                    continue
+                }
                 failures++
                 if (!isLinkBlip(e, failures)) c.error = friendlyMessage(e)
                 synchronized(c.lock) { c.reducer.onDisconnected() }

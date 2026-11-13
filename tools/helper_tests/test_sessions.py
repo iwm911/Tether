@@ -323,15 +323,40 @@ class SessionsTest(unittest.TestCase):
             src.slots()
             self.assertEqual(src.moved, {SID_A: sid_n})
 
-    def test_following_a_cleared_conversation_points_at_the_new_one(self):
-        sid_n = self.cleared()
+    def test_follow_watching_the_clear_points_at_the_new_conversation(self):
         out = io.StringIO()
+        f = self.h.Follower(self.h.SessionRef(SID_A), 0, out, GoneAfter(lambda: False, 15))
+        t = threading.Thread(target=f.run)
         started = time.time()
-        self.h.Follower(self.h.SessionRef(SID_A), 0, out, GoneAfter(lambda: False, 10)).run()
-        self.assertLess(time.time() - started, 5)  # the follow ends by itself
+        t.start()
+        deadline = time.time() + 5
+        while '"caughtUp"' not in out.getvalue() and time.time() < deadline:
+            time.sleep(0.05)
+        sid_n = self.cleared()
+        t.join(15)
+        self.assertLess(time.time() - started, 12)  # the follow ends by itself
         evs = [json.loads(l) for l in out.getvalue().splitlines()]
-        self.assertIn({"e": "moved", "sessionId": sid_n}, evs)
-        self.assertFalse([e for e in evs if e.get("e") == "state"])  # never shows the old one as live
+        self.assertEqual(evs[-1], {"e": "moved", "sessionId": sid_n})
+
+    def test_old_conversation_opened_after_the_clear_stays_put(self):
+        self.cleared()
+        out = io.StringIO()
+        self.h.Follower(self.h.SessionRef(SID_A), 0, out, GoneAfter(lambda: '"caughtUp"' in out.getvalue(), 10)).run()
+        evs = [json.loads(l) for l in out.getvalue().splitlines()]
+        self.assertFalse([e for e in evs if e.get("e") == "moved"])
+        st = [e for e in evs if e.get("e") == "state"][-1]["session"]
+        self.assertEqual((st["sessionId"], st["process"]), (SID_A, "retired"))
+
+    def test_leftover_resume_id_without_a_worker_moves_nothing(self):
+        # A cleared job's state.json keeps resumeSessionId after its worker is gone; a resume of the old id reuses
+        # that job dir and runs before its new worker registers.
+        self.w.home.job("aaaa1111", sessionId=SID_A, resumeSessionId="abcd9999-1111-4111-8111-111111111111",
+                        cwd=self.w.proj, state="working", tempo="active", name="builder", intent="build it")
+        src = self.h.Sources()
+        slots = src.slots()
+        self.assertEqual(src.moved, {})
+        self.assertEqual([s for s, _st in slots[SID_A]["jobs"]], ["aaaa1111"])
+        self.assertEqual(self.by_sid()[SID_A]["process"], "live")
 
     def test_resolve_by_short_and_errors(self):
         r = self.h.SessionRef("cccc3333")

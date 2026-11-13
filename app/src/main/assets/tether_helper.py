@@ -2674,18 +2674,15 @@ class Sources(object):
         self.moved = {}  # sessionId a live worker left (/clear) -> the one it is on now; filled by slots()
 
     def conversations(self):
-        """short -> the conversation that job is on now. /clear starts a new session id inside the same worker: its
-        registry entry (and state.json's resumeSessionId) follow it, while the daemon's record and state.json's
-        sessionId keep the id the job was dispatched with."""
+        """short -> the conversation that job's live worker is on now. /clear starts a new session id inside the same
+        worker: its registry entry follows it, while the daemon's record and state.json's sessionId keep the id the
+        job was dispatched with. Only the registered worker counts: state.json's resumeSessionId outlives the
+        worker (a later resume of the old id reuses the job dir), so it would point a wake at the wrong one."""
         cur = {}
-        for short, st in self.jobs.items():
-            sid = st.get("resumeSessionId")
-            if isinstance(sid, str) and UUID_RE.match(sid):
-                cur[short] = sid
         for r in self.registry:
             short, sid = r.get("jobId"), r.get("sessionId")
             if r.get("kind") == "bg" and isinstance(short, str) and isinstance(sid, str) and UUID_RE.match(sid):
-                cur[short] = sid  # the live worker itself: wins over state.json
+                cur[short] = sid
         return cur
 
     def slots(self):
@@ -4100,6 +4097,7 @@ class Follower(object):
         self.state_min = 0.0
         self.facts = TranscriptFacts()
         self.moved_to = None  # the session id this conversation's worker moved to (/clear): the follow ends
+        self.was_live = ref.live()  # only a move seen happen ends the follow
 
     # ── output ──
     def write(self, s):
@@ -4259,8 +4257,11 @@ class Follower(object):
         except HelperError:
             return
         moved = self.ref.src.moved.get(self.sid)
-        if moved:
-            # /clear: the worker went on in a new conversation. The app opens that one; this follow is over.
+        if self.ref.live():
+            self.was_live = True
+        if moved and self.was_live:
+            # /clear while this follow watched it live: the worker went on in a new conversation. The app opens
+            # that one; this follow is over. A follow opened after the move shows the old conversation, retired.
             self.moved_to = moved
             self.write('{"e":"moved","sessionId":"%s"}' % moved)
             return
