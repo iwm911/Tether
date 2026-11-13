@@ -167,6 +167,35 @@ class SessionsTest(unittest.TestCase):
         self.assertEqual(last([assistant_line("yo"), user_line([{"type": "tool_result", "tool_use_id": "t", "content": "<local-command-stdout>"}], uuid="u-tool")]), "user")
         self.assertEqual(last([user_line("hi")]), "user")
 
+    def test_untimed_bookkeeping_is_not_activity(self):
+        # Claude Code appends an artifact-autoreact-ledger line every few hours to a session idle for days: the
+        # transcript's mtime moves, its last entry does not.
+        hm, t = self.w.home, time.time()
+        ledger = {"type": "artifact-autoreact-ledger", "v": 1, "sessionId": SID_D, "artifacts": {}}
+        hm.transcript(self.w.other, SID_D, [user_line("plain old session", ts="2026-09-01T10:00:00.000Z", cwd=self.w.other),
+                                            assistant_line("Hello.", ts="2026-09-01T10:00:05.000Z"), ledger, ledger], mtime=t)
+        all_ = self.sessions()
+        d = [s for s in all_ if s["sessionId"] == SID_D][0]
+        self.assertEqual(d["updatedAt"], self.h.iso_to_ms("2026-09-01T10:00:05.000Z"))
+        order = [s["sessionId"] for s in all_]
+        self.assertTrue(all(order.index(SID_D) > order.index(sid) for sid in (SID_A, SID_B, SID_C, SID_E)), order)
+        self.assertEqual([s["sessionId"] for s in self.sessions(limit=2)], [s["sessionId"] for s in all_[:2]])
+
+    def test_half_before_a_bg_is_not_its_own_session(self):
+        # /bg of a terminal session: Claude Code goes on under SID_D and ends the old transcript with continued-in.
+        old = "9999aaaa-1111-4111-8111-111111111111"
+        cont = {"type": "continued-in", "timestamp": "2026-10-01T10:00:02.000Z", "sessionId": old,
+                "continuedInSessionId": SID_D}
+        hm = self.w.home
+        hm.transcript(self.w.other, old, [user_line("plain old session", cwd=self.w.other), assistant_line("On it."), cont],
+                      mtime=time.time())
+        self.assertNotIn(old, self.by_sid())
+        # Resumed by its own id later: a session again.
+        hm.transcript(self.w.other, old, [user_line("plain old session", cwd=self.w.other), assistant_line("On it."), cont,
+                                          user_line("back here", ts="2026-10-01T11:00:00.000Z", cwd=self.w.other)],
+                      mtime=time.time())
+        self.assertIn(old, self.by_sid())
+
     def test_blocked_question_is_needs_you_with_pending_question(self):
         b = self.by_sid()[SID_B]
         self.assertEqual((b["state"], b["waitingFor"]), ("needs_you", "input needed"))
@@ -357,6 +386,35 @@ class SessionsTest(unittest.TestCase):
         self.assertEqual(src.moved, {})
         self.assertEqual([s for s, _st in slots[SID_A]["jobs"]], ["aaaa1111"])
         self.assertEqual(self.by_sid()[SID_A]["process"], "live")
+
+    def job_with_transcript(self):
+        sid = "9999bbbb-1111-4111-8111-111111111111"
+        self.w.home.transcript(self.w.proj, sid, [user_line("bg job", cwd=self.w.proj), assistant_line("Done.")],
+                               mtime=time.time() - 30)
+        self.w.home.job(sid[:8], sessionId=sid, cwd=self.w.proj, state="done", tempo="idle", name="bg job")
+        return sid, os.path.join(self.w.home.claude, "jobs", sid[:8])
+
+    def test_deleted_in_claude_agents_hides_until_it_grows(self):
+        # claude agents' delete (claude rm) kills the worker and deletes the job dir, keeping the transcript.
+        sid, jd = self.job_with_transcript()
+        self.assertIn(sid, self.by_sid())
+        shutil.rmtree(jd)
+        self.assertNotIn(sid, self.by_sid())
+        self.assertNotIn(sid, self.by_sid())  # stays hidden once forgotten as a job
+        p = os.path.join(self.w.home.claude, "projects", self.h.project_dir_name(self.w.proj), sid + ".jsonl")
+        with open(p, "a") as f:
+            f.write(json.dumps(user_line("resumed elsewhere")) + "\n")
+        self.assertIn(sid, self.by_sid())
+
+    def test_unreadable_job_state_is_not_a_delete(self):
+        sid, jd = self.job_with_transcript()
+        self.assertIn(sid, self.by_sid())
+        with open(os.path.join(jd, "state.json"), "w") as f:
+            f.write("{")
+        self.by_sid()
+        os.remove(os.path.join(jd, "state.json"))
+        self.w.home.job(sid[:8], sessionId=sid, cwd=self.w.proj, state="done", tempo="idle", name="bg job")
+        self.assertIn(sid, self.by_sid())
 
     def test_resolve_by_short_and_errors(self):
         r = self.h.SessionRef("cccc3333")
