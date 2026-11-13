@@ -75,6 +75,9 @@ class SessionReducer(
     private var followFrom: Long = -1L
     var caughtUp: Boolean = false
         private set
+    /** The session this conversation's worker went on in after /clear; the follow is over once it is set. */
+    var movedTo: String? = null
+        private set
 
     /** Increments on every state change. */
     var version: Long = 0L
@@ -127,6 +130,12 @@ class SessionReducer(
                 latestTodoList = event.listId
                 version++
             }
+            is FollowEvent.Moved -> {
+                if (movedTo != event.sessionId) {
+                    movedTo = event.sessionId
+                    version++
+                }
+            }
             is FollowEvent.CaughtUp -> {
                 // The helper's real position: lower than ours only when the transcript was replaced and it
                 // started over (history from 0), so it wins either way.
@@ -178,6 +187,8 @@ class SessionReducer(
     fun beginFollow(): Long {
         onDisconnected()
         followFrom = offset
+        // Only the stream that saw /clear happen moves the screen: reopened later, the old conversation stays put.
+        if (movedTo != null) { movedTo = null; version++ }
         return offset
     }
 
@@ -314,6 +325,7 @@ class SessionReducer(
                 todoLists = LinkedHashMap(todoLists),
                 offset = offset,
                 caughtUp = caughtUp,
+                movedTo = movedTo,
             ),
         )
     }

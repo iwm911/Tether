@@ -16,7 +16,8 @@ Sessions
     sessions [--cwd P] [--limit N] [--before MS]   {"sessions": [Session]} newest first
     watch [--cwd P] [--limit N]  {"snapshot": [Session]}, then {"changed": [Session], "removed": [sid]}, {"hb": ms}
     follow <sid> [--agent ID] [--from OFFSET]      follow events: line (+offset), draft, draftClear, status, state,
-                                 peer, subagent, task, todos, caughtUp {offset}
+                                 peer, subagent, task, todos, caughtUp {offset}, moved {sessionId} (/clear moved
+                                 the session's worker on to a new conversation; the follow ends)
     new                          stdin {cwd, prompt, model?, permissionMode?, images?, trust?, name?} -> Session
     send <sid>                   stdin {text, images?} -> {ok, woke} (a retired session is resumed under its own id)
     key <sid>                    stdin {keys: ["shift-tab"|"esc"|"enter"|"up"|"down"|"left"|"right"|"tab"|"space"|"1".."9"|{text}]}
@@ -2670,16 +2671,31 @@ class Sources(object):
         self.removed = read_removed()
         if self.daemon is None:
             self.daemon = registry_records(self.registry)
+        self.moved = {}  # sessionId a live worker left (/clear) -> the one it is on now; filled by slots()
+
+    def conversations(self):
+        """short -> the conversation that job's live worker is on now. /clear starts a new session id inside the same
+        worker: its registry entry follows it, while the daemon's record and state.json's sessionId keep the id the
+        job was dispatched with. Only the registered worker counts: state.json's resumeSessionId outlives the
+        worker (a later resume of the old id reuses the job dir), so it would point a wake at the wrong one."""
+        cur = {}
+        for r in self.registry:
+            short, sid = r.get("jobId"), r.get("sessionId")
+            if r.get("kind") == "bg" and isinstance(short, str) and isinstance(sid, str) and UUID_RE.match(sid):
+                cur[short] = sid
+        return cur
 
     def slots(self):
         """sessionId -> {sid, jobs:[(short, st)], rec, term, bg} for every session the daemon or a terminal knows."""
         by = {}
+        cur = self.conversations()
+        self.moved = {}
 
         def slot(sid):
             return by.setdefault(sid, {"sid": sid, "jobs": [], "rec": None, "term": None, "bg": None})
 
         for short, st in self.jobs.items():
-            sid = st.get("sessionId")
+            sid = cur.get(short) or st.get("sessionId")
             if isinstance(sid, str) and UUID_RE.match(sid):
                 slot(sid)["jobs"].append((short, st))
         for short, rec in (self.daemon or {}).items():
@@ -2688,6 +2704,12 @@ class Sources(object):
                 continue
             if rec.get("source") == "spare" and short not in self.jobs:
                 continue  # a pre-warmed worker waiting for its first dispatch: not a session yet
+            now_on = cur.get(short)
+            if now_on and now_on != sid:
+                if record_live(rec):
+                    self.moved[sid] = now_on
+                rec = dict(rec, sessionId=now_on)
+                sid = now_on
             s = slot(sid)
             if s["rec"] is None or (record_live(rec) and not record_live(s["rec"])):
                 s["rec"] = rec
@@ -4074,6 +4096,8 @@ class Follower(object):
         self.state_sig = None
         self.state_min = 0.0
         self.facts = TranscriptFacts()
+        self.moved_to = None  # the session id this conversation's worker moved to (/clear): the follow ends
+        self.was_live = ref.live()  # only a move seen happen ends the follow
 
     # ── output ──
     def write(self, s):
@@ -4232,6 +4256,15 @@ class Follower(object):
             self.ref = SessionRef(self.sid)
         except HelperError:
             return
+        moved = self.ref.src.moved.get(self.sid)
+        if self.ref.live():
+            self.was_live = True
+        if moved and self.was_live:
+            # /clear while this follow watched it live: the worker went on in a new conversation. The app opens
+            # that one; this follow is over. A follow opened after the move shows the old conversation, retired.
+            self.moved_to = moved
+            self.write('{"e":"moved","sessionId":"%s"}' % moved)
+            return
         if self.ref.tpath and self.ref.tpath != self.tpath and not self.tpath:
             self.tpath = self.ref.tpath
             self.tev.tpath = self.tpath
@@ -4373,7 +4406,7 @@ class Follower(object):
         self.update_state(time.time(), force=True)
         self.write('{"e":"caughtUp","offset":%d}' % self.pos)
         self.flush()
-        while True:
+        while not self.moved_to:
             now = time.time()
             if self.tpath is None and now >= self.next_poll:
                 self.tpath = transcript_for(self.sid, self.ref.st)
@@ -4402,6 +4435,9 @@ class Follower(object):
                 self.update_subagents()
                 self.update_todos()
             self.update_state(now)
+            if self.moved_to:
+                self.flush()
+                break
             self.render(now)
             if self.clear_at is not None and now >= self.clear_at and self.draft is not None:
                 self.clear_draft()

@@ -338,6 +338,27 @@ class DefaultSessionHubTest {
     }
 
     @Test
+    fun clearedConversationPointsAtTheNewOneWithoutAnError() = runBlocking {
+        val ref = SessionRef(CONN, SID)
+        val next = "nnnnnnnn-1111-4111-8111-111111111111"
+        // /clear in the worker: the helper's follow of the old conversation says where it went, then ends.
+        remote.followScripts.add {
+            emit(FollowEvent.CaughtUp(100))
+            emit(FollowEvent.Moved(next))
+            throw IOException("The machine closed the conversation stream.")
+        }
+        val flow = hub.open(ref)
+        val job = launch(Dispatchers.Default) { flow.collect { } }
+        // The next follow (the helper sends no move to a follow that did not see it): the old conversation, retired.
+        remote.followScripts.add { emit(FollowEvent.CaughtUp(100)); awaitCancellation() }
+        val st = flow.waitFor { it.live?.movedTo == next }
+        assertNull(st.error)
+        val after = flow.waitFor(timeoutMs = 10_000) { remote.followCalls.size == 2 && it.live?.caughtUp == true && it.live?.movedTo == null }
+        assertNull(after.error)
+        job.cancel()
+    }
+
+    @Test
     fun watchListFeedsTheOpenConversation() = runBlocking {
         val ref = SessionRef(CONN, SID)
         remote.followScripts.add { emit(FollowEvent.CaughtUp(10)); awaitCancellation() }

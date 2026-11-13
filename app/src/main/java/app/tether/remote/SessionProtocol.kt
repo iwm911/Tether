@@ -106,6 +106,7 @@ object SessionProtocol {
                 items = (o.arr("items") ?: JsonArray(emptyList())).mapNotNull { decode(it, SessionTodo.serializer()) },
             )
             "caughtUp" -> FollowEvent.CaughtUp(o.long("offset") ?: 0L)
+            "moved" -> o.str("sessionId")?.takeIf { it.isNotBlank() }?.let { FollowEvent.Moved(it) }
             else -> null
         }
     }

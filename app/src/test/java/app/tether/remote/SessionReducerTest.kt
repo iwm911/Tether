@@ -55,6 +55,19 @@ class SessionReducerTest {
 
     private fun texts(r: SessionReducer) = r.snapshot().items.mapNotNull { (it as? ChatItem.AssistantText)?.let { a -> a.text to a.streaming } }
 
+    // ───────────── /clear ─────────────
+
+    @Test
+    fun movedLastsOnlyForTheStreamThatSawIt() {
+        val r = reducer()
+        r.beginFollow()
+        assertTrue(r.accept(FollowEvent.Moved("nnnnnnnn-1111-4111-8111-111111111111")))
+        assertEquals("nnnnnnnn-1111-4111-8111-111111111111", r.snapshot().live?.movedTo)
+        r.beginFollow() // reopened later: the old conversation stays on screen
+        assertNull(r.movedTo)
+        assertNull(r.snapshot().live?.movedTo)
+    }
+
     // ───────────── draft → final ─────────────
 
     @Test

@@ -107,6 +107,13 @@ class SessionProtocolTest {
     }
 
     @Test
+    fun movedEventAfterClear() {
+        val sid = "35d668ce-2377-4026-a57f-1f5b84366252"
+        assertEquals(FollowEvent.Moved(sid), SessionProtocol.parseFollowLine("""{"e":"moved","sessionId":"$sid"}"""))
+        assertNull(SessionProtocol.parseFollowLine("""{"e":"moved"}"""))
+    }
+
+    @Test
     fun terminalHeldSession() {
         val s = SessionProtocol.parseSessionList(fixture("session/sessions.json"))[4]
         assertEquals(Holder.TERMINAL, s.heldBy)

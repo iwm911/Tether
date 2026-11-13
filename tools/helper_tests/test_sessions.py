@@ -293,6 +293,71 @@ class SessionsTest(unittest.TestCase):
             json.dump({SID_D: os.path.getsize(p)}, fh)
         self.assertNotIn(SID_D, self.by_sid())
 
+    def cleared(self, job_dir=True):
+        """Seen live (2.1.323): /clear in the live worker aaaa1111 starts conversation SID_N in the same worker. Its
+        registry entry (and state.json's resumeSessionId) say SID_N; the daemon's record and state.json's sessionId
+        keep SID_A."""
+        sid_n = "abcd9999-1111-4111-8111-111111111111"
+        self.w.home.transcript(self.w.proj, sid_n, [user_line("<command-name>/clear</command-name>", cwd=self.w.proj),
+                                                    user_line("say banana", cwd=self.w.proj), assistant_line("banana")])
+        if job_dir:
+            self.w.home.job("aaaa1111", sessionId=SID_A, resumeSessionId=sid_n, cwd=self.w.proj, state="working",
+                            tempo="active", name="builder", intent="build it")
+        else:
+            shutil.rmtree(os.path.join(self.w.home.claude, "jobs", "aaaa1111"))
+        self.w.home.registry(os.getppid(), kind="bg", status="idle", sessionId=sid_n, jobId="aaaa1111")
+        return sid_n
+
+    def test_cleared_session_lives_on_in_its_new_conversation(self):
+        for job_dir in (True, False):  # a `claude --bg` job has a job dir; one Tether dispatched has none
+            sid_n = self.cleared(job_dir)
+            ss = self.by_sid()
+            n, a = ss[sid_n], ss[SID_A]
+            self.assertEqual((n["process"], n["heldBy"], n["lastText"]), ("live", "daemon", "banana"))
+            self.assertEqual((a["process"], a["heldBy"]), ("retired", "none"))
+            self.assertEqual(a["lastText"], "Building now.")
+            # Writes to the new conversation go to the worker that is on it; the old one has none.
+            self.assertEqual(self.h.SessionRef(sid_n).short, "aaaa1111")
+            self.assertFalse(self.h.SessionRef(SID_A).live())
+            src = self.h.Sources()
+            src.slots()
+            self.assertEqual(src.moved, {SID_A: sid_n})
+
+    def test_follow_watching_the_clear_points_at_the_new_conversation(self):
+        out = io.StringIO()
+        f = self.h.Follower(self.h.SessionRef(SID_A), 0, out, GoneAfter(lambda: False, 15))
+        t = threading.Thread(target=f.run)
+        started = time.time()
+        t.start()
+        deadline = time.time() + 5
+        while '"caughtUp"' not in out.getvalue() and time.time() < deadline:
+            time.sleep(0.05)
+        sid_n = self.cleared()
+        t.join(15)
+        self.assertLess(time.time() - started, 12)  # the follow ends by itself
+        evs = [json.loads(l) for l in out.getvalue().splitlines()]
+        self.assertEqual(evs[-1], {"e": "moved", "sessionId": sid_n})
+
+    def test_old_conversation_opened_after_the_clear_stays_put(self):
+        self.cleared()
+        out = io.StringIO()
+        self.h.Follower(self.h.SessionRef(SID_A), 0, out, GoneAfter(lambda: '"caughtUp"' in out.getvalue(), 10)).run()
+        evs = [json.loads(l) for l in out.getvalue().splitlines()]
+        self.assertFalse([e for e in evs if e.get("e") == "moved"])
+        st = [e for e in evs if e.get("e") == "state"][-1]["session"]
+        self.assertEqual((st["sessionId"], st["process"]), (SID_A, "retired"))
+
+    def test_leftover_resume_id_without_a_worker_moves_nothing(self):
+        # A cleared job's state.json keeps resumeSessionId after its worker is gone; a resume of the old id reuses
+        # that job dir and runs before its new worker registers.
+        self.w.home.job("aaaa1111", sessionId=SID_A, resumeSessionId="abcd9999-1111-4111-8111-111111111111",
+                        cwd=self.w.proj, state="working", tempo="active", name="builder", intent="build it")
+        src = self.h.Sources()
+        slots = src.slots()
+        self.assertEqual(src.moved, {})
+        self.assertEqual([s for s, _st in slots[SID_A]["jobs"]], ["aaaa1111"])
+        self.assertEqual(self.by_sid()[SID_A]["process"], "live")
+
     def test_resolve_by_short_and_errors(self):
         r = self.h.SessionRef("cccc3333")
         self.assertEqual((r.sid, r.job_short, r.short), (SID_C, "cccc3333", "cccc3333"))
