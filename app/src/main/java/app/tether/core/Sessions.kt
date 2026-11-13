@@ -324,6 +324,8 @@ sealed interface FollowEvent {
     data class Task(val task: SessionTask) : FollowEvent
     data class Todos(val listId: String, val items: List<SessionTodo>) : FollowEvent
     data class CaughtUp(val offset: Long) : FollowEvent
+    /** /clear: the worker went on in conversation [sessionId]; this follow ends. */
+    data class Moved(val sessionId: String) : FollowEvent
 }
 
 // ───────────────────────────── writes ─────────────────────────────
@@ -400,6 +402,8 @@ data class SessionLive(
     /** Transcript byte offset the follow stream has reached (reconnects resume from here). */
     val offset: Long = 0,
     val caughtUp: Boolean = false,
+    /** /clear moved this session's worker on to a new conversation (its session id): the screen opens that one. */
+    val movedTo: String? = null,
 )
 
 /** Something worth a notification, derived from the watched session list. */

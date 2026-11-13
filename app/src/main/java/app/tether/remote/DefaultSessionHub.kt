@@ -441,9 +441,13 @@ class DefaultSessionHub(
                     }
                     if (changed) c.bump()
                 }
+                if (synchronized(c.lock) { c.reducer.movedTo } != null) return
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
+                // /clear moved the session on to a new conversation: the helper ended this follow on purpose and
+                // the screen opens the new one. Nothing to retry, no error to show.
+                if (synchronized(c.lock) { c.reducer.movedTo } != null) return
                 failures++
                 if (!isLinkBlip(e, failures)) c.error = friendlyMessage(e)
                 synchronized(c.lock) { c.reducer.onDisconnected() }

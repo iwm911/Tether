@@ -212,6 +212,7 @@ fun TetherNavHost(pendingSession: MutableStateFlow<SessionRef?> = MutableStateFl
                     onOpenMachine = { nav.navigate(Routes.machine(it)) },
                     // A subagent view stacks on its session (Back returns to it).
                     onOpenSubagent = { agent -> nav.navigate(Routes.session(ref, agent)) },
+                    onMoved = { nav.openSession(it, replaceCurrent = true) },
                 )
             }
         }

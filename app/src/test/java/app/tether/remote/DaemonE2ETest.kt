@@ -354,6 +354,84 @@ class DaemonE2ETest {
         }
     }
 
+    /** /clear from the phone: the worker goes on in a new conversation; the open chat moves there and keeps working. */
+    @Test
+    fun clearMovesTheChatToTheNewConversation() = runBlocking {
+        assumeTrue("set TETHER_E2E=1 to run", System.getenv("TETHER_E2E") == "1")
+        val helperFile = File(System.getProperty("tether.helper") ?: "src/main/assets/tether_helper.py").absoluteFile
+        assumeTrue("helper script not found at $helperFile", helperFile.isFile)
+        val home: String = System.getProperty("user.home")!!
+        val work = File(home, "tether-exp/live").apply { mkdirs() }
+        val installHome = File("build/e2e-home").absoluteFile.apply { mkdirs() }
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val ssh = LocalSsh(installHome)
+        val remote = HelperClaudeRemote(ssh, Conns(), scope) { helperFile.readBytes() }
+        val hub = DefaultSessionHub(remote, ssh, Conns(), scope)
+        val made = ArrayList<String>()
+        var live: String? = null
+        try {
+            scope.launch { hub.sessions.collect { } } // keeps the machine watched
+            withTimeout(60_000) { while (hub.sessions.value.isEmpty() && hub.machineErrors.value.isEmpty()) delay(200) }
+            val req = NewSessionRequest(cwd = work.path, model = "haiku", permissionMode = "default", prompt = "Reply with just the word ONE.")
+            val started = when (val r = hub.new(CONN, req)) {
+                is NewSessionResult.Started -> r.session
+                is NewSessionResult.Untrusted -> (hub.new(CONN, req.copy(trust = true)) as NewSessionResult.Started).session
+            }
+            made += started.sessionId
+            live = started.sessionId
+            val old = SessionRef(CONN, started.sessionId)
+
+            suspend fun await(flow: StateFlow<ConversationState>, what: String, cond: (ConversationState) -> Boolean) =
+                try {
+                    withTimeout(120_000) { while (!cond(flow.value)) delay(50); flow.value }
+                } catch (e: Exception) {
+                    throw AssertionError("timed out waiting for $what; ${flow.value.live?.session} items=${flow.value.items.size}", e)
+                }
+            fun finals(c: ConversationState) = c.items.filterIsInstance<ChatItem.AssistantText>().filter { !it.streaming }.map { it.text.trim().trimEnd('.') }
+
+            val oldConv = hub.open(old)
+            val oldJob = scope.launch { oldConv.collect { } }
+            await(oldConv, "the first answer") { "ONE" in finals(it) && it.live?.session?.state == SessionState.IDLE }
+
+            hub.send(old, "/clear")
+            val moved = await(oldConv, "the chat to point at the new conversation") { it.live?.movedTo != null }.live!!.movedTo!!
+            made += moved
+            live = moved
+            assertNotEquals(started.sessionId, moved)
+            println("E2E ▸ /clear moved ${started.short} → ${moved.take(8)}")
+
+            val next = SessionRef(CONN, moved)
+            val nextConv = hub.open(next)
+            val nextJob = scope.launch { nextConv.collect { } }
+            await(nextConv, "the new conversation to load") { it.live?.caughtUp == true }
+            assertEquals("the new chat starts empty of the old reply", emptyList<String>(), finals(nextConv.value).filter { it == "ONE" })
+            hub.send(next, "Reply with just the word TWO.")
+            await(nextConv, "the answer in the new conversation") {
+                "TWO" in finals(it) && it.live?.session?.state == SessionState.IDLE && it.live?.session?.process == SessionProcess.LIVE
+            }
+            assertFalse("the old chat never shows the new reply", "TWO" in finals(oldConv.value))
+
+            withTimeout(30_000) {
+                while (true) {
+                    val o = hub.sessions.value.firstOrNull { it.sessionId == started.sessionId }
+                    val n = hub.sessions.value.firstOrNull { it.sessionId == moved }
+                    if (o?.process == SessionProcess.RETIRED && n?.process == SessionProcess.LIVE) break
+                    delay(200)
+                }
+            }
+            println("E2E ▸ list: old retired, new live")
+            oldJob.cancel()
+            nextJob.cancel()
+            hub.remove(next)
+            live = null
+            println("CLEAR E2E OK")
+        } finally {
+            scope.cancel()
+            live?.let { println("E2E cleanup: rm $it → ${helperRm(helperFile, it)}") }
+            made.forEach { forgetTranscript(home, it) }
+        }
+    }
+
     private companion object {
         const val CONN = "local"
     }

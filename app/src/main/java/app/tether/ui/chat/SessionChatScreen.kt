@@ -129,6 +129,7 @@ fun SessionChatScreen(
     onBack: () -> Unit,
     onOpenMachine: (String) -> Unit,
     onOpenSubagent: (agentId: String) -> Unit = {},
+    onMoved: (SessionRef) -> Unit = {},
 ) {
     val container = LocalAppContainer.current
     val vm: SessionChatViewModel = viewModel(key = "sessionchat/${ref.connectionId}/${ref.sessionId}/${agentId.orEmpty()}") {
@@ -164,6 +165,11 @@ fun SessionChatScreen(
     val snackbar = remember { SnackbarHostState() }
     LaunchedEffect(vm) { vm.messages.collect { snackbar.showSnackbar(it) } }
     LaunchedEffect(vm) { vm.closed.collect { onBack() } }
+    // /clear: the session went on in a fresh conversation, as a terminal does. Open that one in place of this.
+    val movedTo = live?.movedTo
+    LaunchedEffect(movedTo) {
+        if (movedTo != null && agentId == null) onMoved(SessionRef(ref.connectionId, movedTo))
+    }
     val btw by vm.btw.collectAsStateWithLifecycle()
     btw?.let { BtwSheet(it, onDismiss = vm::dismissBtw) }
 

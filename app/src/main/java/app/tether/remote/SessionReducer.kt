@@ -75,6 +75,9 @@ class SessionReducer(
     private var followFrom: Long = -1L
     var caughtUp: Boolean = false
         private set
+    /** The session this conversation's worker went on in after /clear; the follow is over once it is set. */
+    var movedTo: String? = null
+        private set
 
     /** Increments on every state change. */
     var version: Long = 0L
@@ -126,6 +129,12 @@ class SessionReducer(
                 todoLists[event.listId] = event.items
                 latestTodoList = event.listId
                 version++
+            }
+            is FollowEvent.Moved -> {
+                if (movedTo != event.sessionId) {
+                    movedTo = event.sessionId
+                    version++
+                }
             }
             is FollowEvent.CaughtUp -> {
                 // The helper's real position: lower than ours only when the transcript was replaced and it
@@ -314,6 +323,7 @@ class SessionReducer(
                 todoLists = LinkedHashMap(todoLists),
                 offset = offset,
                 caughtUp = caughtUp,
+                movedTo = movedTo,
             ),
         )
     }
