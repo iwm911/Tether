@@ -1061,10 +1061,11 @@ def pending_tool_use(tpath, cwd):
     }
 
 
-def pending_tool_block(tpath):
+def pending_tool_block(tpath, newest=False):
     """The newest tool_use block in the transcript that has no tool_result yet, or None. Conversation entries
     only: 2.1.32x also writes "api-request-blob" lines, wire copies of earlier messages whose tool_use was
-    answered further up, maybe before the tail read here (a phone card for a command that ran hours ago)."""
+    answered further up, maybe before the tail read here (a phone card for a command that ran hours ago).
+    newest: only the newest tool_use of all counts (None when it has a result or an older one is the open one)."""
     data = read_tail(tpath, 512 * 1024)
     uses = {}
     order = []
@@ -1085,6 +1086,8 @@ def pending_tool_block(tpath):
                 order.append(b["id"])
             elif b.get("type") == "tool_result" and b.get("tool_use_id"):
                 done.add(b["tool_use_id"])
+    if newest:
+        order = order[-1:]
     for tid in reversed(order):
         if tid not in done:
             return uses[tid]
@@ -1113,6 +1116,22 @@ def question_block(st):
     if not isinstance(qs, list) or not qs:
         return None
     return [q for q in qs if isinstance(q, dict) and q.get("question")]
+
+
+def transcript_questions(tpath, screen_text):
+    """The questions of the open AskUserQuestion in the transcript, or None. For when state.json has no block:
+    2.1.327 started some sessions without a job dir at all. A tool_use whose worker was stopped never gets a
+    tool_result, so the AskUserQuestion must be the newest tool_use and screen_text() (whitespace removed, as
+    DaemonTui.screen_text) must show one of its questions: a dialog on screen is never answered as a question."""
+    b = pending_tool_block(tpath, newest=True) if tpath else None
+    inp = b.get("input") if b and b.get("name") == "AskUserQuestion" and isinstance(b.get("input"), dict) else {}
+    qs = [q for q in (inp.get("questions") or []) if isinstance(q, dict) and q.get("question")]
+    if not qs:
+        return None
+    text = screen_text() if screen_text else None
+    if not text or current_question(text, qs)[0] is None:
+        return None
+    return qs
 
 
 def with_tool_input(qs, tpath):
@@ -1270,6 +1289,8 @@ def question_pending(agent_id, st, tpath=None, screen=None, walk=None):
         c = read_json(qcache_path(agent_id), {}) or {}
         if isinstance(c.get("questions"), list) and c.get("questions") and c.get("status_at") == st.get("updatedAt"):
             qs = c["questions"]
+    if not qs:
+        qs = transcript_questions(tpath, (lambda: re.sub(r"\s+", "", "\n".join(screen() or []))) if screen else None)
     if not qs:
         return None
     key = question_key(st, qs)  # of the block as the daemon wrote it: the same before and after the transcript lands
@@ -1553,6 +1574,14 @@ def goto_question(tui, qs, target, seen=None):
     return tui.qcur == target
 
 
+def tui_screen_text(tui_factory):
+    tui = tui_factory()
+    try:
+        return tui.screen_text()
+    finally:
+        tui.close()
+
+
 def ensure_multi(agent_id, st, tui_factory, tpath=None):
     qs = question_block(st)
     if not qs:
@@ -1560,6 +1589,8 @@ def ensure_multi(agent_id, st, tui_factory, tpath=None):
         if isinstance(c.get("questions"), list) and c.get("questions") and c.get("status_at") == st.get("updatedAt"):
             qs = c["questions"]
             return qs, [bool(q.get("multiSelect")) for q in qs]
+        qs = transcript_questions(tpath, lambda: tui_screen_text(tui_factory))
+    if not qs:
         qs = read_questions_from_tui(tui_factory)
         if not qs:
             return None, None
