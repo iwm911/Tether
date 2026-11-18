@@ -1062,14 +1062,16 @@ def pending_tool_use(tpath, cwd):
 
 
 def pending_tool_block(tpath):
-    """The newest tool_use block in the transcript that has no tool_result yet, or None."""
+    """The newest tool_use block in the transcript that has no tool_result yet, or None. Conversation entries
+    only: 2.1.32x also writes "api-request-blob" lines, wire copies of earlier messages whose tool_use was
+    answered further up, maybe before the tail read here (a phone card for a command that ran hours ago)."""
     data = read_tail(tpath, 512 * 1024)
     uses = {}
     order = []
     done = set()
     for raw in iter_lines_bytes(data):
         o = parse_line(raw)
-        if not o or o.get("isSidechain"):
+        if not o or o.get("isSidechain") or o.get("type") not in ("user", "assistant"):
             continue
         msg = o.get("message") if isinstance(o.get("message"), dict) else {}
         content = msg.get("content")
