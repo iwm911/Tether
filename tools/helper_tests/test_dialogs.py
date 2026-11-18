@@ -201,6 +201,30 @@ class DialogSessionTest(unittest.TestCase):
         self.assertEqual(rc, 0, (out, err))
         self.assertTrue(bytes(self.model.keys).endswith(b"1"), self.model.keys)
 
+    def test_a_stale_question_without_state_json_never_hides_the_dialog(self):
+        # Review: a worker stopped on a question never writes its tool_result. Resumed onto "Switch model?", the old
+        # question must not be shown, nor read as the question to answer.
+        self.ask_without_state_json()
+        self.home.registry(os.getpid(), kind="bg", status="waiting", waitingFor="dialog open", sessionId=SID,
+                           jobId=SHORT)
+        self.model.subscribe_events = fixture_jsonl("subscribe_dialog_switch_model.jsonl")
+        s = self.session()
+        self.assertEqual((s["pending"]["kind"], s["pending"]["title"]), ("dialog", "Switch model?"))
+        self.assertIsNone(self.hh.transcript_questions(self.hh.transcript_for(SID, {}),
+                                                       lambda: h.re.sub(r"\s+", "", "\n".join(screen_of(
+                                                           "subscribe_dialog_switch_model.jsonl")))))
+
+    def test_an_older_open_question_is_not_the_pending_one(self):
+        self.ask_without_state_json()
+        lines = [user_line("fix it", cwd=self.proj), assistant_line(
+            [{"type": "tool_use", "id": "toolu_ask", "name": "AskUserQuestion", "input": {"questions": [
+                {"question": "What's broken: a card.", "options": [{"label": "Approve - build it"}]}]}}]),
+            assistant_line([{"type": "tool_use", "id": "toolu_ls", "name": "Bash", "input": {"command": "ls"}}]),
+            {"type": "user", "isSidechain": False, "uuid": "r", "timestamp": "2026-10-01T10:00:02.000Z",
+             "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_ls", "content": "x"}]}}]
+        self.home.transcript(self.proj, SID, lines)
+        self.assertIsNone(self.hh.transcript_questions(self.hh.transcript_for(SID, {}), lambda: "Approve-buildit"))
+
     def test_a_relaunch_on_its_startup_dialog_with_last_runs_state_json(self):
         # Live: relaunched into the same job dir, state.json still said "stopped" / idle and the daemon's record
         # active, no registry entry: only the screen shows the MCP-servers dialog.
