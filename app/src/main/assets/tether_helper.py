@@ -1115,6 +1115,15 @@ def question_block(st):
     return [q for q in qs if isinstance(q, dict) and q.get("question")]
 
 
+def transcript_questions(tpath):
+    """The questions of the open AskUserQuestion in the transcript (a tool_use with no tool_result yet), or None.
+    For when state.json has no block: 2.1.327 started some sessions without a job dir at all."""
+    b = pending_tool_block(tpath) if tpath else None
+    inp = b.get("input") if b and b.get("name") == "AskUserQuestion" and isinstance(b.get("input"), dict) else {}
+    qs = [q for q in (inp.get("questions") or []) if isinstance(q, dict) and q.get("question")]
+    return qs or None
+
+
 def with_tool_input(qs, tpath):
     """qs with each question's header and multiSelect. The daemon's block keeps only the question and its options
     (2.1.289), so they are read from the pending AskUserQuestion tool_use in the transcript when it asks the same
@@ -1270,6 +1279,8 @@ def question_pending(agent_id, st, tpath=None, screen=None, walk=None):
         c = read_json(qcache_path(agent_id), {}) or {}
         if isinstance(c.get("questions"), list) and c.get("questions") and c.get("status_at") == st.get("updatedAt"):
             qs = c["questions"]
+    if not qs:
+        qs = transcript_questions(tpath)
     if not qs:
         return None
     key = question_key(st, qs)  # of the block as the daemon wrote it: the same before and after the transcript lands
@@ -1560,6 +1571,8 @@ def ensure_multi(agent_id, st, tui_factory, tpath=None):
         if isinstance(c.get("questions"), list) and c.get("questions") and c.get("status_at") == st.get("updatedAt"):
             qs = c["questions"]
             return qs, [bool(q.get("multiSelect")) for q in qs]
+        qs = transcript_questions(tpath)
+    if not qs:
         qs = read_questions_from_tui(tui_factory)
         if not qs:
             return None, None

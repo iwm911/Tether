@@ -164,6 +164,43 @@ class DialogSessionTest(unittest.TestCase):
         self.assertEqual((s["pending"]["kind"], s["pending"]["dialog"]), ("dialog", "mcp_servers"))
         self.assertEqual(len(s["pending"]["options"]), 4)
 
+    def ask_without_state_json(self):
+        # Live (2.1.327): a session the phone started had no ~/.claude/jobs/<short>/ at all, its registry entry said
+        # "input needed", and the transcript held the open AskUserQuestion (no tool_result yet).
+        self.home.transcript(self.proj, SID, [user_line("fix it", cwd=self.proj), assistant_line(
+            [{"type": "tool_use", "id": "toolu_ask", "name": "AskUserQuestion", "input": {"questions": [
+                {"header": "Fix plan", "question": "What's broken: a card.\nWhy: a file.\n\nProceed with this fix?",
+                 "multiSelect": False, "options": [{"label": "Approve - build it", "description": "Fix it."},
+                                                   {"label": "Change the approach", "description": "Say how."}]}]}}])])
+        self.home.registry(os.getpid(), kind="bg", status="waiting", waitingFor="input needed", sessionId=SID,
+                           jobId=SHORT)
+        self.model.add(SHORT, SID, cwd=self.proj, tempo="blocked", state="running")
+        self.model.subscribe_events = [{"type": "snapshot", "record": {}, "streamTail": [
+            u"\x1b[2J\x1b[H☐ Fix plan\r\n\r\nWhat's broken: a card.\r\n❯ 1. Approve - build it\r\n"]}]
+
+    def test_a_question_without_state_json_comes_from_the_transcript(self):
+        # The phone showed "Claude Code is asking something" with the screen's text and the key pad.
+        self.ask_without_state_json()
+        s = self.session()
+        self.assertEqual(s["state"], "needs_you")
+        self.assertEqual(s["pending"]["kind"], "question")
+        q = json.loads(s["pending"]["inputJson"])["questions"]
+        self.assertEqual([o["label"] for o in q[0]["options"]], ["Approve - build it", "Change the approach"])
+        self.assertEqual((q[0]["header"], q[0]["multiSelect"]), ("Fix plan", False))
+
+    def test_a_question_without_state_json_is_answered_from_the_transcript(self):
+        self.ask_without_state_json()
+        self.model.attach_screen = attach_bytes(self.model.subscribe_events)
+
+        def unblock(keys):
+            self.model.records[SHORT]["tempo"] = "active"
+            os.remove(os.path.join(self.home.claude, "sessions", "%d.json" % os.getpid()))
+
+        self.model.on_keys = unblock
+        rc, out, err = self.home.run("ask", SID, stdin=json.dumps({"answers": [{"choices": [0]}]}))
+        self.assertEqual(rc, 0, (out, err))
+        self.assertTrue(bytes(self.model.keys).endswith(b"1"), self.model.keys)
+
     def test_a_relaunch_on_its_startup_dialog_with_last_runs_state_json(self):
         # Live: relaunched into the same job dir, state.json still said "stopped" / idle and the daemon's record
         # active, no registry entry: only the screen shows the MCP-servers dialog.
