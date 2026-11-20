@@ -18,6 +18,7 @@ import app.tether.core.SessionLive
 import app.tether.core.SessionRef
 import app.tether.core.SessionRemote
 import app.tether.core.SessionState
+import app.tether.core.ModelOption
 import app.tether.core.SlashCommand
 import app.tether.core.SshManager
 import app.tether.core.WatchMessage
@@ -332,6 +333,13 @@ class DefaultSessionHub(
         val key = connectionId to cwd
         commandCache[key]?.let { return it }
         return remote.listCommands(connectionId, cwd).also { if (it.isNotEmpty()) commandCache[key] = it }
+    }
+
+    private val modelCache = ConcurrentHashMap<String, List<ModelOption>>()
+
+    override suspend fun models(connectionId: String): List<ModelOption> {
+        modelCache[connectionId]?.let { return it }
+        return remote.listModels(connectionId).also { if (it.isNotEmpty()) modelCache[connectionId] = it }
     }
 
     // ═══════════════════════════════════════ conversations ═══════════════════════════════════════

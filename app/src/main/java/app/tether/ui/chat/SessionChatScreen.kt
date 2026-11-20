@@ -150,6 +150,7 @@ fun SessionChatScreen(
     }
     val state by vm.state.collectAsStateWithLifecycle()
     val slash by vm.commands.collectAsStateWithLifecycle()
+    val machineModels by vm.models.collectAsStateWithLifecycle()
     val conv = state.conversation
     val live = state.live
     val machines by container.connections.connections.collectAsStateWithLifecycle()
@@ -253,7 +254,7 @@ fun SessionChatScreen(
                             window = contextWindowFor(conv.contextWindow, state.model ?: conv.model, conv.contextTokens),
                             costUsd = conv.totalCostUsd,
                             model = state.model,
-                            models = conv.models,
+                            models = conv.models.ifEmpty { machineModels },
                             rateLimit = conv.rateLimit,
                             cwd = conv.cwd,
                             plan = plan,
@@ -391,7 +392,7 @@ fun SessionChatScreen(
                         modeEnabled = !state.retired,
                         onSelectMode = vm::setMode,
                         model = state.model,
-                        models = conv.models,
+                        models = conv.models.ifEmpty { machineModels },
                         onSelectModel = vm::setModel,
                         commands = (conv.commands + slash).distinctBy { it.name.removePrefix("/") },
                         hint = sessionComposerHint(state),

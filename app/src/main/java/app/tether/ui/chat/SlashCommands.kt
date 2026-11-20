@@ -23,6 +23,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import app.tether.core.ModelOption
 import app.tether.core.SessionHub
 import app.tether.core.SlashCommand
 import app.tether.ui.theme.TetherTheme
@@ -64,6 +65,25 @@ internal fun CoroutineScope.slashCommandsFor(hub: SessionHub, target: Flow<Pair<
             if (t == null) return@collectLatest
             out.value = try {
                 hub.slashCommands(t.first, t.second)
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (_: Throwable) {
+                emptyList()
+            }
+        }
+    }
+    return out.asStateFlow()
+}
+
+/** Claude Code's /model choices of whatever machine [connectionId] is; empty until known and on failure. */
+internal fun CoroutineScope.modelsFor(hub: SessionHub, connectionId: Flow<String?>): StateFlow<List<ModelOption>> {
+    val out = MutableStateFlow<List<ModelOption>>(emptyList())
+    launch {
+        connectionId.distinctUntilChanged().collectLatest { c ->
+            out.value = emptyList()
+            if (c == null) return@collectLatest
+            out.value = try {
+                hub.models(c)
             } catch (ce: CancellationException) {
                 throw ce
             } catch (_: Throwable) {

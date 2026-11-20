@@ -43,6 +43,8 @@ Machine
     transcript <sessionId>       raw transcript lines (filtered for size)
     ls [path]                    DirListing
     commands [--cwd P]           {commands: [{name, description, argumentHint}]} from claude's initialize reply
+    models                       {models: [{value, displayName, description, resolvedModel?}], source}: Claude Code's
+                                 /model list for this account (asked once per Claude version and account, cached)
 Global option: --claude PATH (explicit claude binary).
 
 Older helpers kept Tether's own runs in ~/.tether/runs/; this one ignores that folder. Those
@@ -1836,6 +1838,133 @@ def cmd_commands(opts):
     except OSError:
         pass
     emit({"commands": cmds})
+
+
+MODELS_TTL = 12 * 60 * 60 * 1000
+
+# What the picker offers when Claude Code can't be asked (no claude, timeout): its aliases, plus the account's own
+# extra models it last cached in ~/.claude.json (Fable and other access-gated models are only listed there).
+BUILTIN_MODELS = (
+    ("default", "Default", "Recommended for most tasks"),
+    ("opus", "Opus", "Most capable"),
+    ("sonnet", "Sonnet", "Fast and capable"),
+    ("haiku", "Haiku", "Fastest, lightest"),
+)
+
+
+def model_option(m):
+    if not isinstance(m, dict) or not isinstance(m.get("value"), str) or not m["value"]:
+        return None
+    out = {"value": m["value"],
+           "displayName": str(m.get("displayName") or m.get("label") or m["value"]),
+           "description": str(m.get("description") or "")}
+    if isinstance(m.get("resolvedModel"), str) and m["resolvedModel"]:
+        out["resolvedModel"] = m["resolvedModel"]
+    return out
+
+
+def account_models():
+    """The account-specific extra models Claude Code cached (additionalModelOptionsCache), and a key that changes
+    when the account or that list does."""
+    data = read_json(CLAUDE_JSON, {}) or {}
+    extra = data.get("additionalModelOptionsCache")
+    extra = [o for o in (model_option(m) for m in extra) if o] if isinstance(extra, list) else []
+    acct = data.get("oauthAccount") if isinstance(data.get("oauthAccount"), dict) else {}
+    key = json.dumps([acct.get("accountUuid"), acct.get("organizationUuid"), extra], sort_keys=True)
+    return extra, key
+
+
+def fallback_models():
+    out = [{"value": v, "displayName": n, "description": d} for v, n, d in BUILTIN_MODELS]
+    seen = set(m["value"] for m in out)
+    for m in account_models()[0]:
+        if m["value"] not in seen:
+            seen.add(m["value"])
+            out.append(m)
+    return out
+
+
+def initialize_models(path, login_path, timeout=30):
+    """The `models` of Claude Code's initialize reply. Runs `claude -p` in stream-json mode only to ask: no prompt
+    is sent (no API call), nothing is saved (--no-session-persistence), and hooks and MCP servers stay off."""
+    argv = [path, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
+            "--no-session-persistence", "--strict-mcp-config", "--settings", '{"disableAllHooks":true}']
+    try:
+        p = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                             cwd=HOME, env=claude_env(path, login_path))
+    except OSError:
+        return None
+    try:
+        req = {"type": "control_request", "request_id": "tether-models", "request": {"subtype": "initialize"}}
+        p.stdin.write((json.dumps(req) + "\n").encode("utf-8"))
+        p.stdin.flush()
+        deadline = time.time() + timeout
+        buf = b""
+        fd = p.stdout.fileno()
+        while time.time() < deadline:
+            r, _w, _x = select.select([fd], [], [], max(0.0, deadline - time.time()))
+            if not r:
+                break
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            buf += chunk
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                o = parse_line(line)
+                if not isinstance(o, dict) or o.get("type") != "control_response":
+                    continue
+                resp = o.get("response") if isinstance(o.get("response"), dict) else {}
+                body = resp.get("response") if isinstance(resp.get("response"), dict) else {}
+                models = body.get("models")
+                if not isinstance(models, list):
+                    return None
+                return [m for m in (model_option(x) for x in models) if m] or None
+        return None
+    except (OSError, IOError, ValueError):
+        return None
+    finally:
+        try:
+            p.kill()
+        except OSError:
+            pass
+        try:
+            p.wait(timeout=5)
+        except Exception:
+            pass
+        for f in (p.stdin, p.stdout):
+            try:
+                f.close()
+            except (OSError, IOError):
+                pass
+
+
+def cmd_models(opts):
+    """Claude Code's /model choices for this machine's account, as its initialize reply lists them. Asking costs a
+    short `claude -p` start, so the answer is cached until Claude Code's version or the account's model list
+    changes (or 12 hours pass). Falls back to the aliases plus the account's cached extra models."""
+    cache_path = os.path.join(CACHE_DIR, "models.json")
+    try:
+        path, login_path = resolve_claude(opts.get("claude"))
+    except HelperError:
+        path, login_path = None, None
+    if not path:
+        return emit({"models": fallback_models(), "source": "fallback"})
+    version = claude_version(path, login_path)
+    key = json.dumps([path, version, account_models()[1]])
+    cached = read_json(cache_path)
+    if isinstance(cached, dict) and cached.get("key") == key and now_ms() - (cached.get("at") or 0) < MODELS_TTL \
+            and isinstance(cached.get("models"), list) and cached["models"]:
+        return emit({"models": cached["models"], "source": "claude"})
+    models = initialize_models(path, login_path)
+    if not models:
+        return emit({"models": fallback_models(), "source": "fallback"})
+    try:
+        ensure_dir(CACHE_DIR)
+        write_json_atomic(cache_path, {"key": key, "at": now_ms(), "models": models})
+    except OSError:
+        pass
+    emit({"models": models, "source": "claude"})
 
 
 def cmd_ls(opts, path=None):
@@ -5778,6 +5907,8 @@ def main(argv):
         cmd_ls(opts, arg)
     elif cmd == "commands":
         cmd_commands(opts)
+    elif cmd == "models":
+        cmd_models(opts)
     elif cmd == "daemon-status":
         cmd_daemon_status(opts)
     elif cmd == "model-guard":

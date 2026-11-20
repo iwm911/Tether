@@ -1,5 +1,6 @@
 package app.tether.remote
 
+import app.tether.core.ModelOption
 import app.tether.core.SlashCommand
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -121,6 +122,18 @@ internal fun parseSlashCommands(arr: JsonArray?): List<SlashCommand> = arr?.mapN
     val name = co.str("name") ?: return@mapNotNull null
     SlashCommand(name = name, description = co.str("description").orEmpty(), argumentHint = co.str("argumentHint").orEmpty())
 }.orEmpty()
+
+/** The `models` array of Claude Code's initialize reply (also what the helper's `models` returns). */
+internal fun parseModelOptions(arr: JsonArray?): List<ModelOption> = arr?.mapNotNull { m ->
+    val mo = m as? JsonObject ?: return@mapNotNull null
+    val value = mo.str("value")?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+    ModelOption(
+        value = value,
+        displayName = mo.str("displayName")?.takeIf { it.isNotBlank() } ?: value,
+        description = mo.str("description").orEmpty(),
+        resolvedModel = mo.str("resolvedModel")?.takeIf { it.isNotBlank() },
+    )
+}.orEmpty().distinctBy { it.value }
 
 internal fun projectNameOf(path: String): String = path.trimEnd('/').substringAfterLast('/').ifEmpty { "/" }
 

@@ -11,6 +11,7 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.tether.AppContainer
+import app.tether.core.ModelOption
 import app.tether.core.Connection
 import app.tether.core.ImageAttachment
 import app.tether.core.LinkState
@@ -20,6 +21,7 @@ import app.tether.core.PermissionMode
 import app.tether.core.ProjectSummary
 import app.tether.core.SessionRef
 import app.tether.core.SlashCommand
+import app.tether.ui.chat.modelsFor
 import app.tether.ui.chat.slashCommandsFor
 import app.tether.ui.home.Loadable
 import app.tether.ui.home.attempt
@@ -135,6 +137,9 @@ class NewAgentViewModel(
         container.sessions,
         form.map { f -> f.cwd?.let { cwd -> f.connectionId?.let { it to cwd } } },
     )
+
+    /** Claude Code's /model choices on the chosen machine; empty until known (the step shows [FallbackModels]). */
+    val models: StateFlow<List<ModelOption>> = viewModelScope.modelsFor(container.sessions, form.map { it.connectionId })
 
     init {
         val settings = container.settings.settings.value

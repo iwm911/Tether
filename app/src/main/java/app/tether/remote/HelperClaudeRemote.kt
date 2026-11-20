@@ -6,6 +6,7 @@ import app.tether.core.ConnectionRepository
 import app.tether.core.DirListing
 import app.tether.core.ExecResult
 import app.tether.core.ProbeResult
+import app.tether.core.ModelOption
 import app.tether.core.SlashCommand
 import app.tether.core.ProjectSummary
 import app.tether.core.SshManager
@@ -221,6 +222,11 @@ class HelperClaudeRemote internal constructor(
     override suspend fun listCommands(connectionId: String, cwd: String): List<SlashCommand> {
         val out = helper(connectionId, claudeArgs(connectionId) + listOf("commands", "--cwd", cwd), timeoutMs = 45_000)
         return decode(out, "command list") { parseSlashCommands(RemoteJson.parseObject(it)?.arr("commands")) }
+    }
+
+    override suspend fun listModels(connectionId: String): List<ModelOption> {
+        val out = helper(connectionId, claudeArgs(connectionId) + listOf("models"), timeoutMs = 60_000)
+        return decode(out, "model list") { parseModelOptions(RemoteJson.parseObject(it)?.arr("models")) }
     }
 
     // ═══════════════════════════════════════ SessionRemote (one-session model) ═══════════════════════════════════════
