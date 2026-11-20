@@ -3,6 +3,7 @@ package app.tether.ui.chat
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import app.tether.core.ModelOption
 import app.tether.core.ASK_USER_QUESTION
 import app.tether.core.AppSettings
 import app.tether.core.ChatItem
@@ -221,6 +222,11 @@ class SessionChatViewModel(
         }
         out.asStateFlow()
     }
+
+    /** Claude Code's /model choices on the session's machine, for the model sheet (empty until known). */
+    val models: StateFlow<List<ModelOption>> =
+        if (agentId != null) MutableStateFlow(emptyList<ModelOption>()).asStateFlow()
+        else viewModelScope.modelsFor(hub, flowOf(ref.connectionId))
 
     init {
         bindDraft(composer, viewModelScope)

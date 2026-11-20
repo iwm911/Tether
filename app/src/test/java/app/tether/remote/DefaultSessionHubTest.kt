@@ -48,6 +48,7 @@ import app.tether.core.SessionRemote
 
 import app.tether.core.SessionState
 
+import app.tether.core.ModelOption
 import app.tether.core.SlashCommand
 
 import app.tether.core.SshManager
@@ -500,6 +501,17 @@ class DefaultSessionHubTest {
         assertEquals(3, remote.commandCalls) // the empty answer was not cached, the cached one was not asked again
     }
 
+    @Test
+    fun machineModelsAreCachedOnceKnown() = runBlocking {
+        remote.models = emptyList()
+        assertTrue(hub.models(CONN).isEmpty())
+        remote.models = listOf(ModelOption("fable", "Fable 5.2", resolvedModel = "claude-fable-5-2"))
+        assertEquals(listOf("fable"), hub.models(CONN).map { it.value })
+        remote.models = listOf(ModelOption("other", "Other"))
+        assertEquals(listOf("fable"), hub.models(CONN).map { it.value }) // cached
+        assertEquals(2, remote.modelCalls) // the empty answer was not cached, the cached one was not asked again
+    }
+
     // ───────────── fakes ─────────────
 
     private class FakeRemote : SessionRemote {
@@ -508,6 +520,12 @@ class DefaultSessionHubTest {
         override suspend fun listCommands(connectionId: String, cwd: String): List<SlashCommand> {
             commandCalls++
             return commands
+        }
+        @Volatile var models: List<ModelOption> = emptyList()
+        @Volatile var modelCalls = 0
+        override suspend fun listModels(connectionId: String): List<ModelOption> {
+            modelCalls++
+            return models
         }
         val watch = MutableSharedFlow<WatchMessage>(replay = 0, extraBufferCapacity = 64)
         @Volatile var watchCalls = 0

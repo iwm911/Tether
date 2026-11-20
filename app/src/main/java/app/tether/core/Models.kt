@@ -170,7 +170,13 @@ val FallbackModels = listOf(
 // ───────────────────────────── Conversation (rendered chat) ─────────────────────────────
 
 @Serializable
-data class ModelOption(val value: String, val displayName: String, val description: String = "")
+data class ModelOption(
+    val value: String,
+    val displayName: String,
+    val description: String = "",
+    /** The model id an alias stands for (`fable` → `claude-fable-5-2`), as Claude Code reports it. */
+    val resolvedModel: String? = null,
+)
 
 data class SlashCommand(val name: String, val description: String, val argumentHint: String = "")
 

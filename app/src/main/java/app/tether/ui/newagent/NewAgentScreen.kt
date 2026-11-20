@@ -161,6 +161,7 @@ fun NewAgentScreen(
         NewAgentViewModel(container, connectionId, cwd)
     }
     val state by vm.state.collectAsStateWithLifecycle()
+    val machineModels by vm.models.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val haptics = rememberHaptics()
     val snackbar = remember { SnackbarHostState() }
@@ -257,7 +258,7 @@ fun NewAgentScreen(
                 }
 
                 StepCard(3, "Model", summary = null) {
-                    ModelStep(selected = state.model, onSelect = { vm.selectModel(it) })
+                    ModelStep(selected = state.model, models = machineModels, onSelect = { vm.selectModel(it) })
                 }
 
                 StepCard(4, "Permissions", summary = null) {
@@ -287,7 +288,7 @@ fun NewAgentScreen(
                 )
                 AnimatedContent(targetState = blocker, transitionSpec = { fadeIn() togetherWith fadeOut() }, label = "blocker") { b ->
                     Text(
-                        b ?: footerSummary(state),
+                        b ?: footerSummary(state, machineModels),
                         style = MaterialTheme.typography.labelSmall,
                         color = TetherTheme.colors.faint,
                         maxLines = 1,
@@ -378,11 +379,11 @@ fun NewAgentScreen(
     }
 }
 
-private fun footerSummary(s: NewAgentUiState): String {
+private fun footerSummary(s: NewAgentUiState, models: List<ModelOption>): String {
     val parts = buildList {
         s.connection?.name?.let(::add)
         s.cwd?.let { add(projectName(it)) }
-        add(FallbackModels.firstOrNull { it.value == s.model }?.displayName ?: prettyModel(s.model))
+        add(newAgentModelChoices(models, s.model).firstOrNull { it.value == s.model }?.displayName ?: prettyModel(s.model))
         add(s.mode.label)
     }
     return parts.joinToString("  ·  ")
@@ -595,12 +596,21 @@ private fun RecentProjectRow(project: ProjectSummary, selected: Boolean, onClick
 
 // ───────────────────────────── Model ─────────────────────────────
 
+/**
+ * The model chips of a new session: the machine's aliases (default, opus, fable…, as its Claude Code lists them;
+ * the built-in ones until known), not every pinned version the /model sheet offers, plus [selected] if it is
+ * none of those (a pinned id the user chose before).
+ */
+internal fun newAgentModelChoices(machine: List<ModelOption>, selected: String): List<ModelOption> {
+    val aliases = machine.filterNot { it.value.startsWith("claude-") }.ifEmpty { FallbackModels }
+    if (aliases.any { it.value == selected }) return aliases
+    val known = machine.firstOrNull { it.value == selected }
+    return aliases + (known ?: ModelOption(selected, prettyModel(selected), "Your last choice"))
+}
+
 @Composable
-private fun ModelStep(selected: String, onSelect: (String) -> Unit) {
-    val options: List<ModelOption> = remember(selected) {
-        if (FallbackModels.any { it.value == selected }) FallbackModels
-        else FallbackModels + ModelOption(selected, prettyModel(selected), "Your last choice")
-    }
+private fun ModelStep(selected: String, models: List<ModelOption>, onSelect: (String) -> Unit) {
+    val options: List<ModelOption> = remember(selected, models) { newAgentModelChoices(models, selected) }
     Column {
         FlowRow(horizontalArrangement = Arrangement.spacedBy(Space.sm), verticalArrangement = Arrangement.spacedBy(Space.sm)) {
             options.forEach { m ->
