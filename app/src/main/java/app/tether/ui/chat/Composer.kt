@@ -54,6 +54,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.EditNote
 import androidx.compose.material.icons.rounded.AddPhotoAlternate
@@ -199,12 +200,33 @@ internal fun PermissionMode.tint(): Color = when (this) {
     PermissionMode.BYPASS -> TetherTheme.colors.danger
 }
 
+private val ModelFamilies = listOf("fable", "opus", "sonnet", "haiku")
+
+private fun baseModelId(model: String): String = model.lowercase().removeSuffix("[1m]")
+
+/**
+ * The option [model] (a session's model id, or an alias the user picked) is: the option of that exact value,
+ * else the option whose alias resolves to it (not "default", which only stands for itself).
+ */
+internal fun modelOptionFor(model: String?, options: List<ModelOption>): ModelOption? {
+    if (model.isNullOrBlank()) return options.firstOrNull { it.value == "default" }
+    options.firstOrNull { it.value.equals(model, ignoreCase = true) }?.let { return it }
+    val base = baseModelId(model)
+    return options.firstOrNull { o ->
+        o.value != "default" && (o.resolvedModel?.let { baseModelId(it) == base } == true || baseModelId(o.value) == base)
+    }
+}
+
 /** "claude-opus-4-5-20251101" → "Opus 4.5"; matches a CLI-reported option first. */
 internal fun modelLabel(model: String?, options: List<ModelOption>): String {
     if (model.isNullOrBlank()) return "Default"
-    options.firstOrNull { it.value.equals(model, ignoreCase = true) }?.let { return it.displayName }
     val m = model.lowercase()
-    val family = listOf("opus", "sonnet", "haiku").firstOrNull { it in m }
+    val longCtxOf = if ("[1m]" in m) " 1M" else ""
+    modelOptionFor(model, options)?.let { o ->
+        val exact = o.value.equals(model, ignoreCase = true)
+        return if (exact || "1m" in o.displayName.lowercase()) o.displayName else o.displayName + longCtxOf
+    }
+    val family = ModelFamilies.firstOrNull { it in m }
         ?: return model.removePrefix("claude-").take(18)
     val name = family.replaceFirstChar { it.uppercase() }
     val v = Regex("$family-(\\d+)(?:-(\\d{1,2}))?(?=-|\\[|$)").find(m)
@@ -217,11 +239,13 @@ internal fun modelLabel(model: String?, options: List<ModelOption>): String {
     return if (version != null) "$name $version$longCtx" else "$name$longCtx"
 }
 
-private fun modelMatches(option: ModelOption, model: String?): Boolean {
-    if (model.isNullOrBlank()) return option.value == "default"
-    if (option.value.equals(model, ignoreCase = true)) return true
-    val v = option.value.lowercase()
-    return v in listOf("opus", "sonnet", "haiku") && v in model.lowercase()
+/** Index of the option the sheet ticks for [model]; -1 when none is it. */
+internal fun selectedModelIndex(options: List<ModelOption>, model: String?): Int {
+    modelOptionFor(model, options)?.let { return options.indexOf(it) }
+    if (model.isNullOrBlank()) return -1
+    // A list without resolved ids (the built-in fallback): a family alias stands for any model of that family.
+    val m = model.lowercase()
+    return options.indexOfFirst { o -> o.resolvedModel == null && o.value.lowercase().let { v -> v in ModelFamilies && v in m } }
 }
 
 private val attachmentIds = AtomicLong(1)
@@ -759,9 +783,9 @@ private fun ModelSheet(options: List<ModelOption>, current: String?, onPick: (Mo
         sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
     ) {
-        Column(Modifier.padding(bottom = Space.lg)) {
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = Space.lg)) {
             SheetTitle("Model", "Applies from Claude's next message.")
-            val selectedIndex = options.indexOfFirst { modelMatches(it, current) }
+            val selectedIndex = selectedModelIndex(options, current)
             options.forEachIndexed { i, opt ->
                 val selected = i == selectedIndex
                 Row(

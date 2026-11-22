@@ -175,6 +175,8 @@ interface SessionRemote {
     suspend fun uploadImage(connectionId: String, image: ImageAttachment): String
     /** Slash commands Claude Code offers in [cwd], for the composer's popup (empty when unknown). */
     suspend fun listCommands(connectionId: String, cwd: String): List<SlashCommand> = emptyList()
+    /** Claude Code's `/model` choices on the machine, for its account (empty when unknown). */
+    suspend fun listModels(connectionId: String): List<ModelOption> = emptyList()
 }
 
 /**
@@ -231,4 +233,7 @@ interface SessionHub {
 
     /** Slash commands of a machine folder for the composer (cached; empty when unavailable). */
     suspend fun slashCommands(connectionId: String, cwd: String): List<SlashCommand> = emptyList()
+
+    /** Claude Code's `/model` choices on a machine (cached; empty when unavailable: show [FallbackModels]). */
+    suspend fun models(connectionId: String): List<ModelOption> = emptyList()
 }
