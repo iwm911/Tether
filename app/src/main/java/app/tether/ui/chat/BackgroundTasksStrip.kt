@@ -46,7 +46,10 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.tether.core.BackgroundTask
@@ -82,7 +85,7 @@ private fun BackgroundTasksCard(tasks: List<BackgroundTask>) {
     var expanded by rememberSaveable { mutableStateOf(false) }
     val haptics = rememberHaptics()
     val chevron by animateFloatAsState(if (expanded) 180f else 0f, Motion.gentle(), label = "bgChevron")
-    val shape = RoundedCornerShape(14.dp)
+    val shape = RoundedCornerShape(10.dp)
     val latest = tasks.lastOrNull()
     val agents = tasks.count { it.isAgent }
     val workflows = tasks.count { it.isWorkflow }
@@ -105,22 +108,22 @@ private fun BackgroundTasksCard(tasks: List<BackgroundTask>) {
             .semantics { contentDescription = "${tasks.size} background tasks running" },
     ) {
         Row(
-            Modifier.fillMaxWidth().padding(start = 14.dp, end = 10.dp, top = 7.dp, bottom = 6.dp),
+            Modifier.fillMaxWidth().padding(start = 12.dp, end = 8.dp, top = 4.dp, bottom = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            ClaudeSpinner(fontSize = 14f)
-            Spacer(Modifier.width(8.dp))
-            Text(title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
+            ClaudeSpinner(fontSize = 11f)
+            Spacer(Modifier.width(6.dp))
+            Text(title, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface)
             AnimatedContent(tasks.size, transitionSpec = { fadeIn(tween(Motion.Short)) togetherWith fadeOut(tween(Motion.Short)) }, label = "bgCount") { n ->
-                Text(" · $n", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Normal), color = TetherTheme.colors.faint)
+                Text(" · $n", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Normal), color = TetherTheme.colors.faint)
             }
-            Spacer(Modifier.width(10.dp))
+            Spacer(Modifier.width(8.dp))
             Box(Modifier.weight(1f)) {
                 if (!expanded && latest != null) {
                     AnimatedContent(latest.description, transitionSpec = { fadeIn(tween(Motion.Medium)) togetherWith fadeOut(tween(Motion.Short)) }, label = "bgLatest") { text ->
                         ShimmerText(
                             text,
-                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Normal),
                             base = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.fillMaxWidth(),
                         )
@@ -131,7 +134,7 @@ private fun BackgroundTasksCard(tasks: List<BackgroundTask>) {
                 Icons.Rounded.ExpandMore,
                 contentDescription = null,
                 tint = TetherTheme.colors.faint,
-                modifier = Modifier.size(20.dp).rotate(chevron),
+                modifier = Modifier.size(16.dp).rotate(chevron),
             )
         }
         AnimatedVisibility(
@@ -142,10 +145,10 @@ private fun BackgroundTasksCard(tasks: List<BackgroundTask>) {
             Column(
                 Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 300.dp)
+                    .heightIn(max = 180.dp)
                     .verticalScroll(rememberScrollState())
-                    .padding(start = 14.dp, end = 14.dp, top = 2.dp, bottom = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+                    .padding(start = 12.dp, end = 12.dp, top = 0.dp, bottom = 6.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 tasks.forEach { BackgroundTaskRow(it) }
             }
@@ -156,7 +159,7 @@ private fun BackgroundTasksCard(tasks: List<BackgroundTask>) {
 @Composable
 private fun BackgroundTaskRow(task: BackgroundTask) {
     val c = TetherTheme.colors
-    Row(verticalAlignment = Alignment.Top) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
         Icon(
             when {
                 task.isWorkflow -> Icons.Rounded.Hub
@@ -165,30 +168,29 @@ private fun BackgroundTaskRow(task: BackgroundTask) {
             },
             contentDescription = null,
             tint = c.clay,
-            modifier = Modifier.padding(top = 2.dp).size(16.dp),
+            modifier = Modifier.size(13.dp),
         )
-        Spacer(Modifier.width(10.dp))
-        Column(Modifier.weight(1f)) {
-            Text(
-                task.description,
-                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 2, overflow = TextOverflow.Ellipsis,
-            )
-            val meta = buildList {
-                add(task.subagentType ?: when {
-                    task.isWorkflow -> "Workflow"
-                    task.isAgent -> "Agent"
-                    else -> "Shell"
-                })
-                task.lastToolName?.let { add(it) }
-                task.toolUses?.takeIf { it > 0 }?.let { add(if (it == 1) "1 tool use" else "$it tool uses") }
-                task.totalTokens?.takeIf { it > 0 }?.let { add("${compactNumber(it)} tokens") }
-            }
-            Text(meta.joinToString(" · "), style = MaterialTheme.typography.bodySmall, color = c.faint, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            task.summary?.let {
-                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            }
+        Spacer(Modifier.width(8.dp))
+        val meta = buildList {
+            add(task.subagentType ?: when {
+                task.isWorkflow -> "Workflow"
+                task.isAgent -> "Agent"
+                else -> "Shell"
+            })
+            task.lastToolName?.let { add(it) }
+            task.toolUses?.takeIf { it > 0 }?.let { add(if (it == 1) "1 tool" else "$it tools") }
+            task.totalTokens?.takeIf { it > 0 }?.let { add("${compactNumber(it)} tok") }
         }
+        // One line per task: what it is, then the details in faint type; long ones ellipsise.
+        Text(
+            buildAnnotatedString {
+                withStyle(SpanStyle(color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Medium)) { append(task.description) }
+                withStyle(SpanStyle(color = c.faint)) { append("  ·  " + meta.joinToString(" · ")) }
+            },
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
     }
 }

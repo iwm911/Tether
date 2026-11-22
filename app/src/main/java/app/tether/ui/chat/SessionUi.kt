@@ -253,7 +253,7 @@ internal fun SubagentStrip(
     val plain = subagents.filter { it.workflowRunId == null }
     val runs = subagents.filter { it.workflowRunId != null }.groupBy { it.workflowRunId!! }
     Surface(
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(10.dp),
         color = MaterialTheme.colorScheme.surfaceContainerLow,
         modifier = modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = Space.xxs),
     ) {
@@ -261,12 +261,12 @@ internal fun SubagentStrip(
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .heightIn(min = 36.dp)
+                    .heightIn(min = 28.dp)
                     .clickable(role = Role.Button, onClickLabel = if (expanded) "Hide subagents" else "Show subagents") { expanded = !expanded }
                     .padding(horizontal = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                if (running > 0) ClaudeSpinner(fontSize = 13f) else StatusDot(TetherTheme.colors.faint, size = 7.dp)
+                if (running > 0) ClaudeSpinner(fontSize = 11f) else StatusDot(TetherTheme.colors.faint, size = 7.dp)
                 Spacer(Modifier.width(8.dp))
                 Text(
                     when {
@@ -274,12 +274,12 @@ internal fun SubagentStrip(
                         subagents.size == 1 -> "1 subagent"
                         else -> "${subagents.size} subagents"
                     },
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.weight(1f),
                 )
                 val rot by animateFloatAsState(if (expanded) 0f else -90f, label = "subChev")
-                Icon(Icons.Rounded.ExpandMore, contentDescription = null, tint = TetherTheme.colors.faint, modifier = Modifier.size(18.dp).rotate(rot))
+                Icon(Icons.Rounded.ExpandMore, contentDescription = null, tint = TetherTheme.colors.faint, modifier = Modifier.size(16.dp).rotate(rot))
             }
             AnimatedVisibility(expanded, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
                 Column(
