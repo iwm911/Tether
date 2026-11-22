@@ -91,7 +91,7 @@ private fun TodoCard(todos: List<TodoItem>) {
     val progress by animateFloatAsState(done.toFloat() / total, Motion.gentle(), label = "todoProgress")
     val barColor by animateColorAsState(if (allDone) TetherTheme.colors.success else TetherTheme.colors.clay, label = "todoBar")
     val chevron by animateFloatAsState(if (expanded) 180f else 0f, Motion.gentle(), label = "todoChevron")
-    val shape = RoundedCornerShape(14.dp)
+    val shape = RoundedCornerShape(10.dp)
 
     Column(
         Modifier
@@ -106,26 +106,26 @@ private fun TodoCard(todos: List<TodoItem>) {
             .semantics { contentDescription = "Plan, $done of ${todos.size} done" },
     ) {
         Row(
-            Modifier.fillMaxWidth().padding(start = 14.dp, end = 10.dp, top = 7.dp, bottom = 6.dp),
+            Modifier.fillMaxWidth().padding(start = 12.dp, end = 8.dp, top = 4.dp, bottom = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(Icons.Rounded.Checklist, contentDescription = null, tint = barColor, modifier = Modifier.size(17.dp))
-            Spacer(Modifier.width(8.dp))
+            Icon(Icons.Rounded.Checklist, contentDescription = null, tint = barColor, modifier = Modifier.size(14.dp))
+            Spacer(Modifier.width(6.dp))
             Text(
                 if (allDone) "Plan complete" else "Plan",
-                style = MaterialTheme.typography.titleSmall,
+                style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurface,
             )
             AnimatedContent(done, transitionSpec = { fadeIn(tween(Motion.Short)) togetherWith fadeOut(tween(Motion.Short)) }, label = "todoCount") { d ->
-                Text(" · $d/${todos.size}", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Normal), color = TetherTheme.colors.faint)
+                Text(" · $d/${todos.size}", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Normal), color = TetherTheme.colors.faint)
             }
-            Spacer(Modifier.width(10.dp))
+            Spacer(Modifier.width(8.dp))
             Box(Modifier.weight(1f)) {
                 if (!expanded && active != null) {
                     AnimatedContent(active.activeForm.ifBlank { active.content }, transitionSpec = { fadeIn(tween(Motion.Medium)) togetherWith fadeOut(tween(Motion.Short)) }, label = "todoActive") { text ->
                         ShimmerText(
                             text,
-                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Normal),
                             base = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.fillMaxWidth(),
                         )
@@ -136,10 +136,10 @@ private fun TodoCard(todos: List<TodoItem>) {
                 Icons.Rounded.ExpandMore,
                 contentDescription = null,
                 tint = TetherTheme.colors.faint,
-                modifier = Modifier.size(20.dp).rotate(chevron),
+                modifier = Modifier.size(16.dp).rotate(chevron),
             )
         }
-        Box(Modifier.fillMaxWidth().height(2.dp).background(TetherTheme.colors.hairline)) {
+        Box(Modifier.fillMaxWidth().height(1.5.dp).background(TetherTheme.colors.hairline)) {
             Box(Modifier.fillMaxWidth(progress.coerceIn(0f, 1f)).fillMaxHeight().background(barColor))
         }
         AnimatedVisibility(
@@ -150,7 +150,7 @@ private fun TodoCard(todos: List<TodoItem>) {
             Column(
                 Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 300.dp)
+                    .heightIn(max = 220.dp)
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = 14.dp, vertical = 10.dp),
                 verticalArrangement = Arrangement.spacedBy(7.dp),
