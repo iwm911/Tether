@@ -103,6 +103,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 
 import androidx.compose.runtime.LaunchedEffect
 
@@ -153,6 +154,9 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 
 import app.tether.core.ChatItem
 
@@ -222,25 +226,87 @@ internal fun ChatList(
     footer: (@Composable () -> Unit)? = null,
     empty: (@Composable () -> Unit)? = null,
     permission: @Composable (ChatItem.Permission, Modifier) -> Unit = { p, m -> PermissionCard(p, responding = false, onRespond = { _, _ -> }, modifier = m) },
+    /** [ReadingPositions] id: remember where the user stopped reading and reopen there. */
+    readingKey: String? = null,
 ) {
     val scope = rememberCoroutineScope()
     val haptics = rememberHaptics()
     val dragged by listState.interactionSource.collectIsDraggedAsState()
     var follow by rememberSaveable { mutableStateOf(true) }
-    var countAtUnfollow by remember { mutableIntStateOf(0) }
+    // Holding the user's place: don't re-arm following just because the list sits at the end. Set when
+    // they leave (pause) or reopen at a saved place; released by their own scroll or the pill.
+    var hold by rememberSaveable { mutableStateOf(false) }
+    var countAtUnfollow by rememberSaveable { mutableIntStateOf(0) }
     val itemCount by rememberUpdatedState(items.size)
+    val currentItems by rememberUpdatedState(items)
+    // Where the user was when the app was paused while following; consumed when the first new rows land.
+    val pausedAt = remember { arrayOfNulls<ReadingAnchor>(1) }
+    // Lazy rows emitted before the transcript (newest-first): the footer, then the error card.
+    val leadRows = (if (footer != null) 1 else 0) + (if (error != null) 1 else 0)
 
     // Follow bookkeeping: reaching the end re-arms following; dragging away from it disarms.
     LaunchedEffect(listState) {
         snapshotFlow { dragged to listState.canScrollBackward }.collect { (isDragged, awayFromEnd) ->
+            if (isDragged) { hold = false; pausedAt[0] = null }
             if (!awayFromEnd) {
-                follow = true
+                if (!hold) follow = true
             } else if (isDragged && follow) {
                 follow = false
                 countAtUnfollow = itemCount
             }
         }
     }
+
+    // ── Reading position: reopen where the user stopped, not at the end ──
+    fun capture(): ReadingAnchor? {
+        val newest = currentItems.lastOrNull()?.key ?: return null
+        val row = listState.layoutInfo.visibleItemsInfo.firstOrNull { (it.key as? String)?.startsWith("__") == false } ?: return null
+        val offset = if (row.index == listState.firstVisibleItemIndex) listState.firstVisibleItemScrollOffset else 0
+        return ReadingAnchor(row.key as String, offset, newest, following = follow && !listState.canScrollBackward)
+    }
+    fun save() {
+        val id = readingKey ?: return
+        capture()?.let { ReadingPositions.put(id, it) }
+    }
+    var restored by remember(readingKey) { mutableStateOf(readingKey == null) }
+    LaunchedEffect(readingKey, loading, items.isEmpty()) {
+        if (restored || loading || items.isEmpty()) return@LaunchedEffect
+        restored = true
+        val a = readingKey?.let(ReadingPositions::get) ?: return@LaunchedEffect
+        val chrono = items.indexOfLast { it.key == a.key }
+        if (chrono < 0) return@LaunchedEffect
+        val seen = items.indexOfLast { it.key == a.newestKey }
+        if (a.following && seen == items.lastIndex) return@LaunchedEffect // nothing new: the live end is where they were
+        follow = false
+        hold = true
+        countAtUnfollow = if (seen >= 0) seen + 1 else items.size
+        listState.scrollToItem(leadRows + items.lastIndex - chrono, a.offset)
+    }
+    // Leaving the app holds the place too: on return, new output lands below the fold (with "New activity"),
+    // not over what was read. Held until the user scrolls or taps the pill, however late the output arrives.
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(lifecycle, readingKey) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_PAUSE -> {
+                    save()
+                    if (follow) {
+                        pausedAt[0] = capture()
+                        follow = false
+                        hold = true
+                        countAtUnfollow = currentItems.size
+                    }
+                }
+                else -> {}
+            }
+        }
+        lifecycle.addObserver(observer)
+        onDispose {
+            lifecycle.removeObserver(observer)
+            save()
+        }
+    }
+
     // Bottom-anchored layout keeps growing rows pinned; only new rows can land below the fold.
     LaunchedEffect(listState) {
         snapshotFlow { follow && !dragged && listState.canScrollBackward }.collectLatest { should ->
@@ -252,12 +318,25 @@ internal fun ChatList(
     // fold and the effect above only catches up a frame later. A session adds whole rows in bursts
     // (transcript lines land several at a time), which made the list jump on every one. Re-pin
     // within the same frame instead.
+    // Back from a pause with new rows: the list's own anchor is the footer (always index 0), which would
+    // carry the new rows into view. Pin the row the user was reading instead, in the same frame.
     val newestKey = items.lastOrNull()?.key
     val pinnedNewest = remember { arrayOf(newestKey) }
     SideEffect {
         if (newestKey != pinnedNewest[0]) {
             pinnedNewest[0] = newestKey
-            if (follow && !dragged) listState.requestScrollToItem(0)
+            // The user's own new message: they're back at the live end, whatever was held.
+            if (hold && items.lastOrNull() is ChatItem.User) {
+                hold = false
+                pausedAt[0] = null
+                follow = true
+            }
+            val p = pausedAt[0]
+            val chrono = p?.let { a -> items.indexOfLast { it.key == a.key } } ?: -1
+            if (p != null && chrono >= 0) {
+                pausedAt[0] = null
+                listState.requestScrollToItem(leadRows + items.lastIndex - chrono, p.offset)
+            } else if (follow && !dragged) listState.requestScrollToItem(0)
         }
     }
 
@@ -326,6 +405,8 @@ internal fun ChatList(
                     scope.launch {
                         if (listState.firstVisibleItemIndex > 12) listState.scrollToItem(6)
                         listState.animateScrollToItem(0)
+                        hold = false
+                        pausedAt[0] = null
                         follow = true
                     }
                 },

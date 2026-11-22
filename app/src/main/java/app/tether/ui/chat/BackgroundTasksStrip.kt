@@ -82,7 +82,7 @@ private fun BackgroundTasksCard(tasks: List<BackgroundTask>) {
     var expanded by rememberSaveable { mutableStateOf(false) }
     val haptics = rememberHaptics()
     val chevron by animateFloatAsState(if (expanded) 180f else 0f, Motion.gentle(), label = "bgChevron")
-    val shape = RoundedCornerShape(18.dp)
+    val shape = RoundedCornerShape(14.dp)
     val latest = tasks.lastOrNull()
     val agents = tasks.count { it.isAgent }
     val workflows = tasks.count { it.isWorkflow }
@@ -95,7 +95,7 @@ private fun BackgroundTasksCard(tasks: List<BackgroundTask>) {
     Column(
         Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = Space.xs)
+            .padding(horizontal = 12.dp, vertical = Space.xxs)
             .clip(shape)
             .background(MaterialTheme.colorScheme.surfaceContainerLow)
             .border(1.dp, TetherTheme.colors.hairline, shape)
@@ -105,7 +105,7 @@ private fun BackgroundTasksCard(tasks: List<BackgroundTask>) {
             .semantics { contentDescription = "${tasks.size} background tasks running" },
     ) {
         Row(
-            Modifier.fillMaxWidth().padding(start = 14.dp, end = 10.dp, top = 11.dp, bottom = 10.dp),
+            Modifier.fillMaxWidth().padding(start = 14.dp, end = 10.dp, top = 7.dp, bottom = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             ClaudeSpinner(fontSize = 14f)

@@ -255,13 +255,13 @@ internal fun SubagentStrip(
     Surface(
         shape = RoundedCornerShape(14.dp),
         color = MaterialTheme.colorScheme.surfaceContainerLow,
-        modifier = modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+        modifier = modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = Space.xxs),
     ) {
         Column(Modifier.animateContentSize()) {
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .heightIn(min = 44.dp)
+                    .heightIn(min = 36.dp)
                     .clickable(role = Role.Button, onClickLabel = if (expanded) "Hide subagents" else "Show subagents") { expanded = !expanded }
                     .padding(horizontal = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
