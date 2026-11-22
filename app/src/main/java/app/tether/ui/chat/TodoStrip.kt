@@ -91,12 +91,12 @@ private fun TodoCard(todos: List<TodoItem>) {
     val progress by animateFloatAsState(done.toFloat() / total, Motion.gentle(), label = "todoProgress")
     val barColor by animateColorAsState(if (allDone) TetherTheme.colors.success else TetherTheme.colors.clay, label = "todoBar")
     val chevron by animateFloatAsState(if (expanded) 180f else 0f, Motion.gentle(), label = "todoChevron")
-    val shape = RoundedCornerShape(18.dp)
+    val shape = RoundedCornerShape(14.dp)
 
     Column(
         Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = Space.xs)
+            .padding(horizontal = 12.dp, vertical = Space.xxs)
             .clip(shape)
             .background(MaterialTheme.colorScheme.surfaceContainerLow)
             .border(1.dp, TetherTheme.colors.hairline, shape)
@@ -106,7 +106,7 @@ private fun TodoCard(todos: List<TodoItem>) {
             .semantics { contentDescription = "Plan, $done of ${todos.size} done" },
     ) {
         Row(
-            Modifier.fillMaxWidth().padding(start = 14.dp, end = 10.dp, top = 11.dp, bottom = 10.dp),
+            Modifier.fillMaxWidth().padding(start = 14.dp, end = 10.dp, top = 7.dp, bottom = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(Icons.Rounded.Checklist, contentDescription = null, tint = barColor, modifier = Modifier.size(17.dp))

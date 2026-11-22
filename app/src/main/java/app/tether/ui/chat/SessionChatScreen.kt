@@ -177,6 +177,16 @@ fun SessionChatScreen(
     val clipboard = LocalClipboardManager.current
     val density = LocalDensity.current
     val listState = rememberLazyListState()
+    val readingKey = remember(ref, agentId) {
+        ReadingPositions.init(container.app)
+        ReadingPositions.session(ref.connectionId, ref.sessionId, agentId)
+    }
+    // Scrolled back to read: the strips under the top bar fold away so the text gets the room.
+    // They come back at the live end (the jump pill gets there in one tap).
+    val readingBackPx = with(density) { 160.dp.roundToPx() }
+    val readingBack by remember {
+        derivedStateOf { listState.firstVisibleItemIndex >= 2 || listState.firstVisibleItemScrollOffset > readingBackPx }
+    }
     var rawView by rememberSaveable { mutableStateOf(false) }
     var confirmStop by remember { mutableStateOf(false) }
     var confirmRemove by remember { mutableStateOf(false) }
@@ -281,15 +291,23 @@ fun SessionChatScreen(
                     onRetry = vm::retry,
                 )
                 RateLimitBanner(conv.rateLimit)
-                TodoStrip(conv.todos)
-                // Subagents get their own strip (it opens their transcripts): keep them out of "Background".
-                val subagents = if (agentId == null) live?.subagents.orEmpty() else emptyList()
-                BackgroundTasksStrip(if (subagents.isEmpty()) conv.backgroundTasks else conv.backgroundTasks.filterNot { it.isAgent })
-                SubagentStrip(
-                    subagents,
-                    onOpen = { onOpenSubagent(it.agentId) },
-                    workflowNames = remember(live?.tasks) { workflowNames(live?.tasks.orEmpty()) },
-                )
+                AnimatedVisibility(
+                    visible = !readingBack || rawView,
+                    enter = expandVertically(Motion.gentle()) + fadeIn(tween(Motion.Medium)),
+                    exit = shrinkVertically(tween(Motion.Medium, easing = Motion.Emphasized)) + fadeOut(tween(Motion.Short)),
+                ) {
+                    Column {
+                        TodoStrip(conv.todos)
+                        // Subagents get their own strip (it opens their transcripts): keep them out of "Background".
+                        val subagents = if (agentId == null) live?.subagents.orEmpty() else emptyList()
+                        BackgroundTasksStrip(if (subagents.isEmpty()) conv.backgroundTasks else conv.backgroundTasks.filterNot { it.isAgent })
+                        SubagentStrip(
+                            subagents,
+                            onOpen = { onOpenSubagent(it.agentId) },
+                            workflowNames = remember(live?.tasks) { workflowNames(live?.tasks.orEmpty()) },
+                        )
+                    }
+                }
                 Box(Modifier.fillMaxWidth().height(1.dp).background(headerLine))
             }
 
@@ -321,6 +339,7 @@ fun SessionChatScreen(
                                 } else null,
                                 empty = if (agentId == null) { { ReadyEmpty(conv.cwd, state.machineName) } } else null,
                                 permission = permissionSlot,
+                                readingKey = readingKey,
                             )
                         }
                     }
