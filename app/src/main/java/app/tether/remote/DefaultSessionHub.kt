@@ -8,6 +8,8 @@ import app.tether.core.ImageAttachment
 import app.tether.core.LinkState
 import app.tether.core.NewSessionRequest
 import app.tether.core.NewSessionResult
+import app.tether.core.InMemoryPendingRemovalStore
+import app.tether.core.PendingRemovalStore
 import app.tether.core.Session
 import app.tether.core.SessionDecision
 import app.tether.core.SessionErrorCodes
@@ -49,6 +51,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
@@ -64,6 +67,8 @@ import kotlin.math.min
  *   Session from the watch list, emitted at ≤ ~30 fps. A dropped stream resumes from the last
  *   transcript offset; the reducer is kept (LRU) so re-opening is instant and resumes too.
  * - Writes go straight to the helper; a returned Session is merged at once.
+ * - [remove] of a session whose machine can't be reached hides it at once and removes it on the
+ *   machine when it answers again ([PendingRemovalStore], kept across restarts).
  */
 class DefaultSessionHub(
     private val remote: SessionRemote,
@@ -72,6 +77,7 @@ class DefaultSessionHub(
     private val scope: CoroutineScope,
     private val clock: () -> Long = { System.currentTimeMillis() },
     private val frameMs: Long = FRAME_MS,
+    private val removals: PendingRemovalStore = InMemoryPendingRemovalStore(),
 ) : SessionHub {
 
     // connectionId → sessionId → Session
@@ -94,6 +100,10 @@ class DefaultSessionHub(
     private val paused = MutableStateFlow(false)
     private val held = MutableStateFlow<Set<String>>(emptySet())
     private val watchJobs = HashMap<String, Job>()
+
+    // connectionId → session ids removed while the machine was unreachable; hidden until removed there.
+    private val pendingRemovals = MutableStateFlow(runCatching { removals.load() }.getOrDefault(emptyMap()))
+    private val flushing = ConcurrentHashMap.newKeySet<String>()
 
     init {
         val wanted = combine(sessionsState.subscriptionCount, backgroundWatch, openConversations, paused) { subs, bg, open, off ->
@@ -141,6 +151,7 @@ class DefaultSessionHub(
                     backoff = 1_000L
                     failures = 0
                     clearError(connectionId)
+                    flushRemovals(connectionId)
                     when (m) {
                         is WatchMessage.Snapshot -> replaceMachine(connectionId, m.sessions)
                         is WatchMessage.Changed -> patchMachine(connectionId, m.changed, m.removed)
@@ -167,6 +178,7 @@ class DefaultSessionHub(
     private fun isLinkBlip(e: Throwable, failures: Int): Boolean = e is java.io.IOException && failures < LINK_BLIP_TOLERANCE
 
     private fun pruneRemovedConnections(ids: Set<String>) {
+        if (pendingRemovals.value.keys.any { it !in ids }) updatePending { m -> m.filterKeys { it in ids } }
         var changed = false
         synchronized(machinesLock) {
             machines.update { m ->
@@ -214,7 +226,7 @@ class DefaultSessionHub(
             val prev = machines.value[connectionId]
             val next = LinkedHashMap<String, Session>()
             if (merge && prev != null) next.putAll(prev)
-            for (s in withMachine(list, connectionId)) {
+            for (s in withMachine(withoutPending(connectionId, list), connectionId)) {
                 val old = prev?.get(s.sessionId)
                 if (merge && old != null && old.updatedAt > s.updatedAt) continue
                 next[s.sessionId] = s
@@ -234,7 +246,7 @@ class DefaultSessionHub(
             val out = ArrayList<SessionEvent>()
             val cur = machines.value[connectionId]
             val next = LinkedHashMap(cur.orEmpty())
-            for (s in withMachine(changed, connectionId)) {
+            for (s in withMachine(withoutPending(connectionId, changed), connectionId)) {
                 out += transitions.diff(cur?.get(s.sessionId), s, firstSight = cur?.get(s.sessionId) == null)
                 next[s.sessionId] = s
             }
@@ -251,7 +263,7 @@ class DefaultSessionHub(
     /** Inserts / replaces one session after our own write, without events (unless it is newer and transitions). */
     private fun mergeSession(s: Session) {
         val cid = s.connectionId
-        if (cid.isEmpty()) return
+        if (cid.isEmpty() || isPending(cid, s.sessionId)) return
         synchronized(machinesLock) {
             machines.update { m ->
                 val cur = m[cid].orEmpty()
@@ -296,6 +308,7 @@ class DefaultSessionHub(
                     try {
                         replaceMachine(id, remote.sessions(id), merge = true)
                         clearError(id)
+                        flushRemovals(id)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Throwable) {
@@ -307,7 +320,8 @@ class DefaultSessionHub(
     }
 
     override suspend fun history(connectionId: String, cwd: String?, limit: Int, before: Long?): List<Session> =
-        remote.sessions(connectionId, cwd, limit, before).map { if (it.connectionId == connectionId) it else it.copy(connectionId = connectionId) }
+        withoutPending(connectionId, remote.sessions(connectionId, cwd, limit, before))
+            .map { if (it.connectionId == connectionId) it else it.copy(connectionId = connectionId) }
 
     override fun setBackgroundWatch(enabled: Boolean) {
         backgroundWatch.value = enabled
@@ -529,8 +543,72 @@ class DefaultSessionHub(
     }
 
     override suspend fun remove(ref: SessionRef) {
-        remote.rm(ref.connectionId, ref.sessionId)
+        val cid = ref.connectionId
+        if (cid in held.value || cid in errorsState.value) {
+            // The machine isn't answering (or was disconnected): hide it now, remove it there once it is back.
+            queueRemoval(ref)
+            return
+        }
+        try {
+            remote.rm(cid, ref.sessionId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            // The helper answered with a reason: a real refusal, show it. Anything else is the link.
+            if (e is RemoteException && e.code != null) throw e
+            queueRemoval(ref)
+            return
+        }
         dropSession(ref)
+    }
+
+    private fun isPending(connectionId: String, sessionId: String) = pendingRemovals.value[connectionId]?.contains(sessionId) == true
+
+    private fun withoutPending(connectionId: String, list: List<Session>): List<Session> {
+        val hidden = pendingRemovals.value[connectionId] ?: return list
+        return list.filterNot { it.sessionId in hidden }
+    }
+
+    private fun updatePending(f: (Map<String, Set<String>>) -> Map<String, Set<String>>) {
+        val next = synchronized(pendingRemovals) { pendingRemovals.updateAndGet(f) }
+        runCatching { removals.save(next) }
+    }
+
+    private fun queueRemoval(ref: SessionRef) {
+        updatePending { m -> m + (ref.connectionId to (m[ref.connectionId].orEmpty() + ref.sessionId)) }
+        dropSession(ref)
+    }
+
+    /** Sends the removals queued for [connectionId] now that it answers. Failures stay queued for the next time. */
+    private fun flushRemovals(connectionId: String) {
+        if (pendingRemovals.value[connectionId].isNullOrEmpty() || !flushing.add(connectionId)) return
+        scope.launch {
+            try {
+                var refused = false
+                for (sid in pendingRemovals.value[connectionId].orEmpty()) {
+                    val done = try {
+                        remote.rm(connectionId, sid)
+                        true
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Throwable) {
+                        // The helper refused (a terminal took it over…): its answer stands, stop hiding the
+                        // session. A link failure stays queued for the next time the machine answers.
+                        val code = (e as? RemoteException)?.code
+                        if (code != null && code != SessionErrorCodes.ENOSESSION) refused = true
+                        code != null
+                    }
+                    if (done) updatePending { m ->
+                        val left = m[connectionId].orEmpty() - sid
+                        if (left.isEmpty()) m - connectionId else m + (connectionId to left)
+                    }
+                }
+                // Bring a refused session back now (the watch only sends changes).
+                if (refused) runCatching { replaceMachine(connectionId, remote.sessions(connectionId), merge = true) }
+            } finally {
+                flushing.remove(connectionId)
+            }
+        }
     }
 
     private fun Session.ofMachine(ref: SessionRef) = if (connectionId == ref.connectionId) this else copy(connectionId = ref.connectionId)

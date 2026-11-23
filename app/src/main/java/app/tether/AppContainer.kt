@@ -17,6 +17,7 @@ import app.tether.data.DataStoreSettingsRepository
 import app.tether.data.FileConnectionRepository
 import app.tether.data.FileKnownHostsStore
 import app.tether.data.KeystoreSecretStore
+import app.tether.data.PrefsPendingRemovalStore
 import app.tether.data.SecureKeyRepository
 import app.tether.remote.DefaultSessionHub
 import app.tether.remote.HelperClaudeRemote
@@ -42,7 +43,7 @@ class AppContainer(val app: Application) {
     val remote: ClaudeRemote = helperRemote
     val analytics = Analytics(settings, scope)
     /** Every Claude Code session on every machine (the Claude Code daemon, one-session model). */
-    val sessions: SessionHub = TrackedSessionHub(DefaultSessionHub(helperRemote, ssh, connections, scope), analytics)
+    val sessions: SessionHub = TrackedSessionHub(DefaultSessionHub(helperRemote, ssh, connections, scope, removals = PrefsPendingRemovalStore(app)), analytics)
     val updates = UpdateManager(app, settings, scope)
 }
 

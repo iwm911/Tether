@@ -21,6 +21,22 @@ interface SecretStore {
     fun readBlockedByDeviceLock(): Boolean = false
 }
 
+/**
+ * Sessions removed on the phone while their machine couldn't be reached: kept hidden, and removed on
+ * the machine once it answers again. Survives app restarts. Entries are `connectionId` → session ids.
+ */
+interface PendingRemovalStore {
+    fun load(): Map<String, Set<String>>
+    fun save(pending: Map<String, Set<String>>)
+}
+
+/** A [PendingRemovalStore] that forgets on process death (tests, previews). */
+class InMemoryPendingRemovalStore : PendingRemovalStore {
+    @Volatile private var data: Map<String, Set<String>> = emptyMap()
+    override fun load() = data
+    override fun save(pending: Map<String, Set<String>>) { data = pending }
+}
+
 interface ConnectionRepository {
     val connections: StateFlow<List<Connection>>
     fun get(id: String): Connection?
@@ -220,7 +236,10 @@ interface SessionHub {
     suspend fun btw(ref: SessionRef, question: String): String = throw UnsupportedOperationException("btw")
     /** Retires the worker; the next message wakes it with the same id. */
     suspend fun stop(ref: SessionRef)
-    /** Kills, evicts and deletes the job (the transcript stays). */
+    /**
+     * Kills, evicts and deletes the job (the transcript stays). On a machine that can't be reached the
+     * session is hidden at once and removed there when the machine answers again.
+     */
     suspend fun remove(ref: SessionRef)
 
     /** While true, keeps per-machine watch streams open with no UI collecting (background service). */
