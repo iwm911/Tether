@@ -265,6 +265,98 @@ class DefaultSessionHubTest {
     }
 
     @Test
+    fun removingOnAnUnreachableMachineHidesItAndRemovesItWhenTheMachineIsBack() = runBlocking {
+        val a = "aaaaaaaa-0000-0000-0000-000000000001"
+        val b = "bbbbbbbb-0000-0000-0000-000000000002"
+        remote.sessionList = listOf(s(a, SessionState.IDLE, 10), s(b, SessionState.IDLE, 11))
+        hub.refresh(CONN)
+        remote.watchError = RemoteException("Connection refused", code = SessionErrorCodes.ENODAEMON)
+        val listJob = launch(Dispatchers.Default) { hub.sessions.collect { } }
+        hub.sessions.waitFor { it.isNotEmpty() && it.all { s -> s.offline } }
+
+        hub.remove(SessionRef(CONN, a)) // no throw: the machine is offline
+        assertTrue(remote.rmCalls.isEmpty()) // not even tried
+        assertEquals(listOf(b), hub.sessions.value.map { it.sessionId })
+        assertNull(hub.session(SessionRef(CONN, a)))
+        remote.sessionList = listOf(s(a, SessionState.IDLE, 10), s(b, SessionState.IDLE, 11))
+        assertTrue(hub.history(CONN, null, 30, null).none { it.sessionId == a }) // "Show older" doesn't bring it back
+
+        // back: its list still carries the session, which stays hidden while the removal is sent
+        remote.watchError = null
+        hub.refresh(CONN)
+        assertEquals(listOf(b), hub.sessions.value.map { it.sessionId })
+        withTimeout(5_000) { while (remote.removed != a) delay(10) }
+        listJob.cancel()
+    }
+
+    @Test
+    fun aRemovalTheLinkDropsIsQueuedAndRetried() = runBlocking {
+        val ref = SessionRef(CONN, SID)
+        remote.sessionList = listOf(s(SID, SessionState.IDLE, 10))
+        hub.refresh(CONN)
+        remote.rmError = IOException("Broken pipe")
+        hub.remove(ref) // the link died mid-call: hidden, not an error
+        assertNull(hub.session(ref))
+        assertTrue(hub.sessions.value.isEmpty())
+
+        remote.rmError = null
+        hub.refresh(CONN) // answers again with the session still listed
+        assertTrue(hub.sessions.value.isEmpty())
+        withTimeout(5_000) { while (remote.removed != SID) delay(10) }
+        hub.refresh(CONN)
+        assertEquals(2, remote.rmCalls.size) // sent once more, then forgotten
+    }
+
+    @Test
+    fun aRemovalTheMachineRefusesIsReportedAndKeepsTheSession() = runBlocking {
+        val ref = SessionRef(CONN, SID)
+        remote.sessionList = listOf(s(SID, SessionState.IDLE, 10))
+        hub.refresh(CONN)
+        remote.rmError = RemoteException("no such session", code = SessionErrorCodes.ENOSESSION)
+        try {
+            hub.remove(ref)
+            fail("expected the refusal")
+        } catch (e: RemoteException) {
+            assertEquals("no such session", e.message)
+        }
+        assertEquals(listOf(SID), hub.sessions.value.map { it.sessionId })
+    }
+
+    @Test
+    fun aQueuedRemovalTheMachineRefusesBringsTheSessionBack() = runBlocking {
+        val ref = SessionRef(CONN, SID)
+        remote.sessionList = listOf(s(SID, SessionState.IDLE, 10))
+        hub.refresh(CONN)
+        remote.rmError = IOException("Broken pipe")
+        hub.remove(ref)
+        assertTrue(hub.sessions.value.isEmpty())
+        // back, but a terminal took the session over meanwhile
+        remote.rmError = RemoteException("held by a terminal", code = SessionErrorCodes.EHELD)
+        hub.refresh(CONN)
+        hub.sessions.waitFor { it.map { s -> s.sessionId } == listOf(SID) }
+        Unit
+    }
+
+    @Test
+    fun pendingRemovalsSurviveARestart() = runBlocking {
+        val ref = SessionRef(CONN, SID)
+        val store = app.tether.core.InMemoryPendingRemovalStore()
+        val first = DefaultSessionHub(remote, FakeSsh(), Conns(), scope, frameMs = 0, removals = store)
+        remote.sessionList = listOf(s(SID, SessionState.IDLE, 10))
+        first.refresh(CONN)
+        remote.rmError = IOException("Broken pipe")
+        first.remove(ref)
+        assertEquals(mapOf(CONN to setOf(SID)), store.load())
+
+        remote.rmError = null
+        val second = DefaultSessionHub(remote, FakeSsh(), Conns(), scope, frameMs = 0, removals = store)
+        second.refresh(CONN)
+        assertTrue(second.sessions.value.isEmpty())
+        withTimeout(5_000) { while (store.load().isNotEmpty()) delay(10) }
+        assertEquals(SID, remote.removed)
+    }
+
+    @Test
     fun conversationsInUseAreNeverEvicted() = runBlocking {
         // Review round 2: with more than 8 open the LRU dropped the one on screen; send() then found no conversation.
         val refs = (0 until 11).map { SessionRef(CONN, "%08x-0000-0000-0000-000000000000".format(it + 1)) }
@@ -586,7 +678,13 @@ class DefaultSessionHubTest {
         }
         override suspend fun interrupt(connectionId: String, sessionId: String): Session = writeResult!!
         override suspend fun stop(connectionId: String, sessionId: String) { stopped = sessionId }
-        override suspend fun rm(connectionId: String, sessionId: String) { removed = sessionId }
+        @Volatile var rmError: Throwable? = null
+        val rmCalls = ConcurrentLinkedQueue<String>()
+        override suspend fun rm(connectionId: String, sessionId: String) {
+            rmCalls.add(sessionId)
+            rmError?.let { throw it }
+            removed = sessionId
+        }
         override suspend fun uploadImage(connectionId: String, image: ImageAttachment): String {
             val ext = if (image.mimeType == "image/png") "png" else "jpg"
             return "/home/u/.tether/uploads/${uploads++}.$ext"
