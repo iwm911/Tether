@@ -1283,6 +1283,12 @@ def screen_question_shown(lines):
     return q
 
 
+def question_in(shown, qs):
+    """The question read off the screen (screen_question_shown) is one of qs, word for word. The fuzzy
+    current_question is no test for this: the text above a question (an issue draft) can quote an earlier one."""
+    return bool(shown) and _norm(shown.get("question")) in [_norm(q.get("question")) for q in qs if isinstance(q, dict)]
+
+
 def screen_questions(agent_id, since, screen, read_all=None):
     """The questions of the AskUserQuestion on the live screen, for when neither state.json nor the transcript
     has them: a session claimed from the daemon's pre-started spare has no job dir (2.1.33x), and the tool_use
@@ -1295,8 +1301,7 @@ def screen_questions(agent_id, since, screen, read_all=None):
         return None
     c = read_json(qcache_path(agent_id), {}) or {}
     cached = c.get("questions") if c.get("fromScreen") and c.get("status_at") == since else None
-    if isinstance(cached, list) and cached and \
-            current_question(re.sub(r"\s+", "", "\n".join(lines)), cached)[0] is not None:
+    if isinstance(cached, list) and cached and question_in(q, cached):
         return cached
     if len(q.get("tabs") or []) > 1:
         if read_all:
@@ -1652,21 +1657,24 @@ def tui_screen_text(tui_factory):
 
 def ensure_multi(agent_id, st, tui_factory, tpath=None):
     qs = question_block(st)
+    shown = None
     if not qs:
         c = read_json(qcache_path(agent_id), {}) or {}
         cached = c.get("questions") if isinstance(c.get("questions"), list) and c.get("questions") else None
-        # Without a job dir there is no updatedAt to tie the cache to this wait: the cached questions must be the
-        # ones on screen now (a later question in the same session must never be answered with an earlier plan).
-        if cached and (c.get("status_at") == st.get("updatedAt") if st.get("updatedAt") is not None else
-                       current_question(tui_screen_text(tui_factory), cached)[0] is not None):
+        if cached and st.get("updatedAt") is not None and c.get("status_at") == st.get("updatedAt"):
             return cached, [bool(q.get("multiSelect")) for q in cached]
-        qs = transcript_questions(tpath, lambda: tui_screen_text(tui_factory))
-    if not qs:
         tui = tui_factory()
         try:
-            shown = screen_question_shown(tui.lines())
+            lines = tui.lines()
         finally:
             tui.close()
+        shown = screen_question_shown(lines)
+        # Without a job dir there is no updatedAt to tie the cache to this wait: the question on screen must be one
+        # of the cached ones (a later question in the same session must never be answered with an earlier plan).
+        if cached and st.get("updatedAt") is None and question_in(shown, cached):
+            return cached, [bool(q.get("multiSelect")) for q in cached]
+        qs = transcript_questions(tpath, lambda: re.sub(r"\s+", "", "\n".join(lines)))
+    if not qs:
         if shown and len(shown.get("tabs") or []) <= 1:  # one question: no tabs to walk
             qs = [{"question": shown["question"], "header": (shown.get("tabs") or [""])[0],
                    "options": shown["options"], "multiSelect": bool(shown.get("multiSelect"))}]

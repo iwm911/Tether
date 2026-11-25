@@ -280,6 +280,28 @@ class TabWalkTest(unittest.TestCase):
         inp = json.loads(p["inputJson"])
         self.assertEqual((inp["questions"][0]["header"], inp["questions"][0]["multiSelect"]), ("Confirm", False))
 
+    def test_answering_a_later_lone_question_ignores_an_earlier_cached_one(self):
+        # The draft above the confirm question quoted the earlier question's words: the fuzzy match took the old
+        # 4-question cache and the phone's one answer could not be typed.
+        old = [{"question": "What makes Hebrew text tiring today?", "multiSelect": True,
+                "options": [{"label": "Too dark"}, {"label": "Too small"}]},
+               {"question": "Where does it hurt most?", "options": [{"label": "Everywhere"}]}]
+        h.ensure_dir(os.path.dirname(h.qcache_path("lateragent")))
+        h.write_json_atomic(h.qcache_path("lateragent"), {"questions": old, "status_at": 1, "fromScreen": True})
+        lines = ["Draft: What makes Hebrew text tiring today? Too dark, Too small. Where does it hurt most? Everywhere",
+                 "─" * 100, " ☐ Confirm", "", "│ Create the issue as drafted?", "", "❯ 1. Approve and create",
+                 "  2. Cancel", "  3. Type something.", "─" * 100, "  4. Chat about this"]
+
+        class StillTui(object):
+            def lines(self):
+                return lines
+
+            def close(self):
+                pass
+        qs, multi = h.ensure_multi("lateragent", {}, StillTui)
+        self.assertEqual([q["question"] for q in qs], ["Create the issue as drafted?"])
+        self.assertEqual(multi, [False])
+
     def test_a_permission_prompt_is_not_read_as_a_question(self):
         lines = ["Bash command", "", "  rm -rf build", "", "Do you want to proceed?", "❯ 1. Yes", "  2. No", "",
                  "Esc to cancel"]
