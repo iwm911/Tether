@@ -76,6 +76,7 @@ import app.tether.service.Notifications
 import app.tether.remote.SshRemoteFiles
 import app.tether.ui.chat.render.FileLinkHost
 import app.tether.ui.chat.render.LocalChatCwd
+import app.tether.ui.chat.render.LocalEditMessage
 import app.tether.ui.chat.render.LocalSubagentLinks
 import app.tether.ui.chat.render.LocalWorkflowAgents
 import app.tether.ui.chat.render.WorkflowAgentLink
@@ -178,6 +179,7 @@ fun SessionChatScreen(
     val remoteFiles = remember(ref.connectionId) {
         SshRemoteFiles(container.ssh, ref.connectionId, java.io.File(container.app.cacheDir, "remote-files"))
     }
+    val editing by vm.editing.collectAsStateWithLifecycle()
     btw?.let { BtwSheet(it, onDismiss = vm::dismissBtw) }
 
     val scope = rememberCoroutineScope()
@@ -200,6 +202,7 @@ fun SessionChatScreen(
     var bottomPx by remember { mutableIntStateOf(0) }
     val bottomDp = with(density) { bottomPx.toDp() }
     BackHandler(enabled = rawView) { rawView = false }
+    BackHandler(enabled = editing != null && !rawView) { vm.cancelEdit() }
 
     val onRespond: (String, PermissionDecision) -> Unit = remember(vm) { { id, d -> vm.respond(id, d) } }
     val respondingIds = state.respondingIds
@@ -333,7 +336,11 @@ fun SessionChatScreen(
                     if (raw) {
                         RawItemsList(state.items, contentPadding = listPadding)
                     } else {
-                        CompositionLocalProvider(LocalChatCwd provides conv.cwd, LocalSubagentLinks provides subagentLinks, LocalWorkflowAgents provides workflowAgents) {
+                        val onEdit: ((ChatItem.User) -> Unit)? = if (!state.readOnly && !state.heldByTerminal) vm::startEdit else null
+                        CompositionLocalProvider(
+                            LocalChatCwd provides conv.cwd, LocalSubagentLinks provides subagentLinks,
+                            LocalWorkflowAgents provides workflowAgents, LocalEditMessage provides onEdit,
+                        ) {
                             FileLinkHost(remoteFiles, base = conv.cwd) {
                                 ChatList(
                                     items = state.items,
@@ -402,10 +409,17 @@ fun SessionChatScreen(
                 when (mode) {
                     2 -> ReadOnlySubagentBar(subagentTitle ?: "Subagent", onOpenSession = onBack)
                     1 -> TerminalHeldBar(state.machineName)
-                    else -> Composer(
+                    else -> Column {
+                        AnimatedVisibility(editing != null, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
+                            editing?.let { e ->
+                                EditingBanner(e.original, e.restoreCode, onRestoreCode = vm::setRestoreCode, onCancel = vm::cancelEdit)
+                            }
+                        }
+                        Composer(
                         state = vm.composer,
                         onSend = vm::send,
                         placeholder = when {
+                            editing != null -> "Edit your message…"
                             state.items.isEmpty() && !conv.loadingHistory -> "How can I help you today?"
                             state.working -> "Add a message — Claude reads it next…"
                             else -> "Reply to Claude…"
@@ -425,6 +439,7 @@ fun SessionChatScreen(
                         hint = sessionComposerHint(state),
                         onError = { msg -> scope.launch { snackbar.showSnackbar(msg) } },
                     )
+                    }
                 }
             }
         }

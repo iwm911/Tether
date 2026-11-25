@@ -224,6 +224,7 @@ private fun UserBubble(item: ChatItem.User, modifier: Modifier) {
     val c = TetherTheme.colors
     val clipboard = LocalClipboardManager.current
     val haptics = rememberHaptics()
+    val onEdit = LocalEditMessage.current?.takeIf { item.uuid != null && !item.command && !item.queued && item.text.isNotBlank() }
     var selectable by remember { mutableStateOf(false) }
     var copied by remember { mutableStateOf(false) }
     var showTime by remember { mutableStateOf(false) }
@@ -327,6 +328,17 @@ private fun UserBubble(item: ChatItem.User, modifier: Modifier) {
                                     modifier = Modifier
                                         .clip(RoundedCornerShape(8.dp))
                                         .clickable(role = Role.Button) { selectable = true; copied = false }
+                                        .padding(horizontal = 6.dp, vertical = 4.dp),
+                                )
+                            }
+                            if (onEdit != null) {
+                                Text(
+                                    "Edit",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = c.clay,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .clickable(role = Role.Button, onClickLabel = "Edit this message") { copied = false; onEdit(item) }
                                         .padding(horizontal = 6.dp, vertical = 4.dp),
                                 )
                             }

@@ -434,7 +434,7 @@ class SessionsTest(unittest.TestCase):
         self.assertEqual(set(s["sessionId"] for s in out["sessions"]), {SID_D, SID_E})
 
     def test_removed_live_run_commands_are_unknown(self):
-        for cmd in ("start", "runs", "input", "history", "delete", "rewind", "native-list", "native-start"):
+        for cmd in ("start", "runs", "input", "history", "delete", "native-list", "native-start"):
             rc, out, err = self.w.home.run(cmd)
             self.assertEqual((rc, out["error"]), (1, "Unknown command: %s" % cmd))
 

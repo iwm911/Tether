@@ -538,6 +538,30 @@ class DefaultSessionHub(
     override suspend fun btw(ref: SessionRef, question: String): String =
         remote.btw(ref.connectionId, ref.sessionId, question)
 
+    override suspend fun rewind(ref: SessionRef, uuid: String, text: String, images: List<ImageAttachment>, restoreCode: Boolean): Boolean {
+        val paths = upload(ref.connectionId, images)
+        val conv = synchronized(convs) { convs.entries.firstOrNull { it.key.ref == ref && it.key.agentId == null }?.value }
+        val local = conv?.let { c ->
+            synchronized(c.lock) {
+                c.reducer.beginRewind(uuid)
+                c.reducer.addOptimisticUser(text, images.size, queued = false)
+            }.also { c.bump() }
+        }
+        try {
+            return remote.rewind(ref.connectionId, ref.sessionId, uuid, text, paths, restoreCode)
+        } catch (e: Throwable) {
+            if (conv != null && local != null) {
+                synchronized(conv.lock) {
+                    conv.reducer.removeOptimistic(local)
+                    // Rewound but not sent: the old messages are gone on the machine too, keep them hidden.
+                    if ((e as? RemoteException)?.code != SessionErrorCodes.EREWOUND) conv.reducer.cancelRewind()
+                }
+                conv.bump()
+            }
+            throw e
+        }
+    }
+
     override suspend fun stop(ref: SessionRef) {
         remote.stop(ref.connectionId, ref.sessionId)
     }

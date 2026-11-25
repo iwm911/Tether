@@ -12,6 +12,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -35,9 +36,11 @@ import androidx.compose.material.icons.automirrored.rounded.Reply
 import androidx.compose.material.icons.rounded.CheckBox
 import androidx.compose.material.icons.rounded.CheckBoxOutlineBlank
 import androidx.compose.material.icons.rounded.Code
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Computer
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Dns
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.FolderOpen
@@ -186,6 +189,63 @@ internal fun HandoffPanel(needs: String?, suggestedReply: String?, onUseReply: (
                     Spacer(Modifier.width(10.dp))
                     Text("Use", style = MaterialTheme.typography.labelLarge, color = TetherTheme.colors.clay)
                 }
+            }
+        }
+    }
+}
+
+/**
+ * Over the composer while a sent message is being edited: sending rewinds the conversation to before it
+ * (Claude Code's /rewind) and sends the new text instead. Optionally the files go back too.
+ */
+@Composable
+internal fun EditingBanner(original: String, restoreCode: Boolean, onRestoreCode: (Boolean) -> Unit, onCancel: () -> Unit) {
+    val c = TetherTheme.colors
+    Surface(
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        border = BorderStroke(1.dp, c.hairline),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = 8.dp),
+    ) {
+        Column(Modifier.padding(start = Space.lg, end = 4.dp, top = 6.dp, bottom = 6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Rounded.Edit, contentDescription = null, tint = c.clay, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(8.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Editing a sent message", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        original,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = c.faint,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                IconButton(onClick = onCancel) {
+                    Icon(Icons.Rounded.Close, contentDescription = "Cancel editing", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            Text(
+                "Sending goes back to before this message, like rewinding in Claude Code: it and everything after it leave the conversation.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(end = Space.md, top = 2.dp),
+            )
+            Row(
+                Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .toggleable(value = restoreCode, role = Role.Checkbox, onValueChange = onRestoreCode)
+                    .padding(vertical = 6.dp, horizontal = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    if (restoreCode) Icons.Rounded.CheckBox else Icons.Rounded.CheckBoxOutlineBlank,
+                    contentDescription = null,
+                    tint = if (restoreCode) c.clay else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("Also undo file changes made since", style = MaterialTheme.typography.bodySmall)
             }
         }
     }

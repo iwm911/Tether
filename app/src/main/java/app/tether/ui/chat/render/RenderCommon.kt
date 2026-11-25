@@ -82,6 +82,9 @@ import kotlinx.coroutines.delay
 /** Working directory of the conversation — tool paths are shown relative to it. */
 val LocalChatCwd = compositionLocalOf<String?> { null }
 
+/** Starts editing a sent message (like Esc Esc in Claude Code); null where messages can't be edited. */
+val LocalEditMessage = compositionLocalOf<((app.tether.core.ChatItem.User) -> Unit)?> { null }
+
 /**
  * Subagent transcripts the screen can open read-only, keyed by the Task/Agent tool_use id that
  * spawned them (one-session model). Empty = no "Open transcript" affordance.

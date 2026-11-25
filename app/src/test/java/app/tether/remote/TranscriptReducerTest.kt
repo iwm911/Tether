@@ -239,6 +239,66 @@ class TranscriptReducerTest {
         assertEquals(1, u.imageCount)
     }
 
+    // ───────────────────────────── rewinds (editing a sent message) ─────────────────────────────
+
+    private fun userLine(uuid: String, text: String) = """{"type":"user","message":{"role":"user","content":"$text"},"uuid":"$uuid"}"""
+    private fun textLine(uuid: String, id: String, text: String) =
+        """{"type":"assistant","message":{"id":"$id","role":"assistant","content":[{"type":"text","text":"$text"}]},"uuid":"$uuid"}"""
+    private fun taskLines(uuid: String, toolId: String) = listOf(
+        """{"type":"assistant","message":{"id":"mt$uuid","role":"assistant","content":[{"type":"tool_use","id":"$toolId","name":"Task","input":{}}]},"uuid":"$uuid"}""",
+        """{"type":"assistant","parent_tool_use_id":"$toolId","message":{"id":"ms$uuid","role":"assistant","content":[{"type":"text","text":"sub"}]},"uuid":"s$uuid"}""",
+    )
+
+    @Test
+    fun rewindLineCutsTheDeadBranch() {
+        val r = TranscriptReducer()
+        r.acceptTranscript(userLine("u1", "ONE"))
+        r.acceptTranscript(textLine("a1", "m1", "one"))
+        r.acceptTranscript(userLine("u2", "TWO"))
+        taskLines("a2", "t2").forEach { r.acceptTranscript(it) }
+        r.acceptTranscript(userLine("u3", "THREE"))
+        r.acceptTranscript(textLine("a3", "m3", "three"))
+        assertEquals(6, r.snapshot().items.size)
+        assertTrue(r.acceptTranscript("""{"type":"tether-rewind","uuids":["u2","u3"]}"""))
+        assertEquals(listOf("u:u1", "m1#0"), r.snapshot().items.map { it.key })
+        r.acceptTranscript(userLine("u4", "FOUR"))
+        r.acceptTranscript(textLine("a4", "m4", "four"))
+        assertEquals(listOf("u:u1", "m1#0", "u:u4", "m4#0"), r.snapshot().items.map { it.key })
+        // A rewind naming nothing shown (already cut, or never loaded) changes nothing.
+        assertFalse(r.acceptTranscript("""{"type":"tether-rewind","uuids":["u2"]}"""))
+        assertFalse(r.acceptTranscript("""{"type":"tether-rewind","uuids":[]}"""))
+    }
+
+    @Test
+    fun rewindToTheStartKeepsTheMessageBeingSent() {
+        val r = TranscriptReducer()
+        r.acceptTranscript(userLine("u1", "ONE"))
+        r.acceptTranscript(textLine("a1", "m1", "one"))
+        r.beginRewind("u1")
+        val key = r.addOptimisticUser("SIX", 0, queued = false)
+        // While the edit is on its way, the edited message and what followed it are hidden already.
+        assertEquals(listOf(key), r.snapshot().items.map { it.key })
+        r.acceptTranscript("""{"type":"tether-rewind","uuids":["u1"]}""")
+        assertEquals(listOf(key), r.snapshot().items.map { it.key })
+        r.acceptTranscript(userLine("u6", "SIX"))
+        val u = r.snapshot().items.ofType<ChatItem.User>().single()
+        assertEquals(key, u.key)
+        assertEquals("u6", u.uuid)
+    }
+
+    @Test
+    fun failedEditShowsTheConversationAgain() {
+        val r = TranscriptReducer()
+        r.acceptTranscript(userLine("u1", "ONE"))
+        r.acceptTranscript(userLine("u2", "TWO"))
+        r.beginRewind("u2")
+        val key = r.addOptimisticUser("TWO!", 0, queued = false)
+        assertEquals(listOf("u:u1", key), r.snapshot().items.map { it.key })
+        r.removeOptimistic(key)
+        r.cancelRewind()
+        assertEquals(listOf("u:u1", "u:u2"), r.snapshot().items.map { it.key })
+    }
+
     @Test
     fun removedOptimisticMessageDisappears() {
         val r = TranscriptReducer()

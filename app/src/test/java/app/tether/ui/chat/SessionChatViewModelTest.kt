@@ -2,6 +2,7 @@ package app.tether.ui.chat
 
 import app.tether.core.AppSettings
 import app.tether.core.AskAnswer
+import androidx.compose.ui.text.input.TextFieldValue
 import app.tether.core.ChatItem
 import app.tether.core.ConversationState
 import app.tether.core.DialogKind
@@ -97,6 +98,11 @@ class SessionChatViewModelTest {
             record("btw $question")
             return btwGate?.await() ?: "**answer**"
         }
+        var codeRestored = true
+        override suspend fun rewind(ref: SessionRef, uuid: String, text: String, images: List<ImageAttachment>, restoreCode: Boolean): Boolean {
+            record("rewind $uuid $text code=$restoreCode")
+            return codeRestored
+        }
         override suspend fun stop(ref: SessionRef) = record("stop")
         override suspend fun remove(ref: SessionRef) = record("rm")
         override fun setBackgroundWatch(enabled: Boolean) {}
@@ -164,6 +170,65 @@ class SessionChatViewModelTest {
         assertTrue(texts.none { it.streaming })
         assertEquals("Hello **world**!", texts.last().text.trim())
         assertNull(vm.state.value.live?.status)
+    }
+
+    @Test
+    fun editingASentMessageRewindsAndSendsTheNewText() = runTest(dispatcher) {
+        val hub = FakeHub(stateWith(session()))
+        val vm = vm(hub)
+        vm.composer.value = TextFieldValue("half-typed")
+        vm.startEdit(ChatItem.User(key = "u:u1", text = "Say ONE", uuid = "u1"))
+        assertEquals("Say ONE", vm.composer.value.text)
+        assertEquals("u1", vm.editing.value?.uuid)
+        vm.composer.value = TextFieldValue("Say TWO")
+        vm.setRestoreCode(true)
+        vm.send()
+        advanceUntilIdle()
+        assertEquals(listOf("rewind u1 Say TWO code=true"), hub.calls)
+        assertNull(vm.editing.value)
+        assertEquals("the draft from before the edit is back", "half-typed", vm.composer.value.text)
+    }
+
+    @Test
+    fun cancellingAnEditPutsTheDraftBack() = runTest(dispatcher) {
+        val hub = FakeHub(stateWith(session()))
+        val vm = vm(hub)
+        vm.composer.value = TextFieldValue("half-typed")
+        vm.startEdit(ChatItem.User(key = "u:u1", text = "Say ONE", uuid = "u1"))
+        vm.startEdit(ChatItem.User(key = "u:u2", text = "Say TWO", uuid = "u2"))
+        vm.cancelEdit()
+        assertNull(vm.editing.value)
+        assertEquals("half-typed", vm.composer.value.text)
+        // Commands and messages Claude Code hasn't echoed yet can't be edited.
+        vm.startEdit(ChatItem.User(key = "local:0", text = "pending"))
+        vm.startEdit(ChatItem.User(key = "u:c", text = "/model haiku", uuid = "c", command = true))
+        assertNull(vm.editing.value)
+    }
+
+    @Test
+    fun aFailedEditKeepsEditing() = runTest(dispatcher) {
+        val hub = FakeHub(stateWith(session()))
+        val vm = vm(hub)
+        vm.startEdit(ChatItem.User(key = "u:u1", text = "Say ONE", uuid = "u1"))
+        vm.composer.value = TextFieldValue("Say TWO")
+        hub.failWith = RemoteException("Claude is still working.", code = "EINVAL")
+        vm.send()
+        advanceUntilIdle()
+        assertEquals("u1", vm.editing.value?.uuid)
+        assertEquals("Say TWO", vm.composer.value.text)
+    }
+
+    @Test
+    fun rewoundButNotSentLeavesAPlainDraft() = runTest(dispatcher) {
+        val hub = FakeHub(stateWith(session()))
+        val vm = vm(hub)
+        vm.startEdit(ChatItem.User(key = "u:u1", text = "Say ONE", uuid = "u1"))
+        vm.composer.value = TextFieldValue("Say TWO")
+        hub.failWith = RemoteException("no reply", code = SessionErrorCodes.EREWOUND)
+        vm.send()
+        advanceUntilIdle()
+        assertNull("the message is gone on the machine: nothing left to edit", vm.editing.value)
+        assertEquals("Say TWO", vm.composer.value.text)
     }
 
     @Test

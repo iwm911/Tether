@@ -733,6 +733,19 @@ def queued_prompt_line(o):
     return not isinstance(origin, dict) or origin.get("kind") in (None, "human")
 
 
+def rewind_prompt(o):
+    """A message the user sent (a user line that is not a tool result or meta): where a rewind can start."""
+    if o.get("type") != "user" or o.get("isMeta") or o.get("isCompactSummary") or o.get("isSidechain"):
+        return False
+    content = (o.get("message") or {}).get("content") if isinstance(o.get("message"), dict) else None
+    if isinstance(content, str):
+        return bool(content.strip())
+    if isinstance(content, list):
+        blocks = [b for b in content if isinstance(b, dict)]
+        return bool(blocks) and not any(b.get("type") == "tool_result" for b in blocks)
+    return False
+
+
 def cap_strings(v, cap=TRANSCRIPT_STRING_CAP):
     if isinstance(v, str):
         if len(v) > cap:
@@ -4082,6 +4095,13 @@ def peer_session_id(src):
     return sid if isinstance(sid, str) and UUID_RE.match(sid) else None
 
 
+def line_event(s, offset):
+    """A follow `line` event; a synthetic line (tether-rewind) has no offset of its own to resume from."""
+    if offset is None:
+        return '{"e":"line","line":%s}' % s
+    return '{"e":"line","line":%s,"offset":%d}' % (s, offset)
+
+
 class TranscriptEvents(object):
     """Turns transcript lines into follow events: line, peer, task, todos (subagent status is tracked here and
     emitted by the follower)."""
@@ -4098,6 +4118,9 @@ class TranscriptEvents(object):
         self.workflows = {}  # workflow runId -> {taskId, toolUseId} (from the Workflow tool's result)
         self.landed = collections.deque(maxlen=6)  # text_key of the newest assistant texts
         self.todowrite = None
+        self.chain = {}  # uuid -> (parentUuid, is a prompt the phone shows) of every main-chain line fed
+        self.tip = None  # uuid of the newest main-chain line
+        self.first_start = None  # where the first line fed starts (lines before it are read only for a rewind)
 
     def task_output_path(self, task_id):
         if not self.tpath:
@@ -4111,6 +4134,10 @@ class TranscriptEvents(object):
         if not o:
             return []
         evs = []
+        if self.first_start is None:
+            self.first_start = offset - len(raw) - 1
+        if not self.sidechain_ok:
+            evs += self.rewind_events(o)
         s = transcript_line_out(raw, sidechain_ok=self.sidechain_ok)
         if s is not None:
             evs.append(("line", s, offset))
@@ -4144,6 +4171,74 @@ class TranscriptEvents(object):
                     self.landed.append(text_key(b["text"]))
                     evs.append(("landed",))
         return evs
+
+    # ── rewinds (/rewind, Esc Esc) ──
+    # The transcript is a tree. Rewinding to before a message and sending another one does not rewrite the file:
+    # the new prompt's parentUuid points back at the line before the old prompt, and everything after it (the old
+    # prompt, Claude's answers, later turns) is left on a dead branch. Claude Code then shows the new branch only,
+    # so the phone must drop the dead one: a synthetic {"type": "tether-rewind", "uuids": [...]} line, sent just
+    # before the new prompt, lists the dropped prompts (oldest first); the app cuts its chat at the first of them.
+
+    def remember_chain(self, o):
+        u = o.get("uuid")
+        if not isinstance(u, str) or o.get("isSidechain"):
+            return
+        self.chain[u] = (o.get("parentUuid"), rewind_prompt(o) or queued_prompt_line(o))
+        self.tip = u
+
+    def rewind_events(self, o):
+        """[("line", tether-rewind JSON, None)] when this line is a prompt sent after a rewind, else []."""
+        if not isinstance(o.get("uuid"), str) or o.get("isSidechain"):
+            return []
+        parent = o.get("parentUuid")
+        out = []
+        if rewind_prompt(o) and isinstance(parent, str) and parent != self.tip:
+            if (parent not in self.chain or self.tip is None) and self.first_start:
+                self.read_chain_before(self.first_start)
+            dropped = self.dead_branch(parent, self.tip) if self.tip not in (None, parent) else []
+            if dropped:
+                line = json.dumps({"type": "tether-rewind", "uuids": dropped}, separators=(",", ":"))
+                out.append(("line", line, None))
+        self.remember_chain(o)
+        return out
+
+    def dead_branch(self, parent, tip):
+        """The prompts between parent (exclusive) and tip, oldest first; [] when tip doesn't descend from parent or
+        nothing the user sent is left behind (not a rewind)."""
+        if parent not in self.chain:
+            return []
+        prompts, u, steps = [], tip, 0
+        while u != parent:
+            node = self.chain.get(u)
+            steps += 1
+            if node is None or steps > len(self.chain):
+                return []
+            if node[1]:
+                prompts.append(u)
+            u = node[0]
+        return prompts[::-1]
+
+    def read_chain_before(self, end):
+        """Fills the chain with the lines a follow started past (--from): a rewind can reach back before them."""
+        tip, known = self.tip, self.chain
+        self.first_start = 0
+        self.chain = {}
+        try:
+            with open(self.tpath, "rb") as f:
+                read = 0
+                for raw in f:
+                    read += len(raw)
+                    if read > end:
+                        break
+                    if b'"uuid"' in raw:
+                        o = parse_line(raw)
+                        if o:
+                            self.remember_chain(o)
+        except (OSError, IOError, TypeError):
+            pass
+        self.chain.update(known)
+        if tip is not None:
+            self.tip = tip
 
     def special_text(self, text, at):
         evs = []
@@ -4451,7 +4546,7 @@ class Follower(object):
         self.write(json.dumps(obj, ensure_ascii=False, separators=(",", ":")))
 
     def emit_line(self, s, offset):
-        self.write('{"e":"line","line":%s,"offset":%d}' % (s, offset))
+        self.write(line_event(s, offset))
 
     # ── transcript ──
     def read_transcript(self, limit=None):
@@ -4498,7 +4593,7 @@ class Follower(object):
         for ev in evs:
             if isinstance(ev, tuple):
                 if ev[0] == "line":
-                    s = '{"e":"line","line":%s,"offset":%d}' % (ev[1], ev[2])
+                    s = line_event(ev[1], ev[2])
                 else:
                     continue
             else:
@@ -5671,6 +5766,289 @@ def cmd_btw(opts, arg):
     emit({"answer": ask_btw(short, question)})
 
 
+# ── edit a sent message: /rewind, then the new text ──
+# Claude Code (2.1.332) edits an earlier message the way Esc Esc does: `/rewind` opens a list of the messages sent
+# on the current branch (newest at the bottom, the cursor on "(current)"); Enter on one asks how to go back; the
+# conversation (and optionally the code) is restored to before it and its text lands in the prompt box to edit.
+# The helper drives that on an attach, clears the restored text and sends the new one. The list:
+#
+#   Rewind
+#   Restore the code and/or conversation to the point before…
+#     Say just the word ONE
+#     No code changes                 <- or "a.txt +1": the files that message's turn changed
+#   ❯ Create a file named a.txt containing hello.…   <- first line only, cut with "…"
+#     a.txt +1
+#     (current)
+#   Enter to continue · Esc to cancel
+#
+# and, after Enter:
+#
+#   Rewind
+#   Restore to the point before you sent this message:
+#   │ Create a file named a.txt containing hello.
+#   │ (35s ago)
+#   The conversation goes back to before this message.
+#   The code will be restored -1 in a.txt.
+#   ❯ 1. Restore code and conversation      <- only "Restore conversation" when the code didn't change
+#     2. Restore conversation
+#     3. Restore code
+#     4. Summarize from here
+#     5. Summarize up to here
+#     6. Never mind                         <- back to the list
+
+REWIND_LIST_LINE = "Restore the code and/or conversation"
+REWIND_CONFIRM_LINE = "Restore to the point before you sent this message"
+REWIND_AGO_RE = re.compile(r"^\(.*\bago\)$")
+REWIND_OPEN_SECONDS = 6
+
+
+def rewind_screen(lines):
+    """The /rewind panel on a rendered screen, or None when it isn't open:
+    {kind: "list", cursor: <the text of the row under the cursor>} or
+    {kind: "confirm", quote: <the message quoted, rows joined>, options: [{n, label}]}."""
+    rows = [l.rstrip() for l in lines or [] if l.strip()]
+    top = next((i for i in range(len(rows) - 2, -1, -1) if rows[i].strip() == "Rewind" and
+                rows[i + 1].strip().startswith((REWIND_LIST_LINE, REWIND_CONFIRM_LINE))), None)
+    if top is None:
+        return None
+    body = rows[top + 2:]
+    if rows[top + 1].strip().startswith(REWIND_LIST_LINE):
+        cursor, at = None, None
+        for i, r in enumerate(body):
+            t = r.strip()
+            if t.startswith(u"❯"):
+                cursor, at = t[1:].strip(), i
+                break
+        return {"kind": "list", "cursor": cursor, "at": at}
+    quote, options = [], []
+    for r in body:
+        t = r.strip()
+        if t.startswith(u"│"):
+            q = t[1:].strip()
+            if not REWIND_AGO_RE.match(q):
+                quote.append(q)
+            continue
+        m = OPTION_RE.match(r)
+        if m:
+            options.append({"n": m.group(1), "label": m.group(3).strip()})
+    return {"kind": "confirm", "quote": "\n".join(quote), "options": options}
+
+
+def squash(s):
+    """s with every whitespace removed (screens wrap and indent text with spaces)."""
+    return re.sub(r"\s+", "", s or "")
+
+
+def rewind_row_matches(row, text):
+    """A list row (a message's first line, maybe cut with "…") can be the message text."""
+    r = " ".join((row or "").split())
+    first = " ".join(((text or "").strip().split("\n") or [""])[0].split())
+    if not r or not first:
+        return False
+    if r.endswith(u"…"):
+        return first.startswith(r[:-1].rstrip()) or first == r
+    return first == r
+
+
+def rewind_quote_matches(quote, text):
+    q, t = squash(quote), squash(text)
+    if q.endswith(u"…"):
+        return bool(q[:-1]) and t.startswith(q[:-1])
+    return bool(q) and q == t
+
+
+def branch_prompts(tpath):
+    """The messages the user sent on the transcript's current branch, oldest first: [(uuid, text)]."""
+    chain, texts, tip = {}, {}, None
+    with open(tpath, "rb") as f:
+        for raw in f:
+            if b'"uuid"' not in raw:
+                continue
+            o = parse_line(raw)
+            u = o.get("uuid") if o else None
+            if not isinstance(u, str) or o.get("isSidechain"):
+                continue
+            chain[u] = o.get("parentUuid")
+            tip = u
+            if rewind_prompt(o):
+                t = prompt_text(o)
+                if t:
+                    texts[u] = t
+    out, u, steps = [], tip, 0
+    while u is not None and steps <= len(chain):
+        if u in texts:
+            out.append((u, texts[u]))
+        u = chain.get(u)
+        steps += 1
+    return out[::-1]
+
+
+def prompt_box_empty(lines):
+    """The prompt box is on screen with nothing typed in it (not even a second line)."""
+    rows = [l.rstrip() for l in lines or []]
+    for i in range(len(rows) - 1, -1, -1):
+        if prompt_box_at(rows, i):
+            if rows[i].lstrip()[1:].strip():
+                return False
+            nxt = next((r for r in rows[i + 1:] if r.strip()), "")
+            return box_edge(nxt)
+    return False
+
+
+def leave_rewind(tui):
+    """Esc out of the /rewind panel (Never mind first on its second page); True once the prompt box is back."""
+    for _ in range(4):
+        r = rewind_screen(tui.lines())
+        if r is None:
+            return True
+        never = [o for o in r.get("options") or [] if o["label"].lower().startswith("never mind")]
+        tui.send(never[0]["n"].encode() if never else KEY_BYTES["esc"], 1.0)
+    return rewind_screen(tui.lines()) is None
+
+
+def rewind_on_screen(short, text, nth, restore_code):
+    """Rewinds the live session to before its nth-newest message equal to text (1 = the newest such one) and
+    leaves the prompt box empty. Returns whether the code was restored too."""
+    tui = DaemonTui(short)
+    done = False
+    try:
+        if not close_btw_panel(tui):
+            raise HelperError("Couldn't close the side-question panel in this session.")
+        typed = prompt_box_text(tui.lines())
+        if typed is None:
+            raise coded_error("Claude Code is waiting on a prompt in this session. Answer it first.", "EINVAL")
+        if typed:
+            raise coded_error("This session's prompt has unsent text in it. Send or clear it first.", "EINVAL")
+        typed_in = lambda t: (prompt_box_text(t.lines()) or "").startswith("/rewind")  # noqa: E731
+        for _ in range(4):
+            tui.send(b"/rewind", 0.2)
+            if typed_in(tui) or tui.pump(2.5, until=typed_in):
+                break
+            left = prompt_box_text(tui.lines())
+            if left:
+                tui.send(KEY_BYTES["backspace"] * (len(left) + 8), 0.3)
+        else:
+            raise HelperError("Couldn't type /rewind into the session.")
+        tui.send(KEY_BYTES["enter"], 0.3)
+        is_list = lambda t: (rewind_screen(t.lines()) or {}).get("kind") == "list"  # noqa: E731
+        if not (is_list(tui) or tui.pump(REWIND_OPEN_SECONDS, until=is_list)):
+            left = prompt_box_text(tui.lines())
+            if left:
+                tui.send(KEY_BYTES["backspace"] * (len(left) + 8), 0.3)
+            raise HelperError("Claude Code didn't open its rewind list (editing a message needs a newer Claude Code).")
+        seen, stuck, picked = 0, 0, None
+        for _ in range(MAX_REWIND_PRESSES):
+            cur = rewind_screen(tui.lines()) or {}
+            row = cur.get("cursor")
+            if cur.get("kind") == "list" and rewind_row_matches(row, text):
+                tui.send(KEY_BYTES["enter"], 0.3)
+                is_confirm = lambda t: (rewind_screen(t.lines()) or {}).get("kind") == "confirm"  # noqa: E731
+                if not (is_confirm(tui) or tui.pump(3.0, until=is_confirm)):
+                    raise HelperError("Claude Code didn't ask how to rewind.")
+                conf = rewind_screen(tui.lines())
+                if rewind_quote_matches(conf["quote"], text):
+                    seen += 1
+                    if seen == nth:
+                        picked = conf
+                        break
+                never = [o for o in conf["options"] if o["label"].lower().startswith("never mind")]
+                if not never:
+                    raise HelperError("Couldn't go back to Claude Code's rewind list.")
+                tui.send(never[0]["n"].encode(), 0.3)
+                tui.pump(2.0, until=is_list)
+            tui.send(KEY_BYTES["up"], 0.1)
+            spot = (row, cur.get("at"))
+            moved = lambda t: (lambda r: (r.get("cursor"), r.get("at")))(rewind_screen(t.lines()) or {}) != spot  # noqa: E731
+            if moved(tui) or tui.pump(1.0, until=moved):
+                stuck = 0
+            else:
+                stuck += 1
+                if stuck >= 2:
+                    break  # the top of the list
+        if picked is None:
+            raise coded_error("That message isn't in Claude Code's rewind list for this session.", "ESTALE")
+        labels = dict((o["label"].lower(), o["n"]) for o in picked["options"])
+        both = labels.get("restore code and conversation")
+        key = both if restore_code and both else labels.get("restore conversation")
+        if not key:
+            raise HelperError("Claude Code didn't offer to restore the conversation.")
+        tui.send(key.encode(), 0.5)
+        back = lambda t: rewind_screen(t.lines()) is None and prompt_box_text(t.lines()) is not None  # noqa: E731
+        if not (back(tui) or tui.pump(15.0, until=back)):
+            raise HelperError("Claude Code didn't finish rewinding.")
+        done = True
+        # The old message is back in the prompt box to edit: clear it for the new one.
+        tui.pump(0.5)
+        for _ in range(3):
+            if prompt_box_empty(tui.lines()):
+                break
+            tui.send(KEY_BYTES["backspace"] * (len(text) + 16), 0.8)
+        if not prompt_box_empty(tui.lines()):
+            raise Rewound(bool(restore_code and both), "Couldn't clear the old message from the session's prompt box.")
+        return bool(restore_code and both)
+    finally:
+        try:
+            if not done:
+                leave_rewind(tui)
+        finally:
+            tui.close()
+
+
+MAX_REWIND_PRESSES = 400
+
+
+class Rewound(HelperError):
+    """The session went back, but the new text didn't go in after it."""
+
+    def __init__(self, code_restored, message):
+        HelperError.__init__(self, message)
+        self.code_restored = code_restored
+
+
+def cmd_rewind(opts, arg):
+    """{uuid, text, images?, restoreCode?}: the message uuid (a user line on the current branch) is rewound to,
+    then text is sent in its place."""
+    req = read_request()
+    target = req.get("uuid")
+    if not isinstance(target, str) or not target:
+        raise HelperError("Which message? (uuid)")
+    text = with_images(req.get("text") if isinstance(req.get("text"), str) else "", req.get("images"))
+    if not text:
+        raise HelperError("Nothing to send.")
+    ref = SessionRef(arg)
+    require_not_held(ref)
+    if not ref.tpath:
+        raise coded_error("This session has no transcript yet.", "ENOSESSION")
+    prompts = branch_prompts(ref.tpath)
+    at = next((i for i, (u, _t) in enumerate(prompts) if u == target), None)
+    if at is None:
+        raise coded_error("That message is no longer in this conversation.", "ESTALE")
+    old = prompts[at][1]
+    nth = sum(1 for _u, t in prompts[at:] if squash(t) == squash(old))
+    if ref.live():
+        state = ref.session().get("state")
+        if state == "working":
+            raise coded_error("Claude is still working. Stop it or let it finish, then edit the message.", "EINVAL")
+        if state == "needs_you":
+            raise coded_error("Claude Code is waiting on a prompt in this session. Answer it first.", "EINVAL")
+        short = ref.short
+    else:
+        short = wake(opts, ref)[0]
+    # After the rewind the reply is ok:true either way: the phone must keep the conversation cut, and on
+    # sent:false put the text back to send again.
+    try:
+        code = rewind_on_screen(short, old, nth, bool(req.get("restoreCode")))
+    except Rewound as e:
+        emit({"ok": True, "codeRestored": e.code_restored, "sent": False, "error": str(e)})
+        return
+    try:
+        reply_retrying(short, text)
+    except HelperError as e:
+        emit({"ok": True, "codeRestored": code, "sent": False, "error": str(e)})
+        return
+    emit({"ok": True, "codeRestored": code, "sent": True})
+
+
 def cmd_answer(opts, arg):
     req = read_request()
     decision = req.get("decision")
@@ -6007,6 +6385,8 @@ def main(argv):
         cmd_key(opts, need())
     elif cmd == "btw":
         cmd_btw(opts, need())
+    elif cmd == "rewind":
+        cmd_rewind(opts, need())
     elif cmd == "answer":
         cmd_answer(opts, need())
     elif cmd == "ask":

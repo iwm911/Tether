@@ -224,6 +224,8 @@ object SessionErrorCodes {
     const val ESTALE = "ESTALE"
     /** The helper refused the request itself (bad keys, empty text, ...). */
     const val EINVAL = "EINVAL"
+    /** App-side: an edit rewound the session, but the new text didn't go in after it (send it again). */
+    const val EREWOUND = "EREWOUND"
 }
 
 // ───────────────────────────── watch ─────────────────────────────

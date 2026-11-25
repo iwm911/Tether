@@ -161,6 +161,17 @@ class SessionReducer(
         version++
     }
 
+    /** See [TranscriptReducer.beginRewind]. */
+    fun beginRewind(uuid: String) {
+        transcript.beginRewind(uuid)
+        version++
+    }
+
+    fun cancelRewind() {
+        transcript.cancelRewind()
+        version++
+    }
+
     /**
      * A newer description of the session: from this follow's `state` event, or ([fromWatch]) the machine's
      * watch list. The follow cuts screen-derived fields (a dialog's checkboxes) from the live screen, and
