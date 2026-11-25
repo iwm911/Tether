@@ -73,6 +73,8 @@ import app.tether.core.SessionRef
 import app.tether.core.SessionState
 import app.tether.core.SubagentStatus
 import app.tether.service.Notifications
+import app.tether.remote.SshRemoteFiles
+import app.tether.ui.chat.render.FileLinkHost
 import app.tether.ui.chat.render.LocalChatCwd
 import app.tether.ui.chat.render.LocalSubagentLinks
 import app.tether.ui.chat.render.LocalWorkflowAgents
@@ -172,6 +174,10 @@ fun SessionChatScreen(
         if (movedTo != null && agentId == null) onMoved(SessionRef(ref.connectionId, movedTo))
     }
     val btw by vm.btw.collectAsStateWithLifecycle()
+    // Images and Markdown files Claude points at, read off the machine to show here.
+    val remoteFiles = remember(ref.connectionId) {
+        SshRemoteFiles(container.ssh, ref.connectionId, java.io.File(container.app.cacheDir, "remote-files"))
+    }
     btw?.let { BtwSheet(it, onDismiss = vm::dismissBtw) }
 
     val scope = rememberCoroutineScope()
@@ -328,20 +334,22 @@ fun SessionChatScreen(
                         RawItemsList(state.items, contentPadding = listPadding)
                     } else {
                         CompositionLocalProvider(LocalChatCwd provides conv.cwd, LocalSubagentLinks provides subagentLinks, LocalWorkflowAgents provides workflowAgents) {
-                            ChatList(
-                                items = state.items,
-                                listState = listState,
-                                contentPadding = listPadding,
-                                showThinking = state.showThinking,
-                                compactTools = state.compactTools,
-                                loading = conv.loadingHistory,
-                                footer = if (showFooter) {
-                                    { SessionStatusFooter(live?.status, conv.workingSince, ref.sessionId.hashCode(), waiting = waiting && live?.status == null) }
-                                } else null,
-                                empty = if (agentId == null) { { ReadyEmpty(conv.cwd, state.machineName) } } else null,
-                                permission = permissionSlot,
-                                readingKey = readingKey,
-                            )
+                            FileLinkHost(remoteFiles, base = conv.cwd) {
+                                ChatList(
+                                    items = state.items,
+                                    listState = listState,
+                                    contentPadding = listPadding,
+                                    showThinking = state.showThinking,
+                                    compactTools = state.compactTools,
+                                    loading = conv.loadingHistory,
+                                    footer = if (showFooter) {
+                                        { SessionStatusFooter(live?.status, conv.workingSince, ref.sessionId.hashCode(), waiting = waiting && live?.status == null) }
+                                    } else null,
+                                    empty = if (agentId == null) { { ReadyEmpty(conv.cwd, state.machineName) } } else null,
+                                    permission = permissionSlot,
+                                    readingKey = readingKey,
+                                )
+                            }
                         }
                     }
                 }

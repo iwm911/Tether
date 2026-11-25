@@ -44,6 +44,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.BatteryChargingFull
 import androidx.compose.material.icons.rounded.BrightnessAuto
 import androidx.compose.material.icons.rounded.BrightnessHigh
+import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Dns
@@ -260,6 +261,14 @@ fun SettingsScreen(onBack: () -> Unit, onOpenKeys: () -> Unit, onOpenMachines: (
                     icon = Icons.Rounded.BrightnessHigh,
                     checked = s.keepScreenOn,
                     onCheckedChange = { on -> vm.update { it.copy(keepScreenOn = on) } },
+                )
+                RowDivider()
+                ToggleRow(
+                    title = "Let Claude show files",
+                    subtitle = "New sessions can show you images and Markdown files they make. Tap a file's path in the chat to open it",
+                    icon = Icons.Rounded.Image,
+                    checked = s.claudeShowsFiles,
+                    onCheckedChange = { on -> vm.update { it.copy(claudeShowsFiles = on) } },
                 )
             }
 

@@ -247,6 +247,7 @@ private fun EditDetail(item: ChatItem.ToolCall, p: ToolParsed) {
     val path = p.input?.str("file_path") ?: partialString(item.inputJson, "file_path")
     val shownPath = path?.let { ToolPresentation.displayPath(it, cwd) }
     ResultState(item)
+    if (path != null && !item.status.isActive && FilePreview.kind(path) != null) OpenFileButton(path)
     if (p.input?.bool("replace_all") == true) Badge("Replace all", TetherTheme.colors.info)
     val diff = p.diff
     if (diff != null) DiffView(diff, path = shownPath, stateKey = item.key)
@@ -274,6 +275,8 @@ private fun WriteDetail(item: ChatItem.ToolCall, p: ToolParsed) {
             style = MaterialTheme.typography.labelSmall,
             color = c.faint,
         )
+        Spacer(Modifier.weight(1f))
+        if (path != null && !item.status.isActive) OpenFileButton(path)
     }
     val diff = p.diff
     if (type == "update" && diff != null) {
@@ -291,6 +294,29 @@ private fun WriteDetail(item: ChatItem.ToolCall, p: ToolParsed) {
         if (lines.size > 40) {
             Text("+ ${lines.size - 40} more lines", style = MaterialTheme.typography.labelSmall, color = c.faint)
         }
+    }
+}
+
+/** "Preview" for an image or Markdown file a tool wrote: opens it in the in-app viewer (chat screen only). */
+@Composable
+internal fun OpenFileButton(path: String) {
+    val files = LocalChatFiles.current ?: return
+    val kind = FilePreview.kind(path) ?: return
+    val c = TetherTheme.colors
+    Row(
+        Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(role = Role.Button, onClickLabel = "Open ${FilePreview.name(path)}") { files.open(path) }
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            if (kind == PreviewKind.IMAGE) "View image" else "Preview",
+            style = MaterialTheme.typography.labelMedium,
+            color = c.clay,
+        )
+        Spacer(Modifier.width(4.dp))
+        Icon(Icons.AutoMirrored.Rounded.OpenInNew, contentDescription = null, tint = c.clay, modifier = Modifier.size(14.dp))
     }
 }
 

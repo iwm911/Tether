@@ -89,13 +89,21 @@ private data class Form(
  * The `new` request the form makes: the default model / permission mode are left out (the
  * session then uses the machine's own defaults); [trust] marks the folder trusted first.
  */
-internal fun newSessionRequest(cwd: String, prompt: String, model: String, mode: PermissionMode, trust: Boolean): NewSessionRequest =
+internal fun newSessionRequest(
+    cwd: String,
+    prompt: String,
+    model: String,
+    mode: PermissionMode,
+    trust: Boolean,
+    showFiles: Boolean = false,
+): NewSessionRequest =
     NewSessionRequest(
         cwd = cwd,
         prompt = prompt.trim(),
         model = model.trim().takeIf { it.isNotEmpty() && it != "default" },
         permissionMode = mode.cli.takeIf { it != PermissionMode.DEFAULT.cli },
         trust = trust,
+        showFiles = showFiles,
     )
 
 class NewAgentViewModel(
@@ -312,7 +320,7 @@ class NewAgentViewModel(
     private fun startSession(s: NewAgentUiState, trust: Boolean) {
         val conn = s.connectionId ?: return
         val cwd = s.cwd ?: return
-        val request = newSessionRequest(cwd, prompt.text, s.model, s.mode, trust)
+        val request = newSessionRequest(cwd, prompt.text, s.model, s.mode, trust, container.settings.settings.value.claudeShowsFiles)
         form.update { it.copy(starting = true, error = null, trustPrompt = null) }
         viewModelScope.launch {
             attempt { container.sessions.new(conn, request, s.images.map { it.attachment }) }

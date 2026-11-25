@@ -392,6 +392,8 @@ data class AppSettings(
     val compactTools: Boolean = true,
     /** Keep the screen awake while a conversation is open. */
     val keepScreenOn: Boolean = false,
+    /** Sessions started here are told they can show images and Markdown files on the phone. */
+    val claudeShowsFiles: Boolean = true,
     /** List sessions a `claude` open in a terminal holds (read-only on the phone) on Home and Machine. */
     val showTerminalSessions: Boolean = true,
     /** Anonymous usage analytics (see app.tether.analytics.Analytics); on unless turned off. */

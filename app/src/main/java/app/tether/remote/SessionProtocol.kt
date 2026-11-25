@@ -132,6 +132,7 @@ object SessionProtocol {
         r.permissionMode?.let { put("permissionMode", it) }
         if (r.images.isNotEmpty()) put("images", stringArray(r.images))
         if (r.trust) put("trust", true)
+        if (r.showFiles) put("showFiles", true)
     }.toString()
 
     fun sendBody(text: String, images: List<String>): String = buildJsonObject {

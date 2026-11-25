@@ -366,6 +366,8 @@ data class NewSessionRequest(
     val images: List<String> = emptyList(),
     /** Mark [cwd] trusted for Claude Code first (the user agreed after an `EUNTRUSTED`). */
     val trust: Boolean = false,
+    /** Tell Claude it can show images and Markdown files on the phone (Settings › Let Claude show files). */
+    val showFiles: Boolean = false,
 )
 
 sealed interface NewSessionResult {
