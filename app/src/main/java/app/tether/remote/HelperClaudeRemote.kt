@@ -359,6 +359,16 @@ class HelperClaudeRemote internal constructor(
         return decode(out, "answer") { RemoteJson.parseObject(it)?.str("answer") ?: throw IOException("no answer") }
     }
 
+    override suspend fun rewind(connectionId: String, sessionId: String, uuid: String, text: String, images: List<String>, restoreCode: Boolean): Boolean {
+        // Rewinding restores files when asked and may wake a retired session first.
+        val out = sessionHelper(connectionId, listOf("rewind", sessionId), SessionProtocol.rewindBody(uuid, text, images, restoreCode), timeoutMs = 120_000)
+        val o = decode(out, "rewind") { RemoteJson.parseObject(it) ?: throw IOException("no reply") }
+        if (o.bool("sent") == false) {
+            throw RemoteException(o.str("error") ?: "The message didn't go in.", code = app.tether.core.SessionErrorCodes.EREWOUND)
+        }
+        return o.bool("codeRestored") == true
+    }
+
     override suspend fun stop(connectionId: String, sessionId: String) {
         sessionHelper(connectionId, listOf("stop", sessionId))
     }

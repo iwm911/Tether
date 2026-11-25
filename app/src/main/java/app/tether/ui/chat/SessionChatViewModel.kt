@@ -1,5 +1,6 @@
 package app.tether.ui.chat
 
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -104,6 +105,19 @@ data class SessionChatUiState(
         get() = (session?.cwd?.takeIf { it.isNotBlank() } ?: conversation.cwd?.takeIf { it.isNotBlank() })
             ?.let(::projectName)?.takeIf { it != title }
 }
+
+/**
+ * A sent message being edited in the composer: sending rewinds the session to before it (Claude Code's
+ * /rewind) and sends the composer's text in its place. [draft] is what the composer held before, put back
+ * on cancel.
+ */
+data class EditingMessage(
+    val uuid: String,
+    val original: String,
+    val draft: String = "",
+    /** Also put the files back the way they were before that message (Claude Code's "Restore code"). */
+    val restoreCode: Boolean = false,
+)
 
 /** A title for an unread wait from Claude Code's own name for it ("goal proposal", "sandbox request"…), or "". */
 internal fun waitTitle(waitingFor: String?): String = when (val w = waitingFor?.trim().orEmpty()) {
@@ -269,9 +283,62 @@ class SessionChatViewModel(
 
     // ── messages ──
 
+    // ── editing a sent message ──
+
+    private val _editing = MutableStateFlow<EditingMessage?>(null)
+    /** The sent message the composer is editing, if any. */
+    val editing: StateFlow<EditingMessage?> = _editing.asStateFlow()
+
+    /** Puts a sent message in the composer to edit; the next send replaces it (and everything after it). */
+    fun startEdit(item: ChatItem.User) {
+        val uuid = item.uuid ?: return
+        if (agentId != null || item.command || state.value.heldByTerminal) return
+        val draft = _editing.value?.draft ?: composer.value.text
+        _editing.value = EditingMessage(uuid = uuid, original = item.text, draft = draft)
+        composer.value = TextFieldValue(item.text, TextRange(item.text.length))
+    }
+
+    fun setRestoreCode(on: Boolean) {
+        _editing.update { it?.copy(restoreCode = on) }
+    }
+
+    /** Stops editing and puts back what the composer held before. */
+    fun cancelEdit() {
+        val e = _editing.value ?: return
+        _editing.value = null
+        composer.value = TextFieldValue(e.draft, TextRange(e.draft.length))
+    }
+
+    private fun sendEdit(e: EditingMessage) {
+        val (text, attachments) = composer.take() ?: return
+        _editing.value = null
+        local.update { it.copy(sending = true, waking = state.value.retired) }
+        viewModelScope.launch {
+            try {
+                val restored = hub.rewind(ref, e.uuid, text, attachments.map { it.image }, e.restoreCode)
+                if (e.restoreCode && !restored) say("That message changed no files — only the conversation went back")
+                if (e.draft.isNotBlank() && composer.isEmpty) composer.value = TextFieldValue(e.draft, TextRange(e.draft.length))
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                composer.restore(text, attachments)
+                if ((t as? RemoteException)?.code == SessionErrorCodes.EREWOUND) {
+                    // The conversation went back already: what's left is an ordinary send.
+                    say("Went back to before that message, but your new text didn't go in — ${describe(t)}. Send it again.")
+                } else {
+                    if (_editing.value == null) _editing.value = e
+                    say("Couldn't edit the message — ${describe(t)}")
+                }
+            } finally {
+                local.update { it.copy(sending = false, waking = false) }
+            }
+        }
+    }
+
     /** Sends the composer's draft (text, slash command or images). A retired session wakes first. */
     fun send() {
         if (agentId != null || local.value.sending) return
+        _editing.value?.let { sendEdit(it); return }
         if (askAside()) return
         val (text, attachments) = composer.take() ?: return
         val wake = state.value.retired

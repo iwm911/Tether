@@ -185,6 +185,13 @@ interface SessionRemote {
     /** `/btw`: Claude answers [question] (Markdown) from the session's context; nothing is added to the conversation. */
     suspend fun btw(connectionId: String, sessionId: String, question: String): String =
         throw UnsupportedOperationException("btw")
+    /**
+     * Edits a sent message like Claude Code's /rewind: the conversation (and the code too with [restoreCode])
+     * goes back to before the message with transcript uuid [uuid], then [text] is sent in its place. Returns
+     * whether the code was restored (false when that message's turn changed no files). Wakes a retired session.
+     */
+    suspend fun rewind(connectionId: String, sessionId: String, uuid: String, text: String, images: List<String> = emptyList(), restoreCode: Boolean = false): Boolean =
+        throw UnsupportedOperationException("rewind")
     suspend fun stop(connectionId: String, sessionId: String)
     suspend fun rm(connectionId: String, sessionId: String)
     /** Copies an image to the machine (like a file dropped on the terminal); returns its absolute path there. */
@@ -234,6 +241,9 @@ interface SessionHub {
     suspend fun interrupt(ref: SessionRef)
     /** `/btw` side question (wakes a retired session); returns Claude's answer in Markdown. See [SessionRemote.btw]. */
     suspend fun btw(ref: SessionRef, question: String): String = throw UnsupportedOperationException("btw")
+    /** Edits the sent message [uuid]: rewinds to before it, then sends [text]. See [SessionRemote.rewind]. */
+    suspend fun rewind(ref: SessionRef, uuid: String, text: String, images: List<ImageAttachment> = emptyList(), restoreCode: Boolean = false): Boolean =
+        throw UnsupportedOperationException("rewind")
     /** Retires the worker; the next message wakes it with the same id. */
     suspend fun stop(ref: SessionRef)
     /**

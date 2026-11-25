@@ -153,6 +153,13 @@ object SessionProtocol {
 
     fun btwBody(question: String): String = buildJsonObject { put("question", question) }.toString()
 
+    fun rewindBody(uuid: String, text: String, images: List<String>, restoreCode: Boolean): String = buildJsonObject {
+        put("uuid", uuid)
+        put("text", text)
+        if (images.isNotEmpty()) put("images", stringArray(images))
+        if (restoreCode) put("restoreCode", true)
+    }.toString()
+
     fun answerBody(decision: SessionDecision, message: String?, toolUseId: String? = null): String = buildJsonObject {
         put("decision", decision.wire)
         message?.trim()?.takeIf { it.isNotEmpty() }?.let { put("message", it) }

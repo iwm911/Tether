@@ -314,6 +314,18 @@ class DaemonE2ETest {
             assertEquals("btw adds no message", done2.items.count { it is ChatItem.User }, latest.value.items.count { it is ChatItem.User })
             assertEquals("btw adds no reply", finalTexts(done2), finalTexts(latest.value))
 
+            // ── edit a sent message: /rewind to before it, the new text in its place ──
+            val second = latest.value.items.filterIsInstance<ChatItem.User>().last()
+            assertEquals("Reply with just the word TWO.", second.text)
+            hub.rewind(ref, second.uuid!!, "Reply with just the word THREE.")
+            val edited = await("the edited answer") { c ->
+                finalTexts(c).any { it.trim().trimEnd('.') == "THREE" } && c.live?.session?.state == SessionState.IDLE
+            }
+            note("rewind → ${edited.items.filterIsInstance<ChatItem.User>().map { it.text }} / ${finalTexts(edited)}")
+            assertEquals("the edited message replaced the old one", listOf("Reply with just the word THREE."),
+                edited.items.filterIsInstance<ChatItem.User>().drop(1).map { it.text })
+            assertTrue("the old answer is gone", finalTexts(edited).none { it.trim().trimEnd('.') == "TWO" })
+
             // ── shift-tab changes the permission mode ──
             val modeBefore = hub.session(ref)?.permissionMode ?: done2.permissionMode
             note("mode before: $modeBefore")

@@ -41,6 +41,7 @@ import kotlinx.serialization.json.JsonPrimitive
  *                                            hides TodoWrite rows (TaskCreate/TaskUpdate rows are shown).
  *   system/init, status, compact_boundary, permission_denied, task_*, api errors → notices / state
  *   custom-title / ai-title / summary      → title
+ *   tether-rewind {uuids} (from the helper) → the chat is cut at the first listed message (a rewound branch)
  * Sidechain lines and repeated uuids are skipped. The status is decided by [SessionReducer].
  *
  * Cost: O(1) amortised per line — every item lives in an index map; unchanged subagent child lists
@@ -68,6 +69,9 @@ class TranscriptReducer(private val clock: () -> Long = { System.currentTimeMill
     private val seenUuids = HashSet<String>()
     private val finalOrdinal = HashMap<String, Int>()
     private val optimistic = ArrayList<String>()
+    /** A message the phone is editing (rewinding to): it and everything after it are hidden until the helper's
+     *  tether-rewind line cuts them for good, or the edit fails. */
+    private var pendingCut: String? = null
 
     // ── todos ──
     private var todoWrite: List<TodoItem> = emptyList()
@@ -129,6 +133,7 @@ class TranscriptReducer(private val clock: () -> Long = { System.currentTimeMill
                 version++
             }
             "attachment" -> onAttachment(o)
+            "tether-rewind" -> onRewind(o)
             else -> Unit // queue-operation, atis-latch, last-prompt, file-history-snapshot…
         }
         return version != before
@@ -143,6 +148,20 @@ class TranscriptReducer(private val clock: () -> Long = { System.currentTimeMill
         return key
     }
 
+    /** Hides the message with transcript uuid [uuid] and everything after it: an edit of it is on its way. */
+    fun beginRewind(uuid: String) {
+        pendingCut = uuid
+        version++
+    }
+
+    /** Shows the hidden messages again (the edit failed). */
+    fun cancelRewind() {
+        if (pendingCut != null) {
+            pendingCut = null
+            version++
+        }
+    }
+
     /** Drops an optimistic message (its send failed). */
     fun removeOptimistic(key: String) {
         if (optimistic.remove(key)) {
@@ -154,7 +173,9 @@ class TranscriptReducer(private val clock: () -> Long = { System.currentTimeMill
     fun snapshot(): ConversationState {
         val todos = if (todosFromTasks) tasks.values.toList() else todoWrite
         val waiting = optimistic.filterTo(HashSet()) { (find(it)?.item as? ChatItem.User)?.queued == true }
-        val items = materialize(root)
+        val all = materialize(root)
+        val cut = pendingCut?.let { u -> all.indexOfFirst { (it as? ChatItem.User)?.uuid == u } } ?: -1
+        val items = if (cut < 0) all else all.take(cut) + all.drop(cut).filter { it.key in optimistic }
         return ConversationState(
             // Messages still waiting in the queue stay below the turn that is running, as in the terminal.
             items = if (waiting.isEmpty()) items else items.filter { it.key !in waiting } + items.filter { it.key in waiting },
@@ -407,6 +428,35 @@ class TranscriptReducer(private val clock: () -> Long = { System.currentTimeMill
             }
         }
         version++
+    }
+
+    /**
+     * The session was rewound (/rewind, Esc Esc, or an edit from the phone) and a message sent from an earlier
+     * point: the helper lists the messages left on the dead branch. The chat is cut at the first of them that
+     * is shown; messages the phone is still sending (optimistic) stay.
+     */
+    private fun onRewind(o: JsonObject) {
+        val dropped = o.arr("uuids")?.mapNotNull { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content }?.toHashSet()
+        if (dropped.isNullOrEmpty()) return
+        if (pendingCut != null) { pendingCut = null; version++ }
+        val at = root.slots.indexOfFirst { slot -> (slot.item as? ChatItem.User)?.uuid?.let { it in dropped } == true }
+        if (at < 0) return
+        val cut = root.slots.subList(at, root.slots.size)
+        val kept = cut.filter { it.item.key in optimistic }
+        for (slot in cut) if (slot.item.key !in optimistic) forget(slot.item)
+        cut.clear()
+        root.slots.addAll(kept)
+        root.reindex()
+        touch(root)
+        version++
+    }
+
+    /** Drops an item that left the chat from the indexes, with any subagent rows nested under it. */
+    private fun forget(item: ChatItem) {
+        home.remove(item.key)
+        if (item is ChatItem.ToolCall) {
+            children.remove(item.toolUseId)?.slots?.forEach { forget(it.item) }
+        }
     }
 
     // ═══════════════════════════════════════ system ═══════════════════════════════════════
