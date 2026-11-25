@@ -263,6 +263,23 @@ class TabWalkTest(unittest.TestCase):
         # a later wait in the same session never reuses that read
         self.assertIsNone(h.question_pending("spareagent", {}, None, tui.lines, None, 222, lambda s: None))
 
+    def test_one_question_with_a_header_chip_and_no_tab_bar(self):
+        # 2.1.332: a lone question draws "☐ Confirm" above it and no Submit tab bar; the rule between its options
+        # and "Chat about this" must not be taken for the start of the question
+        lines = ["  - Labels: enhancement", "", "  ---", "─" * 100, " ☐ Confirm", "",
+                 "│ Create the issue as drafted above (title: \"Hebrew text is harsh\",",
+                 "│ priority High)?", "", "❯ 1. Approve and create", "     Create the GitHub issue as drafted",
+                 "  2. Revise", "     Tell me what to change", "  3. Cancel", "  4. Type something.", "─" * 100,
+                 "  5. Chat about this", "", "Enter to select · ↑/↓ to navigate · Esc to cancel"]
+        q = h.screen_question_shown(lines)
+        self.assertEqual(q["question"], "Create the issue as drafted above (title: \"Hebrew text is harsh\", priority High)?")
+        self.assertEqual(q["tabs"], ["Confirm"])
+        self.assertEqual([o["label"] for o in q["options"]], ["Approve and create", "Revise", "Cancel"])
+        import json
+        p = h.question_pending("loneagent", {}, None, lambda: lines, None, 5, lambda s: self.fail("walked"))
+        inp = json.loads(p["inputJson"])
+        self.assertEqual((inp["questions"][0]["header"], inp["questions"][0]["multiSelect"]), ("Confirm", False))
+
     def test_a_permission_prompt_is_not_read_as_a_question(self):
         lines = ["Bash command", "", "  rm -rf build", "", "Do you want to proceed?", "❯ 1. Yes", "  2. No", "",
                  "Esc to cancel"]

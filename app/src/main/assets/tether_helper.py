@@ -1489,10 +1489,11 @@ def parse_question_screen(lines):
     if tab_i is None:
         rules = [i for i, l in enumerate(lines) if l.strip() and set(l.strip()) <= set("\u2500\u2501 ") and len(l.strip()) > 20]
         opts_all = [i for i, l in enumerate(lines) if OPTION_RE.match(l)]
-        if opts_all:
-            above = [r for r in rules if r < opts_all[-1]]
-            # the rule right above the last option block (skip the one between options and "Chat about this")
-            blocks = [r for r in above if not any(r < o < opts_all[-1] and OPTION_RE.match(lines[o]).group(3).lower().startswith("chat") for o in opts_all)]
+        # the rule right above the last answer option: "Chat about this" sits under a rule of its own, so it
+        # never counts as the option block
+        answers = [o for o in opts_all if not OPTION_RE.match(lines[o]).group(3).lower().startswith("chat about this")]
+        if answers:
+            blocks = [r for r in rules if r < answers[-1]]
             region = (max(blocks) + 1) if blocks else 0
     opt_idx = [i for i, l in enumerate(lines) if i >= region and OPTION_RE.match(l)]
     if not opt_idx:
@@ -1502,6 +1503,9 @@ def parse_question_screen(lines):
     qtext = ""
     for l in lines[start:first]:
         t = l.strip()
+        if tab_i is None and not qtext and re.match(r"^[\u2610\u2612\u2714\u2611]\s+\S", t):
+            tabs = [t[1:].strip()]  # one question: its header chip ("\u2610 Confirm") above it, no tab bar
+            continue
         if t and not set(t) <= set("\u2500-\u2501 "):
             t = t.lstrip("\u2502 ")  # the question's left bar (2.1.33x draws "\u2502 What makes\u2026")
             if t:
@@ -1658,6 +1662,15 @@ def ensure_multi(agent_id, st, tui_factory, tpath=None):
             return cached, [bool(q.get("multiSelect")) for q in cached]
         qs = transcript_questions(tpath, lambda: tui_screen_text(tui_factory))
     if not qs:
+        tui = tui_factory()
+        try:
+            shown = screen_question_shown(tui.lines())
+        finally:
+            tui.close()
+        if shown and len(shown.get("tabs") or []) <= 1:  # one question: no tabs to walk
+            qs = [{"question": shown["question"], "header": (shown.get("tabs") or [""])[0],
+                   "options": shown["options"], "multiSelect": bool(shown.get("multiSelect"))}]
+            return qs, [qs[0]["multiSelect"]]
         qs = read_questions_from_tui(tui_factory)
         if not qs:
             return None, None
