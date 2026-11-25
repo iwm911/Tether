@@ -288,6 +288,7 @@ class SessionProtocolTest {
         )
         assertEquals(obj("""{"cwd":"/p","prompt":"hi"}"""), obj(SessionProtocol.newBody(NewSessionRequest("/p", "hi"))))
         assertEquals(obj("""{"cwd":"/p","prompt":"hi","trust":true}"""), obj(SessionProtocol.newBody(NewSessionRequest("/p", "hi", trust = true))))
+        assertEquals(obj("""{"cwd":"/p","prompt":"hi","showFiles":true}"""), obj(SessionProtocol.newBody(NewSessionRequest("/p", "hi", showFiles = true))))
         assertEquals(obj("""{"text":"go"}"""), obj(SessionProtocol.sendBody("go", emptyList())))
         assertEquals(obj("""{"text":"see","images":["/a.png","/b.jpg"]}"""), obj(SessionProtocol.sendBody("see", listOf("/a.png", "/b.jpg"))))
         assertEquals(

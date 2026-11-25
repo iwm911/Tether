@@ -16,7 +16,8 @@ sealed interface MdInline {
     data class Italic(val children: List<MdInline>) : MdInline
     data class Strike(val children: List<MdInline>) : MdInline
     data class Code(val code: String) : MdInline
-    data class Link(val url: String, val children: List<MdInline>) : MdInline
+    /** [image] = written as `![alt](url)`: a local image is shown inline under its paragraph. */
+    data class Link(val url: String, val children: List<MdInline>, val image: Boolean = false) : MdInline
     /** A file path such as `src/foo/Bar.kt:12` found in running text — rendered in mono. */
     data class Path(val path: String) : MdInline
     data object LineBreak : MdInline
@@ -500,7 +501,7 @@ object MarkdownParser {
                         if (link != null) {
                             flush()
                             val alt = s.substring(link.textStart, link.textEnd).trim().ifEmpty { "image" }
-                            out += MdInline.Link(link.url, listOf(MdInline.Text(alt)))
+                            out += MdInline.Link(link.url, listOf(MdInline.Text(alt)), image = true)
                             i = link.end
                         } else { buf.append(c); i++ }
                     }

@@ -2773,6 +2773,17 @@ def wake_flags(flags, tpath):
     return kept + ["--model", model]
 
 
+def with_show_files(flags, sid):
+    """flags plus the show-files system prompt when the session was started with it here and the CLI's rewritten
+    respawnFlags dropped it."""
+    if flag_value(flags, "--append-system-prompt") is not None:
+        return flags
+    launched = launch_flags_of(sid)
+    if flag_value(launched, "--append-system-prompt") == SHOW_FILES_PROMPT:
+        return list(flags) + ["--append-system-prompt", SHOW_FILES_PROMPT]
+    return flags
+
+
 def resume_flags(flags):
     """The respawnFlags worth replaying on a wake (--model, --permission-mode, ...)."""
     out = []
@@ -5029,6 +5040,17 @@ def wait_session(sid, pred, seconds):
         time.sleep(0.4)
 
 
+# Appended to the system prompt of a session the phone starts with showFiles (Settings > Let Claude show files):
+# the app shows a local image or Markdown file named in a reply (a tap on its path, `![alt](path)` inline).
+SHOW_FILES_PROMPT = (
+    "The user follows this session in the Tether phone app, which can show image and Markdown files from this "
+    "machine. When a picture or document would help them (a chart, a screenshot, a diagram, a report you wrote), "
+    "save it as a file (PNG, JPEG, GIF, WebP or .md) and name it in your reply by its absolute path. For an image, "
+    "write ![short caption](/absolute/path.png) on its own line to show it inline; a plain path to an image or "
+    ".md file opens when tapped."
+)
+
+
 def cmd_new(opts):
     req = read_request()
     cwd = session_cwd(req.get("cwd"))
@@ -5048,6 +5070,9 @@ def cmd_new(opts):
         # Always explicit, "default" too: without the flag the CLI starts in the user's settings defaultMode
         # (e.g. "auto"), not in the mode the phone showed and asked for.
         flags += ["--permission-mode", mode]
+    if req.get("showFiles") is True:
+        # Kept in respawnFlags (RESUME_VALUE_FLAGS), so a wake keeps it too.
+        flags += ["--append-system-prompt", SHOW_FILES_PROMPT]
     text = with_images(prompt, req.get("images"))
     ensure_daemon(opts)
     images = bool(req.get("images"))
@@ -5089,7 +5114,8 @@ def wake(opts, ref, text=None, paste=False):
     if not cwd:
         raise coded_error("The session's folder no longer exists on this machine.", "ENOSESSION")
     ensure_daemon(opts)
-    spec = daemon_resume_spec(ref.sid, cwd, flags=wake_flags(st.get("respawnFlags"), ref.tpath), transcript_path=ref.tpath,
+    flags = with_show_files(wake_flags(st.get("respawnFlags"), ref.tpath), ref.sid)
+    spec = daemon_resume_spec(ref.sid, cwd, flags=flags, transcript_path=ref.tpath,
                               intent=st.get("intent") or "")
     if st.get("name"):
         spec["seed"]["name"] = st["name"]

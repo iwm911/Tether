@@ -196,7 +196,26 @@ private fun MdBlocks(
 @Composable
 private fun MdParagraph(inlines: List<MdInline>, palette: MdPalette, style: TextStyle, caret: Boolean) {
     val rich = remember(inlines, palette) { buildRich(inlines, palette) }
-    RichText(rich, style, caret = caret)
+    // `![alt](path)` of a file on the machine: the picture itself, under (or instead of) the text.
+    val images = if (LocalChatFiles.current != null) remember(inlines) { FilePreview.inlineImages(inlines) } else emptyList()
+    if (images.isEmpty()) {
+        RichText(rich, style, caret = caret)
+        return
+    }
+    val onlyImages = remember(inlines) { FilePreview.onlyImages(inlines) }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (!onlyImages) RichText(rich, style, caret = caret)
+        images.forEach { img ->
+            val path = FilePreview.clean(img.url)
+            if (path != null) {
+                InlineRemoteImage(
+                    path = path,
+                    caption = MarkdownParser.plainText(img.children).takeIf { it.isNotBlank() && it != "image" },
+                )
+            }
+        }
+        if (onlyImages && caret) StandaloneCaret()
+    }
 }
 
 @Composable
@@ -430,7 +449,11 @@ internal fun buildRich(inlines: List<MdInline>, palette: MdPalette): RichContent
                         val prev = lastChar
                         if (prev != null && !prev.isWhitespace() && prev != '(' && prev != THIN_SPACE) putC(THIN_SPACE)
                         val start = length
-                        withStyle(codeSpan) { put(node.code) }
+                        if (!inLink && FilePreview.isFileCode(node.code)) {
+                            withLink(LinkAnnotation.Url(FilePreview.link(node.code.trim()), linkStyles)) { withStyle(codeSpan) { put(node.code) } }
+                        } else {
+                            withStyle(codeSpan) { put(node.code) }
+                        }
                         if (length > start) ranges += start until length
                         val next = list.getOrNull(idx + 1)
                         val nextChar = when (next) {
@@ -442,9 +465,14 @@ internal fun buildRich(inlines: List<MdInline>, palette: MdPalette): RichContent
                     }
                     is MdInline.Link -> {
                         if (inLink) emit(node.children, true)
-                        else withLink(LinkAnnotation.Url(node.url, linkStyles)) { emit(node.children, true) }
+                        else withLink(LinkAnnotation.Url(fileOrUrl(node.url), linkStyles)) { emit(node.children, true) }
                     }
-                    is MdInline.Path -> withStyle(pathSpan) { put(node.path) }
+                    is MdInline.Path ->
+                        if (!inLink && FilePreview.kind(node.path) != null) {
+                            withLink(LinkAnnotation.Url(FilePreview.link(node.path), linkStyles)) { withStyle(pathSpan) { put(node.path) } }
+                        } else {
+                            withStyle(pathSpan) { put(node.path) }
+                        }
                     MdInline.LineBreak -> putC('\n')
                 }
             }
@@ -453,6 +481,10 @@ internal fun buildRich(inlines: List<MdInline>, palette: MdPalette): RichContent
     }
     return RichContent(text, ranges)
 }
+
+/** A link to a local image or Markdown file opens in the app ([FilePreview.SCHEME]); anything else is left as is. */
+private fun fileOrUrl(url: String): String =
+    if (FilePreview.kind(url) != null) FilePreview.clean(url)?.let(FilePreview::link) ?: url else url
 
 // ───────────────────────────── Rich text view ─────────────────────────────
 

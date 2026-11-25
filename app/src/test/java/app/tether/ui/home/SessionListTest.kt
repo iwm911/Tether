@@ -251,5 +251,7 @@ class SessionListTest {
         assertEquals("haiku", r2.model)
         assertEquals("acceptEdits", r2.permissionMode)
         assertTrue(r2.trust)
+        assertFalse(r2.showFiles)
+        assertTrue(newSessionRequest("/p", "go", "default", PermissionMode.DEFAULT, trust = false, showFiles = true).showFiles)
     }
 }

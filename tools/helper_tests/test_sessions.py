@@ -1336,6 +1336,30 @@ class WritesTest(unittest.TestCase):
         self.assertEqual(spec["launch"]["args"], ["--session-id", spec["sessionId"]])
         self.assertEqual(self.model.replies, [(spec["short"], "what is this " + img)])
 
+    def test_new_with_show_files_appends_the_system_prompt(self):
+        rc, out, err = self.hm.run("new", stdin=json.dumps({"cwd": self.w.proj, "prompt": "chart it", "showFiles": True}))
+        self.assertEqual(rc, 0, err)
+        spec = self.model.dispatched[0]
+        args = spec["launch"]["args"]
+        self.assertEqual(args[2:4], ["--append-system-prompt", self.hm.h.SHOW_FILES_PROMPT])
+        self.assertEqual(args[-2:], ["--", "chart it"])
+        self.assertIn("--append-system-prompt", spec["respawnFlags"])
+        # Without the key (an older app, or the setting off) nothing is appended.
+        self.model.dispatched.clear()
+        rc, out, err = self.hm.run("new", stdin=json.dumps({"cwd": self.w.proj, "prompt": "x"}))
+        self.assertEqual(rc, 0, err)
+        self.assertNotIn("--append-system-prompt", self.model.dispatched[0]["launch"]["args"])
+
+    def test_wake_restores_show_files_the_cli_dropped(self):
+        h = self.hm.h
+        h.remember_launch_flags(SID_C, ["--append-system-prompt", h.SHOW_FILES_PROMPT])
+        rc, out, err = self.hm.run("send", "cccc3333", stdin=json.dumps({"text": "again"}))
+        self.assertEqual(rc, 0, err)
+        flags = self.model.dispatched[0]["launch"]["flagArgs"]
+        self.assertEqual(flags[-2:], ["--append-system-prompt", h.SHOW_FILES_PROMPT])
+        self.assertEqual(h.with_show_files(["--append-system-prompt", "mine"], SID_C), ["--append-system-prompt", "mine"])
+        self.assertEqual(h.with_show_files(["--model", "haiku"], SID_A), ["--model", "haiku"])
+
     def test_new_rejects_bad_settings(self):
         rc, out, err = self.hm.run("new", stdin=json.dumps({"cwd": self.w.proj, "prompt": "x", "permissionMode": "yolo"}))
         self.assertEqual(rc, 1)
