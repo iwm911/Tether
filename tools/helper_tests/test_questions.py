@@ -239,6 +239,46 @@ class TabWalkTest(unittest.TestCase):
             text = "".join(above + tab_screen(i, multi=(2,))).replace(" ", "")
             self.assertEqual(h.current_question(text, QS), (i, i == 2))
 
+    def test_question_with_no_job_dir_and_no_transcript_is_read_off_the_screen(self):
+        # A session claimed from the daemon's spare has no state.json, and 2.1.33x writes the AskUserQuestion
+        # to the transcript only once answered: the phone showed a bare "Chat about this" dialog card.
+        import json
+        tui = DiffTui(1, multi=(0,))
+        reads = []
+
+        def read_all(since):
+            reads.append(since)
+            qs = h.read_questions_from_tui(lambda: tui)
+            h.ensure_dir(os.path.dirname(h.qcache_path("spareagent")))
+            h.write_json_atomic(h.qcache_path("spareagent"), {"questions": qs, "status_at": since, "fromScreen": True})
+        self.assertIsNone(h.question_pending("spareagent", {}, None, tui.lines, None, 111, read_all))
+        self.assertEqual(reads, [111])
+        self.assertEqual(tui.at, 1)  # back on the tab that was showing
+        p = h.question_pending("spareagent", {}, None, tui.lines, None, 111, read_all)
+        inp = json.loads(p["inputJson"])
+        self.assertTrue(inp["multiSelectKnown"])
+        self.assertEqual([(q["header"], q["multiSelect"]) for q in inp["questions"]],
+                         [("Build plan", True), ("Unread zip", False), ("Clock reset", False)])
+        self.assertEqual(reads, [111])
+        # a later wait in the same session never reuses that read
+        self.assertIsNone(h.question_pending("spareagent", {}, None, tui.lines, None, 222, lambda s: None))
+
+    def test_a_permission_prompt_is_not_read_as_a_question(self):
+        lines = ["Bash command", "", "  rm -rf build", "", "Do you want to proceed?", "❯ 1. Yes", "  2. No", "",
+                 "Esc to cancel"]
+        self.assertIsNone(h.screen_question_shown(lines))
+        self.assertIsNone(h.question_pending("permagent", {}, None, lambda: lines, None, 1, lambda s: None))
+
+    def test_ensure_multi_without_job_dir_checks_the_cache_against_the_screen(self):
+        tui = DiffTui(0)
+        stale = [{"question": "Something asked earlier?", "options": [{"label": "Keep the old plan"}, {"label": "Drop the old plan"}],
+                  "multiSelect": True}]
+        h.ensure_dir(os.path.dirname(h.qcache_path("staleagent")))
+        h.write_json_atomic(h.qcache_path("staleagent"), {"questions": stale, "status_at": None})
+        qs, multi = h.ensure_multi("staleagent", {}, lambda: tui)
+        self.assertEqual([q["question"] for q in qs], [q["question"] for q in QS])
+        self.assertEqual(multi, [False, False, False])
+
     def test_one_walk_per_question_block(self):
         self.assertTrue(h.claim_tab_walk("walkagent3", "k1"))
         self.assertFalse(h.claim_tab_walk("walkagent3", "k1"))

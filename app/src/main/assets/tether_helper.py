@@ -1255,7 +1255,61 @@ def claim_tab_walk(agent_id, key):
 def start_tab_walk(agent_id, live_short, key, qs):
     """walk_question_tabs on the live worker, in a detached process so the sessions list doesn't wait on the key
     presses. The next read of the question picks up what it saw."""
-    if not hasattr(os, "fork") or not claim_tab_walk(agent_id, key):
+    if claim_tab_walk(agent_id, key):
+        run_detached(lambda: walk_question_tabs(agent_id, key, qs, lambda: DaemonTui(live_short)))
+
+
+def start_screen_read(agent_id, live_short, since):
+    """read_questions_from_tui on the live worker, in a detached process, once per wait (since): its questions go
+    to the qcache, where the next screen_questions finds them."""
+    if not claim_tab_walk(agent_id, "screen-%s" % since):
+        return
+
+    def read():
+        qs = read_questions_from_tui(lambda: DaemonTui(live_short))
+        if qs:
+            ensure_dir(os.path.dirname(qcache_path(agent_id)))
+            write_json_atomic(qcache_path(agent_id), {"questions": qs, "status_at": since, "fromScreen": True})
+    run_detached(read)
+
+
+def screen_question_shown(lines):
+    """parse_question_screen(lines) when the screen shows an AskUserQuestion: a numbered question with the
+    "Chat about this" row under it (a permission prompt has numbered options too, never that row)."""
+    q = parse_question_screen(lines) if lines else None
+    if not q or not any((OPTION_RE.match(l) or [None, None, None, ""])[3].lower().startswith("chat about this")
+                        for l in lines if OPTION_RE.match(l)):
+        return None
+    return q
+
+
+def screen_questions(agent_id, since, screen, read_all=None):
+    """The questions of the AskUserQuestion on the live screen, for when neither state.json nor the transcript
+    has them: a session claimed from the daemon's pre-started spare has no job dir (2.1.33x), and the tool_use
+    lands in the transcript only once answered. One question on screen is read right there. With several (a tab
+    bar), read_all(since) walks the tabs in the background and this returns None until its qcache entry is in:
+    a phone answering one tab of four would send a wrong answer plan."""
+    lines = screen() if screen else None
+    q = screen_question_shown(lines)
+    if not q:
+        return None
+    c = read_json(qcache_path(agent_id), {}) or {}
+    cached = c.get("questions") if c.get("fromScreen") and c.get("status_at") == since else None
+    if isinstance(cached, list) and cached and \
+            current_question(re.sub(r"\s+", "", "\n".join(lines)), cached)[0] is not None:
+        return cached
+    if len(q.get("tabs") or []) > 1:
+        if read_all:
+            read_all(since)
+        return None
+    one = {"question": q["question"], "header": (q.get("tabs") or [""])[0], "options": q["options"],
+           "multiSelect": bool(q.get("multiSelect"))}
+    return [one]
+
+
+def run_detached(fn):
+    """fn() in a grandchild process that has let go of the caller's stdio and sockets."""
+    if not hasattr(os, "fork"):
         return
     try:
         pid = os.fork()
@@ -1276,23 +1330,26 @@ def start_tab_walk(agent_id, live_short, key, qs):
                 os.dup2(null, fd)
             os.closerange(3, 1024)
             try:
-                walk_question_tabs(agent_id, key, qs, lambda: DaemonTui(live_short))
+                fn()
             except Exception:  # noqa: BLE001 - best effort: the passive read still fills tabs in as they show
                 pass
     finally:
         os._exit(0)
 
 
-def question_pending(agent_id, st, tpath=None, screen=None, walk=None):
+def question_pending(agent_id, st, tpath=None, screen=None, walk=None, since=None, read_all=None):
     """screen: a callable giving the live worker's screen lines, read when the transcript can't tell multiSelect.
-    walk(key, qs): starts a tab walk when the screen read still leaves a question unknown."""
+    walk(key, qs): starts a tab walk when the screen read still leaves a question unknown.
+    since: when the session started waiting; read_all(since): reads every tab off the screen (screen_questions)."""
     qs = question_block(st)
-    if not qs:
+    if not qs and st.get("updatedAt") is not None:
         c = read_json(qcache_path(agent_id), {}) or {}
         if isinstance(c.get("questions"), list) and c.get("questions") and c.get("status_at") == st.get("updatedAt"):
             qs = c["questions"]
     if not qs:
         qs = transcript_questions(tpath, (lambda: re.sub(r"\s+", "", "\n".join(screen() or []))) if screen else None)
+    if not qs and screen and since is not None:
+        qs = screen_questions(agent_id, since, screen, read_all)
     if not qs:
         return None
     key = question_key(st, qs)  # of the block as the daemon wrote it: the same before and after the transcript lands
@@ -1446,7 +1503,9 @@ def parse_question_screen(lines):
     for l in lines[start:first]:
         t = l.strip()
         if t and not set(t) <= set("\u2500-\u2501 "):
-            qtext = (qtext + " " + t).strip() if qtext else t
+            t = t.lstrip("\u2502 ")  # the question's left bar (2.1.33x draws "\u2502 What makes\u2026")
+            if t:
+                qtext = (qtext + " " + t).strip() if qtext else t
     options, multi = [], False
     i = first
     while i < len(lines):
@@ -1489,6 +1548,7 @@ def read_questions_from_tui(tui_factory):
             return parse_question_screen(sc.lines())
 
         q = snapshot()
+        lefts = 0  # tabs between the first question and the one showing: the walk ends back there
         # Walk left to the first question: stop when ← no longer changes the question (no wrap)
         # or lands on the Submit tab (wrapped) — in that case step back right once.
         for _ in range(6):
@@ -1500,6 +1560,8 @@ def read_questions_from_tui(tui_factory):
                 break
             if q and q2["question"] == q["question"]:
                 break
+            if q:
+                lefts += 1
             q = q2
         if q is None:
             tui.send(b"\x1b[C", 0.8)
@@ -1514,7 +1576,7 @@ def read_questions_from_tui(tui_factory):
             if q2 is None or q2["question"] == found[-1]["question"]:
                 break
             found.append(q2)
-        for _ in range(len(found) - 1):
+        for _ in range(max(0, len(found) - 1 - lefts)):
             tui.send(b"\x1b[D", 0.5)
     finally:
         tui.close()
@@ -1588,9 +1650,12 @@ def ensure_multi(agent_id, st, tui_factory, tpath=None):
     qs = question_block(st)
     if not qs:
         c = read_json(qcache_path(agent_id), {}) or {}
-        if isinstance(c.get("questions"), list) and c.get("questions") and c.get("status_at") == st.get("updatedAt"):
-            qs = c["questions"]
-            return qs, [bool(q.get("multiSelect")) for q in qs]
+        cached = c.get("questions") if isinstance(c.get("questions"), list) and c.get("questions") else None
+        # Without a job dir there is no updatedAt to tie the cache to this wait: the cached questions must be the
+        # ones on screen now (a later question in the same session must never be answered with an earlier plan).
+        if cached and (c.get("status_at") == st.get("updatedAt") if st.get("updatedAt") is not None else
+                       current_question(tui_screen_text(tui_factory), cached)[0] is not None):
+            return cached, [bool(q.get("multiSelect")) for q in cached]
         qs = transcript_questions(tpath, lambda: tui_screen_text(tui_factory))
     if not qs:
         qs = read_questions_from_tui(tui_factory)
@@ -3399,8 +3464,10 @@ def session_pending(short, st, reg, tpath, cwd, live_short=None, screen=None):
     """What a needs_you session is waiting for: a question, a tool permission, or a dialog (read from the live
     worker live_short's screen)."""
     wf = (reg or {}).get("waitingFor")
+    since = (reg or {}).get("statusUpdatedAt") or st.get("updatedAt")  # when this wait began
     q = question_pending(short, st, tpath, (screen or (lambda: fetch_screen(live_short))) if live_short else None,
-                         (lambda key, qs: start_tab_walk(short, live_short, key, qs)) if live_short else None) \
+                         (lambda key, qs: start_tab_walk(short, live_short, key, qs)) if live_short else None,
+                         since, (lambda s: start_screen_read(short, live_short, s)) if live_short else None) \
         if short else None
     if q:
         return dict(q, kind="question")
