@@ -1288,10 +1288,10 @@ def start_screen_read(agent_id, live_short, since):
 
 def screen_question_shown(lines):
     """parse_question_screen(lines) when the screen shows an AskUserQuestion: a numbered question with the
-    "Chat about this" row under it (a permission prompt has numbered options too, never that row)."""
+    "Chat about this" row under it (a permission prompt has numbered options too, never that row). The row is
+    numbered in the plain list and bare when the options have previews (2.1.332 draws those side by side)."""
     q = parse_question_screen(lines) if lines else None
-    if not q or not any((OPTION_RE.match(l) or [None, None, None, ""])[3].lower().startswith("chat about this")
-                        for l in lines if OPTION_RE.match(l)):
+    if not q or not any(CHAT_ROW_RE.match(l) for l in lines):
         return None
     return q
 
@@ -1490,6 +1490,19 @@ class Screen(object):
 
 
 OPTION_RE = re.compile(r"^\s*(?:\u276f\s*)?(\d+)\.\s+(\[[ \u2714xX]\]\s*)?(.*\S)\s*$")
+CHAT_ROW_RE = re.compile(r"^\s*(?:\u276f\s*)?(?:\d+\.\s+)?Chat about this\s*$", re.I)
+PREVIEW_BOX_RE = re.compile(r"\s{2}([\u250c\u256d])\u2500")
+
+
+def preview_column(lines, first):
+    """The column where the options' preview pane starts, or None. When options carry a preview, 2.1.332 draws
+    the option list in a narrow left column (labels wrap there) and the selected option's preview in a box to
+    its right, from the first option row down."""
+    for l in lines[first:first + 3]:
+        m = PREVIEW_BOX_RE.search(l)
+        if m and m.start(1) >= 10:
+            return m.start(1)
+    return None
 
 
 def parse_question_screen(lines):
@@ -1518,6 +1531,10 @@ def parse_question_screen(lines):
         return None
     first = opt_idx[0]
     start = region
+    pcol = preview_column(lines, first)
+    if pcol is not None:
+        # keep the option column only; a long label wraps under itself there and no description is drawn
+        lines = lines[:first] + [l[:pcol].rstrip() for l in lines[first:]]
     qtext = ""
     for l in lines[start:first]:
         t = l.strip()
@@ -1546,6 +1563,8 @@ def parse_question_screen(lines):
         while j < len(lines) and lines[j].strip() and not OPTION_RE.match(lines[j]) and not set(lines[j].strip()) <= set("\u2500 "):
             desc.append(lines[j].strip())
             j += 1
+        if pcol is not None:
+            label, desc = " ".join([label] + desc), []
         options.append({"label": label, "description": " ".join(desc)})
         i = j
     if not qtext or not options:
@@ -1569,13 +1588,22 @@ def read_questions_from_tui(tui_factory):
             nonlocal_fed[0] = len(tui.buf)
             return parse_question_screen(sc.lines())
 
+        def step(key, wait, prev):
+            """Presses key and reads the question it shows. A busy session can take longer than wait to repaint,
+            so a question that looks unchanged gets a second look before it counts as the end of the tabs."""
+            tui.send(key, wait)
+            q2 = snapshot()
+            if q2 is not None and prev and q2["question"] == prev["question"]:
+                tui.pump(1.2)
+                q2 = snapshot()
+            return q2
+
         q = snapshot()
         lefts = 0  # tabs between the first question and the one showing: the walk ends back there
         # Walk left to the first question: stop when ← no longer changes the question (no wrap)
         # or lands on the Submit tab (wrapped) — in that case step back right once.
         for _ in range(6):
-            tui.send(b"\x1b[D", 0.8)
-            q2 = snapshot()
+            q2 = step(b"\x1b[D", 0.8, q)
             if q2 is None:
                 tui.send(b"\x1b[C", 0.8)
                 q = snapshot()
@@ -1592,13 +1620,16 @@ def read_questions_from_tui(tui_factory):
             return []
         found.append(q)
         total = max(1, len(q.get("tabs") or []))
+        rights = 0  # presses that moved: the walk goes back by these, not by the questions it could read
         for _ in range(total - 1):
-            tui.send(b"\x1b[C", 0.9)
-            q2 = snapshot()
-            if q2 is None or q2["question"] == found[-1]["question"]:
+            q2 = step(b"\x1b[C", 0.9, found[-1])
+            if q2 is not None and q2["question"] == found[-1]["question"]:
+                break
+            rights += 1
+            if q2 is None:
                 break
             found.append(q2)
-        for _ in range(max(0, len(found) - 1 - lefts)):
+        for _ in range(max(0, rights - lefts)):
             tui.send(b"\x1b[D", 0.5)
     finally:
         tui.close()
