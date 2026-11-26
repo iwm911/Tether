@@ -282,6 +282,30 @@ class DialogSessionTest(unittest.TestCase):
         self.assertEqual((s["pending"]["kind"], s["pending"]["dialog"]), ("dialog", "other"))
         self.assertIn("Ship the fix", s["pending"]["body"])
 
+    def test_a_handoff_read_mid_repaint_is_not_a_dialog(self):
+        # Claude ended its turn with 'Say "merge it" when ready': state.json says blocked, the worker registers
+        # idle at its prompt. The screen read caught the repaint without the prompt box's top edge, and the phone
+        # showed the report and "❯ merge it" under "Claude Code is asking something" with the key pad.
+        self.home.job(SHORT, sessionId=SID, cwd=self.proj, state="blocked", tempo="blocked",
+                      needs='Say "merge it" when ready.', suggestedReply="merge it")
+        self.home.registry(os.getpid(), kind="bg", status="idle", sessionId=SID, jobId=SHORT)
+        self.model.add(SHORT, SID, cwd=self.proj, tempo="blocked", state="blocked")
+        self.model.subscribe_events = [{"type": "snapshot", "record": {}, "streamTail": [
+            u"\x1b[2J\x1b[H  PR #4224 is ready.\r\n\r\n✻ Cooked for 2m 3s · done 10:28 AM\r\n\r\n❯\xa0merge it\r\n"]}]
+        s = self.session()
+        self.assertEqual((s["state"], s["handoff"], s["pending"]), ("needs_you", True, None))
+
+    def test_a_handoff_before_the_worker_registers_idle_is_not_a_dialog(self):
+        # state.json flips to blocked a moment before the registry leaves "busy".
+        self.home.job(SHORT, sessionId=SID, cwd=self.proj, state="blocked", tempo="blocked",
+                      needs='Say "merge it" when ready.', suggestedReply="merge it")
+        self.home.registry(os.getpid(), kind="bg", status="busy", sessionId=SID, jobId=SHORT)
+        self.model.add(SHORT, SID, cwd=self.proj, tempo="blocked", state="blocked")
+        self.model.subscribe_events = [{"type": "snapshot", "record": {}, "streamTail": [
+            u"\x1b[2J\x1b[H  PR #4224 is ready.\r\n\r\n❯\xa0merge it\r\n"]}]
+        s = self.session()
+        self.assertEqual((s["state"], s["pending"]), ("needs_you", None))
+
     def test_no_fallback_while_the_prompt_box_is_still_up(self):
         # The registry says "dialog open" a moment before the dialog replaces the prompt box.
         self.home.job(SHORT, sessionId=SID, cwd=self.proj, state="done", tempo="idle")

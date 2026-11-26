@@ -3497,9 +3497,14 @@ def session_dialog(short, st, reg, screen=None):
     # The screen-text fallback needs a registered worker that says it waits (before registering, a worker's
     # state.json says blocked between dispatch and its first prompt too). Any wait counts, not only "dialog open":
     # a goal proposal, a sandbox network request or a prompt the transcript can't name is still on screen.
-    reg = reg or {}
+    # state.json's blocked alone is no dialog when Claude ended its turn asking in text (say "merge it": a needs
+    # note, no block) or the worker registers idle at its prompt ("idle" / "shell"). A screen read during the
+    # end-of-turn repaint can miss the prompt box's edge, and the phone showed the report as "Claude Code is
+    # asking something".
+    reg, st = reg or {}, st or {}
+    handoff = (bool(st.get("needs")) and not st.get("block")) or reg.get("status") in BG_AT_PROMPT
     blocked = bool(reg) and (reg.get("waitingFor") in DIALOG_WAITING or reg.get("status") == "waiting" or
-                             (st or {}).get("tempo") == "blocked")
+                             (st.get("tempo") == "blocked" and not handoff))
     if blocked and lines and not prompt_box_shown(lines):
         return {"kind": "dialog", "dialog": "other", "title": "", "body": screen_fallback(lines), "options": [],
                 "keys": list(DIALOG_KEYS_CHECKLIST)}
