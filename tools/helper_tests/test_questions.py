@@ -79,7 +79,15 @@ class DiffTui(object):
             for c in range(COLS):
                 if before[r][c] != after[r][c]:
                     out.append("\x1b[%d;%dH%s" % (r + 1, c + 1, after[r][c]))
-        self._write("".join(out))
+        if getattr(self, "lag", False):
+            self.late = getattr(self, "late", "") + "".join(out)  # repainted only once pumped again
+        else:
+            self._write("".join(out))
+
+    def pump(self, seconds, until=None):
+        self._write(getattr(self, "late", ""))
+        self.late = ""
+        return until is None
 
     def mark(self):
         return len(self.buf)
@@ -263,6 +271,14 @@ class TabWalkTest(unittest.TestCase):
         # a later wait in the same session never reuses that read
         self.assertIsNone(h.question_pending("spareagent", {}, None, tui.lines, None, 222, lambda s: None))
 
+    def test_screen_read_waits_for_a_slow_repaint_and_returns_to_its_tab(self):
+        # A busy session repainted after the walk had looked: it stopped at the third tab and went back one short.
+        tui = DiffTui(1)
+        tui.lag = True
+        qs = h.read_questions_from_tui(lambda: tui)
+        self.assertEqual([q["question"] for q in qs], [q["question"] for q in QS])
+        self.assertEqual(tui.at, 1)
+
     def test_one_question_with_a_header_chip_and_no_tab_bar(self):
         # 2.1.332: a lone question draws "☐ Confirm" above it and no Submit tab bar; the rule between its options
         # and "Chat about this" must not be taken for the start of the question
@@ -279,6 +295,25 @@ class TabWalkTest(unittest.TestCase):
         p = h.question_pending("loneagent", {}, None, lambda: lines, None, 5, lambda s: self.fail("walked"))
         inp = json.loads(p["inputJson"])
         self.assertEqual((inp["questions"][0]["header"], inp["questions"][0]["multiSelect"]), ("Confirm", False))
+
+    def test_options_with_previews_drawn_side_by_side(self):
+        # 2.1.332: options that carry a preview sit in a narrow left column (labels wrap) with the preview boxed to
+        # their right, and "Chat about this" has no number. The phone showed a bare "Chat about this" dialog card.
+        W = 200
+        box = ["\u250c" + "\u2500" * 50 + "\u2510", "\u2502 Violations (12)" + " " * 34 + "\u2502",
+               "\u2502 contract.docx   3 violations   Awaiting review   \u2502", "\u2514" + "\u2500" * 50 + "\u2518"]
+        left = ["\u276f 1. Nav = Violations, row =", "    file (Recommended)", "  2. Each Review becomes a",
+                "    Violation"]
+        lines = ["Earlier text", "\u2500" * W, "\u2190  \u2610 Queue unit  \u2610 Item term  \u2714 Submit  \u2192", "",
+                 "\u2502 What is the thing in the queue called after the rename?", ""]
+        lines += [l.ljust(34) + b for l, b in zip(left, box)]
+        lines += ["", " " * 34 + "Notes: press n to add notes", "", "\u2500" * W, "  Chat about this", "",
+                  "Enter to select \u00b7 \u2191/\u2193 to navigate \u00b7 n to add notes \u00b7 Tab to switch questions"]
+        q = h.screen_question_shown(lines)
+        self.assertEqual(q["question"], "What is the thing in the queue called after the rename?")
+        self.assertEqual(q["options"], [{"label": "Nav = Violations, row = file (Recommended)", "description": ""},
+                                        {"label": "Each Review becomes a Violation", "description": ""}])
+        self.assertEqual(q["tabs"], ["Queue unit", "Item term"])
 
     def test_answering_a_later_lone_question_ignores_an_earlier_cached_one(self):
         # The draft above the confirm question quoted the earlier question's words: the fuzzy match took the old
